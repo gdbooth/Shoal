@@ -1186,6 +1186,11 @@ input[type=range]::-webkit-slider-thumb {
 // each agent has a personality, votes on trades, and weights adapt over time.
 
 const SEED = 1337;
+
+// Backend URL — override by setting window.SHOAL_BACKEND_URL before this script loads.
+const BACKEND_URL = (typeof window !== 'undefined' && window.SHOAL_BACKEND_URL) || 'http://localhost:3001';
+Object.assign(window, { BACKEND_URL });
+
 function mulberry32(a) {
   return function() {
     a |= 0; a = a + 0x6D2B79F5 | 0;
@@ -2776,7 +2781,7 @@ window.ScreenMarket = ScreenMarket;
 <script type="text/babel" data-presets="react">
 // Settings screen — Alpaca connection + risk parameters
 
-const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset }) => {
+const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset, backendOk }) => {
   const [showConnect, setShowConnect] = React.useState(false);
   const [connecting, setConnecting] = React.useState(false);
   const [connectErr, setConnectErr] = React.useState('');
@@ -2794,10 +2799,8 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
     setShowConnect(true);
   };
 
-  const submitConnect = () => {
+  const submitConnect = async () => {
     setConnectErr('');
-    // Alpaca keys: key id is typically ~20 chars starting "PK" (paper) or "AK" (live); secret is ~40 chars.
-    // We don't actually hit their API from here (no CORS/keys shipped) — we validate shape and stash locally.
     const id = form.keyId.trim();
     const sec = form.secret.trim();
     if (id.length < 16) { setConnectErr('Key ID looks too short. Check you copied the whole value.'); return; }
@@ -2809,22 +2812,36 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
       setConnectErr('Live key IDs start with "AK". Did you mean to select Paper?'); return;
     }
     setConnecting(true);
-    // Simulated round-trip — a real integration would POST to an edge fn that calls /v2/account.
-    setTimeout(() => {
+    try {
+      const resp = await fetch(`${BACKEND_URL}/api/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyId: id, secret: sec, env: form.env }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setConnectErr(data.error || 'Connection failed — check your key pair and try again.');
+        setConnecting(false);
+        return;
+      }
+      const { token, account: acc } = data;
       const masked = id.slice(0, 4) + '····' + id.slice(-4);
       setAlpaca({
         connected: true,
         env: form.env,
         keyId: id,
+        token,
         secretMasked: '••••••••••••••' + sec.slice(-4),
         keyMasked: masked,
-        account: form.env === 'paper' ? 'PA' + Math.floor(10000000 + Math.random()*89999999) : 'A' + Math.floor(10000000 + Math.random()*89999999),
-        balance: form.env === 'paper' ? 100000 : 24850.42,
+        account: acc.id,
+        balance: acc.equity || acc.buyingPower || 0,
         broker: 'Alpaca Markets',
         endpoint: form.env === 'paper' ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets',
       });
-      setConnecting(false);
-    }, 1400);
+    } catch (err) {
+      setConnectErr(`Cannot reach Shoal backend at ${BACKEND_URL}. Is it running? (npm install && npm start)`);
+    }
+    setConnecting(false);
   };
 
   return (
@@ -2838,15 +2855,34 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
         <div className="card">
           <div className="card-head"><div className="card-title">Broker connection</div><div className="card-meta">Alpaca Markets API</div></div>
 
-          <div style={{display:'flex',gap:10,padding:'10px 12px',background:'rgba(255,170,40,0.06)',border:'1px solid rgba(255,170,40,0.3)',borderRadius:4,marginBottom:14,alignItems:'flex-start'}}>
-            <span style={{color:'var(--warn)',fontSize:14,lineHeight:1,marginTop:1}}>◉</span>
-            <div style={{lineHeight:1.5}}>
-              <div className="mono tiny" style={{color:'var(--warn)',letterSpacing:'0.1em',marginBottom:3}}>SIMULATED · PROTOTYPE</div>
-              <div className="tiny" style={{color:'var(--ink-2)'}}>
-                No orders are sent to Alpaca from this session. Trades, fills, and P&L shown throughout the app are generated locally for design review. Connecting your keys validates their shape and stores them in this browser only — they never reach Alpaca or Shoal's servers.
+          {backendOk === true && (
+            <div style={{display:'flex',gap:10,padding:'10px 12px',background:'rgba(125,216,125,0.06)',border:'1px solid rgba(125,216,125,0.3)',borderRadius:4,marginBottom:14,alignItems:'flex-start'}}>
+              <span style={{color:'var(--virtual)',fontSize:14,lineHeight:1,marginTop:1}}>◉</span>
+              <div style={{lineHeight:1.5}}>
+                <div className="mono tiny" style={{color:'var(--virtual)',letterSpacing:'0.1em',marginBottom:3}}>BACKEND ONLINE</div>
+                <div className="tiny" style={{color:'var(--ink-2)'}}>
+                  Shoal backend is running. Your keys are sent to the backend, validated against Alpaca, and held in server memory only — never written to disk or logged. The backend proxies all order and account requests.
+                </div>
               </div>
             </div>
-          </div>
+          )}
+          {backendOk === false && (
+            <div style={{display:'flex',gap:10,padding:'10px 12px',background:'rgba(255,170,40,0.06)',border:'1px solid rgba(255,170,40,0.3)',borderRadius:4,marginBottom:14,alignItems:'flex-start'}}>
+              <span style={{color:'var(--warn)',fontSize:14,lineHeight:1,marginTop:1}}>◉</span>
+              <div style={{lineHeight:1.5}}>
+                <div className="mono tiny" style={{color:'var(--warn)',letterSpacing:'0.1em',marginBottom:3}}>BACKEND OFFLINE · SIMULATED</div>
+                <div className="tiny" style={{color:'var(--ink-2)'}}>
+                  Backend not reachable at <span className="mono" style={{fontSize:11}}>{BACKEND_URL}</span>. Start it with <span className="mono" style={{fontSize:11}}>npm install &amp;&amp; npm start</span> to enable real Alpaca trading. Until then, trades and P&amp;L are simulated locally.
+                </div>
+              </div>
+            </div>
+          )}
+          {backendOk === null && (
+            <div style={{display:'flex',gap:10,padding:'10px 12px',background:'rgba(100,100,100,0.06)',border:'1px solid var(--line-2)',borderRadius:4,marginBottom:14,alignItems:'center'}}>
+              <span className="mono tiny muted">○</span>
+              <div className="mono tiny muted" style={{letterSpacing:'0.1em'}}>CHECKING BACKEND…</div>
+            </div>
+          )}
 
           {!alpaca.connected ? (
             <div>
@@ -2870,7 +2906,12 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
                     {alpaca.env === 'live' ? 'LIVE' : 'PAPER'} · Account {alpaca.account}
                   </div>
                 </div>
-                <button className="btn ghost" onClick={()=>setAlpaca({...alpaca, connected: false})}>DISCONNECT</button>
+                <button className="btn ghost" onClick={async () => {
+                  if (alpaca.token) {
+                    try { await fetch(`${BACKEND_URL}/api/disconnect`, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + alpaca.token } }); } catch (_) {}
+                  }
+                  setAlpaca({ ...alpaca, connected: false, token: null });
+                }}>DISCONNECT</button>
               </div>
               <div className="dialog-list">
                 <div className="dialog-row"><span className="l">Environment</span><span className="v" style={{color: alpaca.env === 'live' ? 'var(--live)' : 'var(--virtual)'}}>{alpaca.env === 'live' ? 'Live' : 'Paper'} · {alpaca.endpoint ? alpaca.endpoint.replace('https://','') : 'paper-api.alpaca.markets'}</span></div>
@@ -2999,7 +3040,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
                 <div style={{textAlign:'center',padding:'28px 0'}}>
                   <div style={{margin:'0 auto 16px',width:44,height:44,border:'2px solid var(--line-2)',borderTopColor:'var(--virtual)',borderRadius:'50%',animation:'rotate 0.9s linear infinite'}}></div>
                   <div className="serif" style={{fontSize:18}}>Validating credentials…</div>
-                  <div className="mono tiny muted" style={{marginTop:6}}>GET {form.env === 'paper' ? 'paper-api' : 'api'}.alpaca.markets/v2/account</div>
+                  <div className="mono tiny muted" style={{marginTop:6}}>POST {BACKEND_URL}/api/connect → Alpaca /v2/account</div>
                 </div>
               ) : (
                 <div>
@@ -3464,6 +3505,105 @@ const App = () => {
   });
   const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false });
 
+  // Backend availability (null = checking, true = online, false = offline)
+  const [backendOk, setBackendOk] = React.useState(null);
+
+  // Stable ref so interval callbacks can read latest alpaca without re-subscribing
+  const alpacaRef = React.useRef(alpaca);
+  React.useEffect(() => { alpacaRef.current = alpaca; }, [alpaca]);
+
+  // Backend health-check — polls every 15 s
+  React.useEffect(() => {
+    const check = async () => {
+      try {
+        const r = await fetch(`${BACKEND_URL}/api/health`, { signal: AbortSignal.timeout(2000) });
+        setBackendOk(r.ok);
+      } catch {
+        setBackendOk(false);
+      }
+    };
+    check();
+    const hcIvl = setInterval(check, 15000);
+    return () => clearInterval(hcIvl);
+  }, []);
+
+  // SSE bridge — when Alpaca is connected via the backend, replace simulated data with real fills.
+  // Token passed as ?token= because EventSource does not support custom headers.
+  const streamRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!alpaca.connected || !alpaca.token) {
+      if (streamRef.current) { streamRef.current.close(); streamRef.current = null; }
+      return;
+    }
+    const es = new EventSource(`${BACKEND_URL}/api/stream?token=${encodeURIComponent(alpaca.token)}`);
+    streamRef.current = es;
+    es.onmessage = (e) => {
+      try {
+        const { account, positions, orders, error } = JSON.parse(e.data);
+        if (error) return;
+
+        // Real account equity → replace simulated balance
+        if (account?.equity) {
+          const eq = parseFloat(account.equity);
+          if (eq > 0) setBalance(eq);
+        }
+        if (account?.buying_power) {
+          setAlpaca(a => ({ ...a, balance: parseFloat(account.buying_power) }));
+        }
+
+        // Real orders → replace trade list (most recent 50)
+        if (Array.isArray(orders) && orders.length > 0) {
+          const mapped = orders.map(o => ({
+            id:     o.id,
+            ts:     new Date(o.submitted_at || o.created_at).getTime(),
+            exitTs: o.filled_at ? new Date(o.filled_at).getTime() : null,
+            sym:    o.symbol,
+            side:   o.side === 'buy' ? 'BUY' : 'SELL',
+            qty:    parseFloat(o.filled_qty || o.qty || 0),
+            price:  parseFloat(o.filled_avg_price || o.limit_price || o.stop_price || 0) || 0,
+            exit:   o.filled_at ? parseFloat(o.filled_avg_price || 0) : null,
+            conf:   0.75,
+            reason: `${o.order_class || o.type || 'market'} · ${o.time_in_force} · via Alpaca`,
+            pnl: null, pnlPct: null,
+            status: ['filled','partially_filled'].includes(o.status) ? 'OPEN'
+                  : ['canceled','expired','replaced'].includes(o.status) ? 'LOSS' : 'OPEN',
+            mode: alpacaRef.current?.env === 'live' ? 'LIVE' : 'VIRTUAL',
+            consensus: 12, isNew: false, _real: true,
+          }));
+          setTrades(mapped.slice(0, 200));
+        }
+
+        // Real positions → keep as OPEN entries, merge with closed history
+        if (Array.isArray(positions) && positions.length > 0) {
+          const realPos = positions.map(p => ({
+            id:     'POS-' + p.symbol,
+            ts:     Date.now() - 7200000,
+            exitTs: null,
+            sym:    p.symbol,
+            side:   parseFloat(p.qty) >= 0 ? 'BUY' : 'SELL',
+            qty:    Math.abs(parseFloat(p.qty)),
+            price:  parseFloat(p.avg_entry_price),
+            exit:   null,
+            conf:   0.75,
+            reason: `Live position · ${p.side} · unrealized ${parseFloat(p.unrealized_plpc || 0) >= 0 ? '+' : ''}${(parseFloat(p.unrealized_plpc || 0) * 100).toFixed(2)}%`,
+            pnl: null, pnlPct: null,
+            status: 'OPEN',
+            mode: alpacaRef.current?.env === 'live' ? 'LIVE' : 'VIRTUAL',
+            consensus: 12, isNew: false, _real: true,
+            _unrealizedPnl: parseFloat(p.unrealized_pl || 0),
+          }));
+          setTrades(prev => {
+            const closedHistory = prev.filter(t => t._real && t.status !== 'OPEN');
+            return [...realPos, ...closedHistory].slice(0, 200);
+          });
+          if (account?.portfolio_value) setBalance(parseFloat(account.portfolio_value));
+        }
+      } catch (_) {}
+    };
+    es.onerror = () => { streamRef.current = null; };
+    return () => { es.close(); streamRef.current = null; };
+  }, [alpaca.connected, alpaca.token]);
+
   React.useEffect(() => { localStorage.setItem('shoal_sym', activeSymbol); }, [activeSymbol]);
   React.useEffect(() => { localStorage.setItem('shoal_dir', direction); }, [direction]);
   React.useEffect(() => { localStorage.setItem('shoal_balance', balance); }, [balance]);
@@ -3518,7 +3658,9 @@ const App = () => {
       });
 
       // 2) sometimes open a new trade (~55% per tick)
-      if (Math.random() < 0.55) {
+      //    In LIVE mode with a real broker, the SSE stream provides real fills — skip simulation.
+      const isLiveReal = mode === 'LIVE' && !!alpacaRef.current?.token;
+      if (!isLiveReal && Math.random() < 0.55) {
         const t = TICKERS[Math.floor(Math.random() * TICKERS.length)];
         let side;
         if (direction === 'LONG') side = 'BUY';
@@ -3542,6 +3684,21 @@ const App = () => {
           isNew: true,
         };
         setTrades(prev => [newT, ...prev].slice(0, 200));
+
+        // LIVE mode + broker connected → route a real market order to Alpaca via backend
+        if (mode === 'LIVE' && alpacaRef.current?.token) {
+          fetch(`${BACKEND_URL}/api/orders`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaRef.current.token },
+            body: JSON.stringify({
+              symbol:        t.sym,
+              qty:           String(qty),
+              side:          side === 'BUY' ? 'buy' : 'sell',
+              type:          'market',
+              time_in_force: 'day',
+            }),
+          }).catch(() => {}); // SSE will reflect the resulting fill
+        }
       }
     }, 3500);
     return () => clearInterval(ivl);
@@ -3555,6 +3712,8 @@ const App = () => {
     const driftBias = direction === 'LONG' ? 0.0008 : direction === 'SHORT' ? 0.0007 : 0.0004;
     const vol = direction === 'BOTH' ? 0.0008 : 0.0018;
     const ivl = setInterval(() => {
+      // Don't overwrite real balance when SSE is streaming live account data
+      if (alpacaRef.current?.token && mode === 'LIVE') return;
       const r = (Math.random() - 0.5) * vol * 2 + driftBias;
       setBalance(b => Math.max(1000, b * (1 + r)));
       setPnl(p => p + (Math.random() - 0.48) * 140 * (direction === 'BOTH' ? 0.6 : 1.4));
@@ -3607,7 +3766,7 @@ const App = () => {
     trade: <ScreenTrade trade={selectedTrade || TRADES[0]} onBack={()=>setRoute('dashboard')} mode={mode} ctx={ctx}/>,
     backtest: <ScreenBacktest mode={mode} ctx={ctx}/>,
     market: <ScreenMarket tick={tick} mode={mode} ctx={ctx}/>,
-    settings: <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)}/>,
+    settings: <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} backendOk={backendOk}/>,
   };
 
   const navItem = NAV.find(n => n.id === route);
@@ -3658,8 +3817,8 @@ const App = () => {
 
         <div className="sidebar-foot">
           <div className="row"><span>Engine</span><span className="ok">● online</span></div>
-          <div className="row"><span>Data feed</span><span className="ok">● IEX</span></div>
-          <div className="row"><span>Broker</span><span className={alpaca.connected ? 'ok' : ''}>{alpaca.connected ? '● Alpaca' : '○ none'}</span></div>
+          <div className="row"><span>Backend</span><span className={backendOk===true?'ok':backendOk===false?'dn':'muted'}>{backendOk===true?'● online':backendOk===false?'○ offline':'○ …'}</span></div>
+          <div className="row"><span>Broker</span><span className={alpaca.connected ? 'ok' : ''}>{alpaca.connected ? '● Alpaca' + (alpaca.token ? ' ⟳' : '') : '○ none'}</span></div>
           <div className="row"><span>Latency</span><span>{42 + (tick % 8)}ms</span></div>
         </div>
       </aside>
