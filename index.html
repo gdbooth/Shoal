@@ -3657,36 +3657,19 @@ const App = () => {
         return next;
       });
 
-      // 2) sometimes open a new trade (~55% per tick)
-      //    In LIVE mode with a real broker, the SSE stream provides real fills — skip simulation.
+      // 2) place a trade ~55% of ticks — simulated or real depending on mode
       const isLiveReal = mode === 'LIVE' && !!alpacaRef.current?.token;
-      if (!isLiveReal && Math.random() < 0.55) {
+      if (Math.random() < 0.55) {
         const t = TICKERS[Math.floor(Math.random() * TICKERS.length)];
         let side;
         if (direction === 'LONG') side = 'BUY';
         else if (direction === 'SHORT') side = 'SELL';
         else side = Math.random() > 0.5 ? 'BUY' : 'SELL';
         const qty = Math.floor(Math.random() * 60) + 5;
-        const conf = 0.55 + Math.random() * 0.35;
-        const price = t.last * (1 + (Math.random() - 0.5) * 0.02);
-        const reasonList = REASONS[side === 'BUY' ? 'buy' : 'sell'];
-        const newT = {
-          id: 'TX-' + Math.floor(11000 + Math.random() * 9999),
-          ts: Date.now(),
-          exitTs: null,
-          sym: t.sym, side, qty, price, exit: null,
-          conf,
-          reason: reasonList[Math.floor(Math.random() * reasonList.length)],
-          pnl: null, pnlPct: null,
-          status: 'OPEN',
-          mode,
-          consensus: Math.floor(conf * 8),
-          isNew: true,
-        };
-        setTrades(prev => [newT, ...prev].slice(0, 200));
 
-        // LIVE mode + broker connected → route a real market order to Alpaca via backend
-        if (mode === 'LIVE' && alpacaRef.current?.token) {
+        if (isLiveReal) {
+          // Route a real market order to Alpaca via the backend proxy.
+          // SSE stream will push the fill back and update the trade list.
           fetch(`${BACKEND_URL}/api/orders`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaRef.current.token },
@@ -3697,7 +3680,26 @@ const App = () => {
               type:          'market',
               time_in_force: 'day',
             }),
-          }).catch(() => {}); // SSE will reflect the resulting fill
+          }).catch(() => {});
+        } else {
+          // Virtual mode: create a local simulated trade entry
+          const conf = 0.55 + Math.random() * 0.35;
+          const price = t.last * (1 + (Math.random() - 0.5) * 0.02);
+          const reasonList = REASONS[side === 'BUY' ? 'buy' : 'sell'];
+          const newT = {
+            id: 'TX-' + Math.floor(11000 + Math.random() * 9999),
+            ts: Date.now(),
+            exitTs: null,
+            sym: t.sym, side, qty, price, exit: null,
+            conf,
+            reason: reasonList[Math.floor(Math.random() * reasonList.length)],
+            pnl: null, pnlPct: null,
+            status: 'OPEN',
+            mode,
+            consensus: Math.floor(conf * 8),
+            isNew: true,
+          };
+          setTrades(prev => [newT, ...prev].slice(0, 200));
         }
       }
     }, 3500);
