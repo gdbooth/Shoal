@@ -2009,6 +2009,9 @@ const ScreenHistory = ({ mode, tick, onTradeClick, ctx }) => {
   // live mark on open positions (so open rows animate)
   const markedTrades = React.useMemo(() => baseTrades.map(t => {
     if (t.status !== 'OPEN') return t;
+    // Real Alpaca positions already carry _upnl/_upnlPct from the SSE stream — don't overwrite with simulation
+    if (t._real && t._upnl != null) return t;
+    if (!t.price) return t; // no entry price yet (pending market order), skip mark
     const mark = t.price * (1 + Math.sin(tick * 0.3 + t.sym.charCodeAt(0)) * 0.008);
     const upnl = (mark - t.price) * t.qty * (t.side === 'BUY' ? 1 : -1);
     return { ...t, _mark: mark, _upnl: upnl, _upnlPct: upnl / (t.qty * t.price) };
@@ -3559,14 +3562,16 @@ const App = () => {
             exitTs: o.filled_at ? new Date(o.filled_at).getTime() : null,
             sym:    o.symbol,
             side:   o.side === 'buy' ? 'BUY' : 'SELL',
-            qty:    parseFloat(o.filled_qty || o.qty || 0),
-            price:  parseFloat(o.filled_avg_price || o.limit_price || o.stop_price || 0) || 0,
-            exit:   o.filled_at ? parseFloat(o.filled_avg_price || 0) : null,
+            // Parse first then OR — filled_qty is "0" (truthy string) for unfilled orders
+            qty:    parseFloat(o.filled_qty) || parseFloat(o.qty) || 0,
+            // filled_avg_price is null for market orders that haven't filled yet
+            price:  parseFloat(o.filled_avg_price) || parseFloat(o.limit_price) || 0,
+            exit:   o.filled_at && o.filled_avg_price ? parseFloat(o.filled_avg_price) : null,
             conf:   0.75,
-            reason: `${o.order_class || o.type || 'market'} · ${o.time_in_force} · via Alpaca`,
+            reason: `${o.type || 'market'} · ${o.time_in_force} · ${o.status} via Alpaca`,
             pnl: null, pnlPct: null,
             status: ['filled','partially_filled'].includes(o.status) ? 'OPEN'
-                  : ['canceled','expired','replaced'].includes(o.status) ? 'LOSS' : 'OPEN',
+                  : ['canceled','expired','replaced','rejected'].includes(o.status) ? 'LOSS' : 'OPEN',
             mode: alpacaRef.current?.env === 'live' ? 'LIVE' : 'VIRTUAL',
             consensus: 12, isNew: false, _real: true,
           }));
@@ -3590,7 +3595,9 @@ const App = () => {
             status: 'OPEN',
             mode: alpacaRef.current?.env === 'live' ? 'LIVE' : 'VIRTUAL',
             consensus: 12, isNew: false, _real: true,
-            _unrealizedPnl: parseFloat(p.unrealized_pl || 0),
+            // Use Alpaca's real unrealized P&L — keys match what ScreenHistory reads
+            _upnl:    parseFloat(p.unrealized_pl  || 0),
+            _upnlPct: parseFloat(p.unrealized_plpc || 0),
           }));
           setTrades(prev => {
             const closedHistory = prev.filter(t => t._real && t.status !== 'OPEN');
