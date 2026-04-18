@@ -1,6 +1,15 @@
 import express from 'express';
 import cors from 'cors';
 import { randomBytes } from 'crypto';
+import nodeFetch from 'node-fetch';
+
+// Use native fetch (Node 18+) when available, otherwise fall back to node-fetch.
+const fetch = globalThis.fetch ?? nodeFetch;
+
+// Surface unhandled rejections instead of letting them silently crash the process.
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandledRejection]', err);
+});
 
 const app = express();
 app.use(cors());
@@ -176,9 +185,19 @@ app.get('/api/stream', auth, (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Shoal backend  →  http://localhost:${PORT}`);
   console.log(`Paper API      →  ${BASE.paper}`);
   console.log(`Live API       →  ${BASE.live}`);
   console.log('Sessions are held in memory — no keys written to disk.\n');
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\nERROR: Port ${PORT} is already in use.`);
+    console.error(`Either stop the other process or set a different port:\n  PORT=3002 node server.js\n`);
+  } else {
+    console.error('\nServer error:', err.message);
+  }
+  process.exit(1);
 });
