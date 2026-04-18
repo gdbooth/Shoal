@@ -1,0 +1,3710 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Shoal — Adaptive Trading</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,500;1,400&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>:root {
+  --bg: #0a0b0d;
+  --bg-1: #101216;
+  --bg-2: #161920;
+  --bg-3: #1d2129;
+  --line: #232832;
+  --line-2: #2d3340;
+  --ink: #ece8df;
+  --ink-2: #b8b3a8;
+  --ink-3: #6f6b62;
+  --ink-4: #4a4740;
+  --virtual: #7dd87d;
+  --virtual-dim: #4a8a4a;
+  --live: #ff8a3d;
+  --live-dim: #b85a1f;
+  --up: #6dd47e;
+  --down: #ff6b6b;
+  --warn: #f0c674;
+  --info: #7ec0ee;
+  --serif: 'IBM Plex Serif', Georgia, serif;
+  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-weight: 300;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "ss02";
+}
+
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+input, select, textarea { font: inherit; color: inherit; }
+a { color: inherit; text-decoration: none; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-4); }
+
+/* ------- shell ------- */
+.shell {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  height: 100vh;
+  position: relative;
+}
+
+.shell.live::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  border: 3px solid var(--live);
+  pointer-events: none;
+  z-index: 100;
+  box-shadow: inset 0 0 60px rgba(255, 138, 61, 0.15);
+}
+
+.shell.live::after {
+  content: '◉ LIVE TRADING — REAL CAPITAL AT RISK';
+  position: fixed;
+  top: 0; left: 50%;
+  transform: translateX(-50%);
+  background: var(--live);
+  color: #1a0a00;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  padding: 4px 18px;
+  border-radius: 0 0 4px 4px;
+  z-index: 101;
+}
+
+/* ------- sidebar ------- */
+.sidebar {
+  background: var(--bg-1);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 18px 0;
+  overflow-y: auto;
+}
+
+.brand {
+  padding: 0 20px 20px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.brand-mark {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, var(--virtual), var(--virtual-dim));
+  position: relative;
+}
+.brand-mark::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border: 1px dashed var(--ink-4);
+  border-radius: 50%;
+  animation: rotate 22s linear infinite;
+}
+.shell.live .brand-mark { background: radial-gradient(circle at 30% 30%, var(--live), var(--live-dim)); }
+
+@keyframes rotate {
+  to { transform: rotate(360deg); }
+}
+
+.brand-name {
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+.brand-sub {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding-left: 32px;
+}
+
+.mode-pill {
+  margin: 0 16px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: var(--bg-2);
+  cursor: pointer;
+  transition: border-color 120ms;
+}
+.mode-pill:hover { border-color: var(--ink-4); }
+
+.mode-pill-row { display: flex; align-items: center; justify-content: space-between; }
+.mode-pill-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.mode-pill-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--virtual);
+}
+.shell.live .mode-pill-value { color: var(--live); }
+.mode-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--virtual);
+  margin-right: 6px;
+  box-shadow: 0 0 8px currentColor;
+  vertical-align: middle;
+}
+.shell.live .mode-dot { background: var(--live); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.nav-section {
+  padding: 6px 0;
+}
+.nav-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 12px 22px 6px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 22px;
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: all 120ms;
+}
+.nav-item:hover { color: var(--ink); background: var(--bg-2); }
+.nav-item.active {
+  color: var(--ink);
+  background: var(--bg-2);
+  border-left-color: var(--virtual);
+}
+.shell.live .nav-item.active { border-left-color: var(--live); }
+
+.nav-icon {
+  width: 14px; height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3);
+}
+.nav-item.active .nav-icon { color: inherit; }
+.nav-num {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding: 14px 22px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sidebar-foot .row { display: flex; justify-content: space-between; }
+.sidebar-foot .ok { color: var(--virtual); }
+
+/* ------- main ------- */
+.main {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 28px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.crumb {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.crumb b { color: var(--ink); font-weight: 500; }
+
+.topbar-spacer { flex: 1; }
+
+.tick-strip {
+  display: flex;
+  gap: 18px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  overflow: hidden;
+  max-width: 480px;
+}
+.tick {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  white-space: nowrap;
+}
+.tick-sym { color: var(--ink); font-weight: 500; }
+.tick-up { color: var(--up); }
+.tick-dn { color: var(--down); }
+
+.bot-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.bot-status .led {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--virtual);
+  box-shadow: 0 0 6px currentColor;
+}
+.bot-status.paused .led { background: var(--ink-4); box-shadow: none; }
+.bot-status.paused { color: var(--ink-3); }
+
+.bot-status button {
+  margin-left: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+}
+.bot-status button:hover { color: var(--virtual); }
+.shell.live .bot-status button:hover { color: var(--live); }
+
+.page {
+  padding: 26px 28px 60px;
+  max-width: 1600px;
+  width: 100%;
+}
+
+.page-head {
+  margin-bottom: 22px;
+}
+.page-eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.page-title {
+  font-family: var(--serif);
+  font-size: 32px;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  line-height: 1.1;
+}
+.page-title em { font-style: italic; color: var(--ink-2); }
+.page-sub {
+  margin-top: 8px;
+  font-size: 14px;
+  color: var(--ink-2);
+  max-width: 640px;
+  line-height: 1.5;
+}
+
+/* ------- cards ------- */
+.card {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 18px;
+  position: relative;
+}
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 14px;
+}
+.card-title {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: -0.005em;
+}
+.card-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.kpi {
+  background: var(--bg-1);
+  padding: 18px 20px;
+}
+.kpi-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.kpi-value {
+  font-family: var(--serif);
+  font-size: 28px;
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+.kpi-value.mono { font-family: var(--mono); font-weight: 400; font-size: 22px; }
+.kpi-delta {
+  font-family: var(--mono);
+  font-size: 11px;
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.kpi-delta.up { color: var(--up); }
+.kpi-delta.dn { color: var(--down); }
+
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.grid-2-1 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+.grid-1-2 { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+
+/* ------- chart common ------- */
+.chart-wrap {
+  position: relative;
+  width: 100%;
+}
+svg.chart { display: block; width: 100%; }
+.gridline { stroke: var(--line); stroke-width: 0.5; }
+.axis-text {
+  font-family: var(--mono);
+  font-size: 9px;
+  fill: var(--ink-3);
+  letter-spacing: 0.08em;
+}
+
+.legend {
+  display: flex;
+  gap: 14px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-2);
+  letter-spacing: 0.06em;
+  flex-wrap: wrap;
+}
+.legend-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+/* ------- agent / swarm ------- */
+.swarm {
+  position: relative;
+  width: 100%;
+  height: 360px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(125, 216, 125, 0.04), transparent 70%),
+    var(--bg-1);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.shell.live .swarm {
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255, 138, 61, 0.04), transparent 70%),
+    var(--bg-1);
+}
+.agent-node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  transition: transform 200ms;
+}
+.agent-node:hover { transform: translate(-50%, -50%) scale(1.15); z-index: 5; }
+.agent-disc {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: var(--bg-3);
+  border: 1.5px solid var(--ink-4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  position: relative;
+}
+.agent-disc.buy { border-color: var(--up); box-shadow: 0 0 10px rgba(109, 212, 126, 0.4); }
+.agent-disc.sell { border-color: var(--down); box-shadow: 0 0 10px rgba(255, 107, 107, 0.4); }
+.agent-disc.hold { border-color: var(--ink-3); }
+.agent-name {
+  font-family: var(--mono);
+  font-size: 8px;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 150ms;
+  margin-top: 2px;
+}
+.agent-node:hover .agent-name { opacity: 1; }
+.swarm-center {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+.swarm-center .v {
+  font-family: var(--serif);
+  font-size: 36px;
+  font-style: italic;
+  color: var(--ink);
+}
+.swarm-center .l {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+/* ------- table ------- */
+.tbl { width: 100%; border-collapse: collapse; }
+.tbl th, .tbl td {
+  text-align: left;
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.tbl th {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 400;
+}
+.tbl td { color: var(--ink-2); }
+.tbl td.mono { font-family: var(--mono); color: var(--ink); }
+.tbl tbody tr { transition: background 120ms; cursor: pointer; }
+.tbl tbody tr:hover { background: var(--bg-2); }
+.tbl tbody tr.selected { background: var(--bg-2); }
+
+.pill {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  display: inline-block;
+}
+.pill.buy { color: var(--up); }
+.pill.sell { color: var(--down); }
+.pill.hold { color: var(--ink-3); }
+.pill.virtual { color: var(--virtual); }
+.pill.live { color: var(--live); }
+.pill.solid {
+  background: currentColor;
+  border: none;
+}
+.pill.solid span { color: var(--bg); }
+
+/* ------- buttons ------- */
+.btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 8px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: var(--bg-2);
+  transition: all 120ms;
+}
+.btn:hover { border-color: var(--ink-3); color: var(--ink); }
+.btn.primary {
+  background: var(--virtual);
+  color: #0a1f0a;
+  border-color: var(--virtual);
+  font-weight: 500;
+}
+.btn.primary:hover { background: #95e095; }
+.btn.danger {
+  background: var(--live);
+  color: #1a0a00;
+  border-color: var(--live);
+  font-weight: 500;
+}
+.btn.danger:hover { background: #ff9c5c; }
+.btn.ghost { background: transparent; }
+
+@keyframes equityFlash {
+  0% { color: var(--virtual); text-shadow: 0 0 8px var(--virtual); }
+  100% { color: var(--ink); text-shadow: none; }
+}
+.equity-live {
+  animation: equityFlash 500ms ease-out;
+}
+@keyframes tickPulse {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+.tick-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--virtual);
+  margin-right: 6px;
+  vertical-align: middle;
+  animation: tickPulse 1.2s ease-in-out infinite;
+  box-shadow: 0 0 4px currentColor;
+}
+.tick-dot.fast { animation-duration: 0.5s; background: var(--virtual); }
+.tick-dot.short { background: var(--down); }
+
+/* ------- activity feed ------- */
+.feed {
+  display: flex;
+  flex-direction: column;
+}
+.feed-row {
+  display: grid;
+  grid-template-columns: 80px 60px 80px 1fr 100px 80px;
+  gap: 14px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 120ms;
+}
+.feed-row:hover { background: var(--bg-2); }
+.feed-row.new {
+  animation: flash 1s ease-out;
+}
+@keyframes flash {
+  from { background: rgba(125, 216, 125, 0.15); }
+  to { background: transparent; }
+}
+.shell.live .feed-row.new { animation-name: flashLive; }
+@keyframes flashLive {
+  from { background: rgba(255, 138, 61, 0.15); }
+  to { background: transparent; }
+}
+.feed-time { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.feed-sym { font-family: var(--mono); font-weight: 500; color: var(--ink); }
+.feed-reason {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-style: italic;
+  font-family: var(--serif);
+}
+.feed-pnl { font-family: var(--mono); text-align: right; }
+.feed-pnl.up { color: var(--up); }
+.feed-pnl.dn { color: var(--down); }
+
+/* ------- modals ------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 6, 8, 0.78);
+  backdrop-filter: blur(4px);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  animation: fadein 200ms;
+}
+@keyframes fadein { from { opacity: 0; } }
+.modal {
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  max-width: 540px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  animation: rise 280ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.modal.wide { max-width: 820px; }
+@keyframes rise {
+  from { transform: translateY(20px); opacity: 0; }
+}
+.modal-head {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.modal-title {
+  font-family: var(--serif);
+  font-size: 20px;
+  font-weight: 400;
+}
+.modal-body { padding: 24px; }
+.modal-foot {
+  padding: 16px 24px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.danger-banner {
+  background: linear-gradient(180deg, rgba(255, 138, 61, 0.12), rgba(255, 138, 61, 0.04));
+  border: 1px solid var(--live);
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 18px;
+  font-size: 13px;
+  color: var(--ink);
+}
+.danger-banner b { color: var(--live); }
+
+.checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 16px 0;
+}
+.check-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  background: var(--bg-2);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--ink-2);
+  border: 1px solid transparent;
+}
+.check-row:hover { color: var(--ink); }
+.check-row.checked { color: var(--ink); border-color: var(--live); }
+.check-box {
+  width: 16px; height: 16px;
+  border: 1.5px solid var(--ink-3);
+  border-radius: 3px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--bg);
+}
+.check-row.checked .check-box { background: var(--live); border-color: var(--live); }
+
+/* ------- onboarding ------- */
+.onb {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--ink);
+  position: relative;
+  overflow: hidden;
+}
+.onb-top {
+  display: flex;
+  justify-content: space-between;
+  padding: 24px 36px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.onb-step {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 60px;
+  align-items: center;
+  padding: 0 80px;
+  max-width: 1280px;
+  margin: 0 auto;
+  width: 100%;
+}
+.onb-art {
+  height: 460px;
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(125, 216, 125, 0.08), transparent 60%),
+    radial-gradient(circle at 70% 70%, rgba(126, 192, 238, 0.06), transparent 60%),
+    var(--bg-1);
+}
+.onb-eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--virtual);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+.onb-title {
+  font-family: var(--serif);
+  font-size: 44px;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin-bottom: 18px;
+  font-weight: 300;
+}
+.onb-title em { font-style: italic; color: var(--ink-2); }
+.onb-body {
+  color: var(--ink-2);
+  line-height: 1.6;
+  font-size: 15px;
+  margin-bottom: 24px;
+  max-width: 480px;
+}
+.onb-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 24px 36px;
+  border-top: 1px solid var(--line);
+}
+.onb-dots { display: flex; gap: 6px; }
+.onb-dot {
+  width: 24px; height: 2px;
+  background: var(--ink-4);
+}
+.onb-dot.active { background: var(--virtual); }
+
+/* ------- agent strip ------- */
+.agent-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.agent-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 90px 60px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.agent-row:last-child { border-bottom: none; }
+.agent-glyph {
+  width: 24px; height: 24px;
+  border-radius: 4px;
+  background: var(--bg-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.agent-info { display: flex; flex-direction: column; }
+.agent-info .name { font-size: 13px; }
+.agent-info .desc {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+.weight-bar {
+  width: 100%; height: 4px;
+  background: var(--bg-3);
+  position: relative;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.weight-bar > div {
+  height: 100%;
+  background: var(--virtual);
+}
+.shell.live .weight-bar > div { background: var(--live); }
+.weight-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  text-align: right;
+}
+
+/* ------- reasoning tree ------- */
+.reasoning {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.reason-node {
+  position: relative;
+  padding: 8px 0 8px 24px;
+  border-left: 1px dashed var(--line-2);
+  margin-left: 8px;
+}
+.reason-node:last-child { border-left-color: transparent; }
+.reason-node::before {
+  content: '';
+  position: absolute;
+  left: -1px; top: 16px;
+  width: 18px; height: 1px;
+  background: var(--line-2);
+}
+.reason-node::after {
+  content: '';
+  position: absolute;
+  left: -4px; top: 13px;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--bg-1);
+  border: 1px solid var(--ink-4);
+}
+.reason-node.fired::after { background: var(--virtual); border-color: var(--virtual); }
+.reason-node.fired-dn::after { background: var(--down); border-color: var(--down); }
+
+.reason-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 14px;
+}
+.reason-label { font-size: 13px; color: var(--ink); }
+.reason-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.reason-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  margin-top: 2px;
+  letter-spacing: 0.04em;
+}
+
+/* ------- heatmap ------- */
+.heat {
+  display: grid;
+  gap: 2px;
+}
+.heat-cell {
+  aspect-ratio: 1.4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 10px;
+  border-radius: 2px;
+  color: var(--ink);
+}
+
+/* ------- form ------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.field-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.field-input {
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 120ms;
+}
+.field-input:focus { border-color: var(--virtual); }
+.shell.live .field-input:focus { border-color: var(--live); }
+
+.slider-wrap {
+  position: relative;
+}
+input[type=range] {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  background: var(--bg-3);
+  border-radius: 2px;
+  outline: none;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--virtual);
+  cursor: pointer;
+  border: 2px solid var(--bg);
+}
+.shell.live input[type=range]::-webkit-slider-thumb { background: var(--live); }
+
+/* ------- tweaks panel ------- */
+.tweaks-panel {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 280px;
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  z-index: 50;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+  animation: rise 220ms;
+}
+.tweaks-panel header {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.tweaks-panel h4 {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.tweaks-body { padding: 14px; }
+.tweak-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  gap: 10px;
+}
+.tweak-row label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.tweak-opts {
+  display: flex;
+  gap: 4px;
+}
+.tweak-opt {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  cursor: pointer;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.tweak-opt.on { background: var(--bg-3); color: var(--ink); border-color: var(--ink-4); }
+
+/* ------- misc ------- */
+.divider { height: 1px; background: var(--line); margin: 18px 0; }
+.muted { color: var(--ink-3); }
+.mono { font-family: var(--mono); }
+.serif { font-family: var(--serif); }
+.up { color: var(--up); }
+.dn { color: var(--down); }
+.warn { color: var(--warn); }
+.info { color: var(--info); }
+.tiny { font-size: 11px; }
+
+.spark {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.dialog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dialog-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+}
+.dialog-row:last-child { border-bottom: none; }
+.dialog-row .l { color: var(--ink-3); font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+.dialog-row .v { font-family: var(--mono); }
+
+/* ------- sector map ------- */
+.sector-map {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 3px;
+}
+.sector-cell {
+  aspect-ratio: 1;
+  position: relative;
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  cursor: pointer;
+  overflow: hidden;
+}
+.sector-cell .sym { color: var(--ink); font-weight: 500; }
+.sector-cell .pct { font-size: 9px; opacity: 0.85; }
+
+/* ------- backtest split ------- */
+.backtest-split {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 16px;
+}
+
+.config-block {
+  background: var(--bg-2);
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.config-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.toggle-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+.toggle-pill {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 6px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  text-align: center;
+  cursor: pointer;
+  color: var(--ink-3);
+}
+.toggle-pill.on { background: var(--bg-3); color: var(--ink); border-color: var(--ink-4); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" data-presets="react">
+// Mock data + sim engine for the Shoal trading bot prototype
+// "Swarm" approach inspired by multi-agent prediction systems:
+// each agent has a personality, votes on trades, and weights adapt over time.
+
+const SEED = 1337;
+function mulberry32(a) {
+  return function() {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = a;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+const AGENTS = [
+  { id: 'momo', name: 'Momentum Chaser',    glyph: '↗', desc: '5d / 20d MA crossover · trend follower',        weight: 0.09, accuracy: 0.62, color: '#7dd87d', family: 'Technical' },
+  { id: 'mean', name: 'Mean Reverter',      glyph: '~', desc: 'RSI extremes · Bollinger snap-back',           weight: 0.08, accuracy: 0.58, color: '#7ec0ee', family: 'Technical' },
+  { id: 'brkt', name: 'Breakout Scout',     glyph: '⟰', desc: 'Donchian / range-compression breaks',          weight: 0.06, accuracy: 0.56, color: '#a8d8b9', family: 'Technical' },
+  { id: 'vwap', name: 'VWAP Arbiter',       glyph: '⎯', desc: 'intraday VWAP pulls + anchored levels',        weight: 0.05, accuracy: 0.57, color: '#9dc4e8', family: 'Technical' },
+  { id: 'news', name: 'News Reactor',       glyph: '✦', desc: 'headline sentiment + topic clustering',        weight: 0.08, accuracy: 0.61, color: '#f0c674', family: 'Sentiment' },
+  { id: 'soc',  name: 'Social Sentiment',   glyph: '☉', desc: 'Reddit / X chatter velocity + polarity',       weight: 0.04, accuracy: 0.52, color: '#f4a87c', family: 'Sentiment' },
+  { id: 'earn', name: 'Earnings Drift',     glyph: '⌹', desc: 'post-earnings announcement drift (PEAD)',      weight: 0.07, accuracy: 0.64, color: '#ecc080', family: 'Fundamental' },
+  { id: 'fund', name: 'Quality Factor',     glyph: '◬', desc: 'ROE / FCF yield / accruals screener',          weight: 0.05, accuracy: 0.55, color: '#d4b070', family: 'Fundamental' },
+  { id: 'corr', name: 'Correlation Hunter', glyph: '∴', desc: 'sector co-movement + lead-lag pairs',          weight: 0.06, accuracy: 0.55, color: '#c594c5', family: 'Cross-asset' },
+  { id: 'pair', name: 'Pairs Cointegrator', glyph: '⇌', desc: 'stat-arb z-score on cointegrated baskets',     weight: 0.05, accuracy: 0.59, color: '#b888c4', family: 'Cross-asset' },
+  { id: 'vol',  name: 'Volatility Gauge',   glyph: '⌇', desc: 'VIX term structure · realized vs implied',     weight: 0.06, accuracy: 0.54, color: '#ff8a3d', family: 'Volatility' },
+  { id: 'skew', name: 'Options Skew',       glyph: '⎈', desc: '25Δ skew shifts + gamma positioning',          weight: 0.04, accuracy: 0.56, color: '#ffa060', family: 'Volatility' },
+  { id: 'flow', name: 'Order Flow Reader',  glyph: '◈', desc: 'L2 imbalance · dark-pool prints',              weight: 0.07, accuracy: 0.60, color: '#7dd8c0', family: 'Microstructure' },
+  { id: 'mm',   name: 'Market-Maker Shadow',glyph: '◇', desc: 'inventory-skew inference from spread tape',    weight: 0.04, accuracy: 0.58, color: '#95dccb', family: 'Microstructure' },
+  { id: 'macr', name: 'Macro Watcher',      glyph: '⊙', desc: 'rates / DXY / yields cross-asset',             weight: 0.06, accuracy: 0.51, color: '#b0a8e0', family: 'Macro' },
+  { id: 'patt', name: 'Pattern Memory',     glyph: '◊', desc: 'k-NN on historical regime analogs',            weight: 0.05, accuracy: 0.49, color: '#e08a8a', family: 'Pattern' },
+];
+
+const TICKERS = [
+  { sym: 'NVDA', name: 'NVIDIA', sector: 'Tech', last: 482.16, chg: 1.34, weight: 0.18 },
+  { sym: 'AAPL', name: 'Apple',  sector: 'Tech', last: 218.42, chg: 0.42, weight: 0.14 },
+  { sym: 'MSFT', name: 'Microsoft', sector: 'Tech', last: 419.07, chg: -0.18, weight: 0.12 },
+  { sym: 'TSLA', name: 'Tesla',  sector: 'Auto', last: 256.81, chg: 2.81, weight: 0.10 },
+  { sym: 'JPM',  name: 'JPMorgan', sector: 'Fin', last: 198.55, chg: 0.07, weight: 0.07 },
+  { sym: 'XOM',  name: 'Exxon',  sector: 'Energy', last: 109.27, chg: -1.04, weight: 0.06 },
+  { sym: 'COST', name: 'Costco', sector: 'Cons',   last: 884.50, chg: 0.91, weight: 0.05 },
+  { sym: 'AMD',  name: 'AMD',    sector: 'Tech',   last: 162.39, chg: 1.78, weight: 0.05 },
+  { sym: 'META', name: 'Meta',   sector: 'Tech',   last: 504.20, chg: -0.55, weight: 0.04 },
+  { sym: 'GOOG', name: 'Alphabet', sector: 'Tech', last: 174.92, chg: 0.18, weight: 0.04 },
+];
+
+const SECTORS = ['Tech', 'Fin', 'Energy', 'Health', 'Cons', 'Indus', 'Util', 'Mat'];
+const SECTOR_TICKERS = {
+  Tech: ['NVDA','AAPL','MSFT','META','GOOG','AMD','AVGO','ORCL'],
+  Fin:  ['JPM','BAC','GS','MS','C','WFC','BLK','SCHW'],
+  Energy: ['XOM','CVX','COP','SLB','EOG','PSX','OXY','MPC'],
+  Health: ['JNJ','UNH','LLY','PFE','MRK','ABBV','TMO','ABT'],
+  Cons: ['COST','WMT','PG','KO','PEP','MCD','NKE','SBUX'],
+  Indus: ['CAT','BA','HON','GE','UPS','RTX','LMT','DE'],
+  Util: ['NEE','SO','DUK','D','AEP','SRE','XEL','EXC'],
+  Mat: ['LIN','APD','SHW','FCX','ECL','NEM','DOW','PPG'],
+};
+
+// generate price history (252 trading days)
+function genSeries(seed, base, drift, vol) {
+  const rng = mulberry32(seed);
+  const out = [base];
+  for (let i = 1; i < 252; i++) {
+    const r = (rng() - 0.5) * vol + drift;
+    out.push(Math.max(1, out[i - 1] * (1 + r)));
+  }
+  return out;
+}
+
+const PRICE_HISTORY = {};
+TICKERS.forEach((t, i) => {
+  PRICE_HISTORY[t.sym] = genSeries(SEED + i * 13, t.last * 0.78, 0.0008, 0.022);
+});
+
+// Equity curve - virtual mode (180 days)
+function genEquity() {
+  const rng = mulberry32(SEED + 99);
+  const bot = [100000];
+  const bench = [100000];
+  for (let i = 1; i < 180; i++) {
+    bot.push(bot[i-1] * (1 + (rng() - 0.46) * 0.018));
+    bench.push(bench[i-1] * (1 + (rng() - 0.49) * 0.011));
+  }
+  return { bot, bench };
+}
+const EQUITY = genEquity();
+
+// agent weight history (90 days)
+function genWeights() {
+  const rng = mulberry32(SEED + 200);
+  const series = {};
+  AGENTS.forEach((a, i) => {
+    const arr = [a.weight];
+    for (let j = 1; j < 90; j++) {
+      arr.push(Math.max(0.02, Math.min(0.30, arr[j-1] + (rng() - 0.5) * 0.012)));
+    }
+    series[a.id] = arr;
+  });
+  // normalize each timestep
+  for (let j = 0; j < 90; j++) {
+    let sum = 0;
+    AGENTS.forEach(a => sum += series[a.id][j]);
+    AGENTS.forEach(a => series[a.id][j] /= sum);
+  }
+  return series;
+}
+const WEIGHT_HISTORY = genWeights();
+
+// confidence over time (90 days)
+function genConfidence() {
+  const rng = mulberry32(SEED + 300);
+  const arr = [0.52];
+  for (let i = 1; i < 90; i++) {
+    arr.push(Math.max(0.4, Math.min(0.85, arr[i-1] + (rng() - 0.48) * 0.025)));
+  }
+  return arr;
+}
+const CONFIDENCE_HISTORY = genConfidence();
+
+// trade log (most recent first)
+const REASONS = {
+  buy: [
+    'Momentum + flow alignment with low correlation drag',
+    'Mean-reversion signal from 2σ pullback, sentiment intact',
+    'Sector rotation flagged by correlation hunter',
+    'Volume breakout above 50d average, news tailwind',
+    'Pattern match: Q3-2024 setup, 71% historical hit rate',
+    'Macro risk-on regime + pos. flow imbalance',
+  ],
+  sell: [
+    'RSI exhaustion, volatility expanding, flow turning',
+    'News sentiment decay + relative weakness',
+    'Pattern: distribution top mirrors 2022 setup',
+    'Macro risk-off, DXY breakout pressuring',
+    'Correlation cluster breakdown',
+    'Momentum stall at resistance with negative divergence',
+  ],
+};
+
+function genTrades(n) {
+  const rng = mulberry32(SEED + 400);
+  const out = [];
+  let now = Date.now();
+  for (let i = 0; i < n; i++) {
+    const t = TICKERS[Math.floor(rng() * TICKERS.length)];
+    const side = rng() > 0.5 ? 'BUY' : 'SELL';
+    const qty = Math.floor(rng() * 80) + 5;
+    const price = t.last * (1 + (rng() - 0.5) * 0.04);
+    const conf = 0.55 + rng() * 0.35;
+    const pnl = (rng() - 0.42) * qty * price * 0.025;
+    const closed = i > 4;
+    const holdMs = (1000 * 60 * (20 + rng() * 60 * 8));
+    // derive exit price so exit = entry + pnl/qty (sign-adjusted for side)
+    const exit = closed ? price + (pnl / qty) * (side === 'BUY' ? 1 : -1) : null;
+    out.push({
+      id: 'TX-' + (10428 - i),
+      ts: now - i * (1000 * 60 * (3 + rng() * 12)),
+      exitTs: closed ? now - i * (1000 * 60 * (3 + rng() * 12)) + holdMs : null,
+      sym: t.sym,
+      side,
+      qty,
+      price,           // entry
+      exit,            // exit (null if open)
+      conf,
+      reason: REASONS[side === 'BUY' ? 'buy' : 'sell'][Math.floor(rng() * REASONS.buy.length)],
+      pnl: closed ? pnl : null,
+      pnlPct: closed ? pnl / (qty * price) : null,
+      status: closed ? (pnl > 0 ? 'WIN' : 'LOSS') : 'OPEN',
+      mode: 'VIRTUAL',
+      consensus: Math.floor(conf * 8),
+    });
+  }
+  return out;
+}
+const TRADES = genTrades(40);
+
+// heatmap data: regime × outcome
+const REGIMES = ['Risk-on', 'Risk-off', 'High vol', 'Low vol', 'Trending', 'Choppy'];
+const OUTCOMES = ['Strong win', 'Win', 'Flat', 'Loss', 'Strong loss'];
+function genHeat() {
+  const rng = mulberry32(SEED + 500);
+  return REGIMES.map(r => OUTCOMES.map(o => {
+    const v = rng();
+    return Math.floor(v * 30) + 2;
+  }));
+}
+const HEATMAP = genHeat();
+
+// predicted vs actual (last 60 days) — per-symbol
+function genPredVsActual(sym = 'NVDA') {
+  const seedMix = Array.from(sym).reduce((a,c) => a + c.charCodeAt(0) * 17, 0);
+  const rng = mulberry32(SEED + 600 + seedMix);
+  // base off latest real price if known
+  const tk = TICKERS.find(t => t.sym === sym);
+  const base = tk ? tk.last * 0.92 : 100 + (sym.charCodeAt(0) % 400);
+  const actual = [base];
+  const pred = [base];
+  for (let i = 1; i < 60; i++) {
+    actual.push(actual[i-1] * (1 + (rng() - 0.49) * 0.018));
+    pred.push(actual[i-1] * (1 + (rng() - 0.49) * 0.022));
+  }
+  // compute metrics
+  let mae = 0, dirCorrect = 0;
+  for (let i = 1; i < actual.length; i++) {
+    mae += Math.abs(pred[i] - actual[i]) / actual[i];
+    const actualDir = actual[i] > actual[i-1];
+    const predDir = pred[i] > actual[i-1];
+    if (actualDir === predDir) dirCorrect++;
+  }
+  return { actual, pred, mae: mae/(actual.length-1), dirAcc: dirCorrect/(actual.length-1) };
+}
+const PRED_ACTUAL = genPredVsActual('NVDA');
+window.genPredVsActual = genPredVsActual;
+
+// param tuning timeline events
+const PARAM_EVENTS = [
+  { day: 6, label: 'Risk per trade ↓ 1.4% → 1.1%', kind: 'risk' },
+  { day: 13, label: 'Momentum lookback 5d → 8d', kind: 'agent' },
+  { day: 21, label: 'Mean-revert weight ↓ −18%', kind: 'agent' },
+  { day: 28, label: 'News-reactor weight ↑ +24%', kind: 'agent' },
+  { day: 35, label: 'Stop-loss tightened 2.0σ → 1.6σ', kind: 'risk' },
+  { day: 44, label: 'Pattern Memory retrained on 2025 H1', kind: 'agent' },
+  { day: 52, label: 'Position cap 8% → 6% per ticker', kind: 'risk' },
+  { day: 61, label: 'Correlation hunter weight ↑ +12%', kind: 'agent' },
+  { day: 71, label: 'Volatility threshold widened', kind: 'risk' },
+  { day: 80, label: 'Flow reader added L2 depth feed', kind: 'agent' },
+];
+
+function fmtMoney(n, dp = 2) {
+  if (n === null || n === undefined) return '—';
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  return sign + '$' + abs.toFixed(dp).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+function fmtPct(n, dp = 2) {
+  if (n === null || n === undefined) return '—';
+  return (n >= 0 ? '+' : '') + (n * 100).toFixed(dp) + '%';
+}
+function fmtNum(n, dp = 2) {
+  if (n === null || n === undefined) return '—';
+  return n.toFixed(dp).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+function fmtTime(ts) {
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+Object.assign(window, {
+  AGENTS, TICKERS, SECTORS, SECTOR_TICKERS, PRICE_HISTORY,
+  EQUITY, WEIGHT_HISTORY, CONFIDENCE_HISTORY, TRADES, HEATMAP, PRED_ACTUAL,
+  REGIMES, OUTCOMES, PARAM_EVENTS,
+  fmtMoney, fmtPct, fmtNum, fmtTime, mulberry32,
+});
+
+</script>
+<script type="text/babel" data-presets="react">
+// Shared primitives: nav icons, mode chrome, ticker strip, mini sparklines
+
+const Icon = ({ name, size = 14 }) => {
+  const s = { width: size, height: size, fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' };
+  switch (name) {
+    case 'dash': return <svg viewBox="0 0 16 16" {...s}><rect x="2" y="2" width="5" height="6"/><rect x="9" y="2" width="5" height="4"/><rect x="2" y="10" width="5" height="4"/><rect x="9" y="8" width="5" height="6"/></svg>;
+    case 'feed': return <svg viewBox="0 0 16 16" {...s}><path d="M2 4 L7 4 M2 8 L11 8 M2 12 L9 12"/><circle cx="13" cy="4" r="1.2" fill="currentColor"/></svg>;
+    case 'brain': return <svg viewBox="0 0 16 16" {...s}><path d="M5 3 Q3 3 3 5 Q1 6 2 8 Q1 10 3 11 Q3 13 5 13 M11 3 Q13 3 13 5 Q15 6 14 8 Q15 10 13 11 Q13 13 11 13"/><path d="M8 3 L8 13"/></svg>;
+    case 'history': return <svg viewBox="0 0 16 16" {...s}><path d="M3 8 A5 5 0 1 1 8 13"/><path d="M3 8 L1.5 6.5 M3 8 L4.5 6.5"/><path d="M8 5 L8 8 L10.5 9.5"/></svg>;
+    case 'trade': return <svg viewBox="0 0 16 16" {...s}><path d="M2 12 L6 7 L9 9 L14 4"/><path d="M14 4 L14 8 M14 4 L10 4"/></svg>;
+    case 'back': return <svg viewBox="0 0 16 16" {...s}><circle cx="8" cy="8" r="6"/><path d="M8 4 L8 8 L11 10"/></svg>;
+    case 'market': return <svg viewBox="0 0 16 16" {...s}><circle cx="8" cy="8" r="6"/><path d="M2 8 L14 8 M8 2 Q11 5 11 8 Q11 11 8 14 M8 2 Q5 5 5 8 Q5 11 8 14"/></svg>;
+    case 'gear': return <svg viewBox="0 0 16 16" {...s}><circle cx="8" cy="8" r="2.5"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/></svg>;
+    case 'play': return <svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><path d="M4 3 L4 13 L13 8 Z"/></svg>;
+    case 'pause': return <svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><rect x="4" y="3" width="3" height="10"/><rect x="9" y="3" width="3" height="10"/></svg>;
+    case 'arr': return <svg viewBox="0 0 16 16" {...s}><path d="M3 8 L13 8 M9 4 L13 8 L9 12"/></svg>;
+    case 'plus': return <svg viewBox="0 0 16 16" {...s}><path d="M8 3 L8 13 M3 8 L13 8"/></svg>;
+    default: return null;
+  }
+};
+
+const Sparkline = ({ data, width = 80, height = 22, color = 'currentColor', fill = false }) => {
+  if (!data || data.length < 2) return null;
+  const min = Math.min(...data), max = Math.max(...data);
+  const range = max - min || 1;
+  const pts = data.map((v, i) => `${(i / (data.length - 1)) * width},${height - ((v - min) / range) * (height - 2) - 1}`);
+  return (
+    <svg width={width} height={height} className="spark">
+      {fill && <path d={`M0,${height} L${pts.join(' L')} L${width},${height} Z`} fill={color} opacity="0.15" />}
+      <polyline points={pts.join(' ')} fill="none" stroke={color} strokeWidth="1.2"/>
+    </svg>
+  );
+};
+
+const ModeBadge = ({ mode }) => (
+  <span className={'pill ' + (mode === 'LIVE' ? 'live' : 'virtual')}>
+    {mode === 'LIVE' ? '◉ LIVE' : '◐ VIRTUAL'}
+  </span>
+);
+
+const TickerStrip = ({ tickers, tick }) => {
+  // Slight live-tick wobble keyed off the global tick
+  return (
+    <div className="tick-strip">
+      {tickers.slice(0, 6).map(t => {
+        const wobble = Math.sin((tick + t.sym.charCodeAt(0)) * 0.4) * 0.15;
+        const c = t.chg + wobble;
+        return (
+          <div className="tick" key={t.sym}>
+            <span className="tick-sym">{t.sym}</span>
+            <span>{fmtNum(t.last, 2)}</span>
+            <span className={c >= 0 ? 'tick-up' : 'tick-dn'}>{c >= 0 ? '+' : ''}{c.toFixed(2)}%</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+Object.assign(window, { Icon, Sparkline, ModeBadge, TickerStrip });
+
+</script>
+<script type="text/babel" data-presets="react">
+// Charts — all hand-rolled SVG. Equity, stacked area weights, scatter pred-vs-actual,
+// price chart, swarm visualization, heatmap, donut, etc.
+
+const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--ink-3)'], labels = [], yFmt = v => v.toFixed(0), fillFirst = true }) => {
+  const W = 700, H = height, pad = { l: 50, r: 12, t: 14, b: 22 };
+  const innerW = W - pad.l - pad.r, innerH = H - pad.t - pad.b;
+  const all = series.flat();
+  const min = Math.min(...all) * 0.985;
+  const max = Math.max(...all) * 1.005;
+  const range = max - min || 1;
+  const len = series[0].length;
+  const x = i => pad.l + (i / (len - 1)) * innerW;
+  const y = v => pad.t + innerH - ((v - min) / range) * innerH;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="chart" preserveAspectRatio="none" style={{height: H}}>
+      {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
+        <g key={i}>
+          <line x1={pad.l} x2={W - pad.r} y1={pad.t + innerH * t} y2={pad.t + innerH * t} className="gridline"/>
+          <text x={pad.l - 6} y={pad.t + innerH * t + 3} textAnchor="end" className="axis-text">{yFmt(max - range * t)}</text>
+        </g>
+      ))}
+      {series.map((s, idx) => {
+        const pts = s.map((v, i) => `${x(i)},${y(v)}`).join(' L');
+        return (
+          <g key={idx}>
+            {idx === 0 && fillFirst && (
+              <path d={`M${x(0)},${y(min)} L${pts} L${x(len-1)},${y(min)} Z`} fill={colors[idx]} opacity="0.08"/>
+            )}
+            <path d={`M${pts}`} fill="none" stroke={colors[idx]} strokeWidth={idx === 0 ? 1.6 : 1.2} strokeDasharray={idx > 0 ? '3 3' : ''}/>
+          </g>
+        );
+      })}
+      {[0, 0.5, 1].map((t, i) => (
+        <text key={i} x={x((len - 1) * t)} y={H - 6} textAnchor={i === 0 ? 'start' : i === 1 ? 'middle' : 'end'} className="axis-text">{Math.floor((len - 1) * t)}d</text>
+      ))}
+    </svg>
+  );
+};
+
+const StackedArea = ({ series, keys, colors, height = 240 }) => {
+  const W = 700, H = height, pad = { l: 40, r: 12, t: 12, b: 22 };
+  const innerW = W - pad.l - pad.r, innerH = H - pad.t - pad.b;
+  const len = series[keys[0]].length;
+  const x = i => pad.l + (i / (len - 1)) * innerW;
+  // build stacked
+  const stacks = [];
+  for (let i = 0; i < len; i++) {
+    let acc = 0;
+    const col = {};
+    keys.forEach(k => { col[k] = [acc, acc + series[k][i]]; acc += series[k][i]; });
+    stacks.push(col);
+  }
+  const y = v => pad.t + innerH - v * innerH;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="chart" preserveAspectRatio="none" style={{height: H}}>
+      {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
+        <line key={i} x1={pad.l} x2={W - pad.r} y1={pad.t + innerH * t} y2={pad.t + innerH * t} className="gridline"/>
+      ))}
+      {keys.map((k, idx) => {
+        const top = stacks.map((s, i) => `${x(i)},${y(s[k][1])}`).join(' L');
+        const bot = stacks.map((s, i) => `${x(i)},${y(s[k][0])}`).reverse().join(' L');
+        return <path key={k} d={`M${top} L${bot} Z`} fill={colors[idx]} opacity="0.85"/>;
+      })}
+      {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
+        <text key={i} x={pad.l - 6} y={pad.t + innerH * t + 3} textAnchor="end" className="axis-text">{Math.round((1-t)*100)}%</text>
+      ))}
+      {[0, 0.5, 1].map((t, i) => (
+        <text key={i} x={x((len - 1) * t)} y={H - 6} textAnchor={i === 0 ? 'start' : i === 1 ? 'middle' : 'end'} className="axis-text">−{Math.floor((len - 1) * (1 - t))}d</text>
+      ))}
+    </svg>
+  );
+};
+
+const PredVsActual = ({ pred, actual, height = 220 }) => {
+  const W = 700, H = height, pad = { l: 46, r: 12, t: 12, b: 22 };
+  const innerW = W - pad.l - pad.r, innerH = H - pad.t - pad.b;
+  const all = [...pred, ...actual];
+  const min = Math.min(...all) * 0.99, max = Math.max(...all) * 1.01;
+  const range = max - min;
+  const x = i => pad.l + (i / (pred.length - 1)) * innerW;
+  const y = v => pad.t + innerH - ((v - min) / range) * innerH;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="chart" preserveAspectRatio="none" style={{height: H}}>
+      {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
+        <g key={i}>
+          <line x1={pad.l} x2={W-pad.r} y1={pad.t+innerH*t} y2={pad.t+innerH*t} className="gridline"/>
+          <text x={pad.l-6} y={pad.t+innerH*t+3} textAnchor="end" className="axis-text">${(max-range*t).toFixed(0)}</text>
+        </g>
+      ))}
+      {/* error bands */}
+      {pred.map((p, i) => i % 4 === 0 ? (
+        <line key={i} x1={x(i)} x2={x(i)} y1={y(p)} y2={y(actual[i])} stroke="var(--ink-4)" strokeWidth="0.5" opacity="0.5"/>
+      ) : null)}
+      <path d={`M${actual.map((v,i)=>`${x(i)},${y(v)}`).join(' L')}`} fill="none" stroke="var(--ink)" strokeWidth="1.6"/>
+      <path d={`M${pred.map((v,i)=>`${x(i)},${y(v)}`).join(' L')}`} fill="none" stroke="var(--virtual)" strokeWidth="1.4" strokeDasharray="4 3"/>
+    </svg>
+  );
+};
+
+const SwarmViz = ({ agents, decision = 'BUY', confidence = 0.71, tick = 0 }) => {
+  const cx = 50, cy = 50;
+  // Deterministic per-agent vote driven by decision + confidence.
+  // Target majority agents vote with the decision; remainder split.
+  const votes = React.useMemo(() => {
+    const majFrac = 0.4 + confidence * 0.5; // 0.4..0.9
+    return agents.map((a, i) => {
+      // hash-ish: sin(i * large prime)
+      const r = (Math.sin(i * 12.9898 + decision.charCodeAt(0)) + 1) / 2;
+      if (r < majFrac) return decision === 'HOLD' ? 'hold' : decision.toLowerCase();
+      if (r < majFrac + (1 - majFrac) * 0.55) return decision === 'BUY' ? 'sell' : decision === 'SELL' ? 'buy' : 'buy';
+      return 'hold';
+    });
+  }, [agents, decision, confidence]);
+  const tally = { buy: 0, sell: 0, hold: 0 };
+  votes.forEach(v => tally[v]++);
+  return (
+    <div className="swarm">
+      <svg style={{position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none'}} viewBox="0 0 100 100" preserveAspectRatio="none">
+        {agents.map((a, i) => {
+          const angle = (i / agents.length) * Math.PI * 2 - Math.PI/2;
+          const r = 36 + Math.sin(tick * 0.3 + i) * 1.5;
+          const ax = cx + Math.cos(angle) * r;
+          const ay = cy + Math.sin(angle) * r;
+          const vote = votes[i];
+          const color = vote === 'buy' ? '#7dd87d' : vote === 'sell' ? '#ff6b6b' : '#4a4740';
+          return (
+            <line key={a.id} x1={cx} y1={cy} x2={ax} y2={ay}
+              stroke={color} strokeWidth={a.weight * 2} opacity={Math.min(1, a.weight * 6)}/>
+          );
+        })}
+        <circle cx={cx} cy={cy} r="11" fill="none" stroke="var(--virtual)" strokeWidth="0.4" opacity="0.3"/>
+        <circle cx={cx} cy={cy} r="14" fill="none" stroke="var(--virtual)" strokeWidth="0.3" opacity="0.2"/>
+      </svg>
+      {agents.map((a, i) => {
+        const angle = (i / agents.length) * Math.PI * 2 - Math.PI/2;
+        const r = 36 + Math.sin(tick * 0.3 + i) * 1.5;
+        const ax = 50 + Math.cos(angle) * r;
+        const ay = 50 + Math.sin(angle) * r;
+        const vote = votes[i];
+        return (
+          <div key={a.id} className="agent-node" style={{left: `${ax}%`, top: `${ay}%`}} title={`${a.name} — ${vote.toUpperCase()}`}>
+            <div className={`agent-disc ${vote}`}>{a.glyph}</div>
+            <div className="agent-name">{a.id}</div>
+          </div>
+        );
+      })}
+      <div className="swarm-center">
+        <div className={'pill solid ' + (decision === 'BUY' ? 'buy' : decision === 'SELL' ? 'sell' : 'hold')}><span>{decision}</span></div>
+        <div className="v">{Math.floor(confidence * 100)}<span style={{fontSize:14}}>%</span></div>
+        <div className="l">consensus</div>
+      </div>
+      {/* expose tally via data attr so parents can read */}
+      <div data-tally={`${tally.buy}·${tally.sell}·${tally.hold}`} style={{display:'none'}}/>
+    </div>
+  );
+};
+
+// Helper: compute swarm tally consistent with SwarmViz
+function swarmTally(agents, decision, confidence) {
+  const majFrac = 0.4 + confidence * 0.5;
+  const tally = { buy: 0, sell: 0, hold: 0 };
+  agents.forEach((a, i) => {
+    const r = (Math.sin(i * 12.9898 + decision.charCodeAt(0)) + 1) / 2;
+    let v;
+    if (r < majFrac) v = decision === 'HOLD' ? 'hold' : decision.toLowerCase();
+    else if (r < majFrac + (1 - majFrac) * 0.55) v = decision === 'BUY' ? 'sell' : decision === 'SELL' ? 'buy' : 'buy';
+    else v = 'hold';
+    tally[v]++;
+  });
+  return tally;
+}
+
+const Heatmap = ({ data, rows, cols }) => {
+  const max = Math.max(...data.flat());
+  return (
+    <div>
+      <div className="heat" style={{gridTemplateColumns: `90px repeat(${cols.length}, 1fr)`}}>
+        <div></div>
+        {cols.map(c => <div key={c} className="axis-text" style={{padding:'4px 0', textAlign:'center', fontFamily:'var(--mono)', fontSize:9, color:'var(--ink-3)', letterSpacing:'0.08em'}}>{c.toUpperCase()}</div>)}
+        {rows.map((r, ri) => (
+          <React.Fragment key={r}>
+            <div style={{fontFamily:'var(--mono)',fontSize:10,color:'var(--ink-3)',letterSpacing:'0.08em',display:'flex',alignItems:'center',padding:'0 8px'}}>{r.toUpperCase()}</div>
+            {cols.map((c, ci) => {
+              const v = data[ri][ci];
+              const t = v / max;
+              // diverge: left = wins (green), right = losses (red)
+              const isWin = ci < cols.length / 2;
+              const bg = isWin
+                ? `rgba(125, 216, 125, ${0.1 + t * 0.5})`
+                : `rgba(255, 107, 107, ${0.1 + t * 0.5})`;
+              return <div key={ci} className="heat-cell" style={{background: bg}}>{v}</div>;
+            })}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const Donut = ({ value, max = 1, label = '', size = 120, color = 'var(--virtual)' }) => {
+  const r = size / 2 - 8;
+  const c = 2 * Math.PI * r;
+  const off = c * (1 - value / max);
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--bg-3)" strokeWidth="6"/>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth="6"
+        strokeDasharray={c} strokeDashoffset={off} strokeLinecap="round"
+        transform={`rotate(-90 ${size/2} ${size/2})`}/>
+      <text x={size/2} y={size/2 + 2} textAnchor="middle" fontFamily="var(--serif)" fontSize="22" fill="var(--ink)">{Math.round(value/max*100)}%</text>
+      <text x={size/2} y={size/2 + 18} textAnchor="middle" fontFamily="var(--mono)" fontSize="9" fill="var(--ink-3)" letterSpacing="0.14em">{label}</text>
+    </svg>
+  );
+};
+
+const PriceChart = ({ data, height = 240, predicted = null }) => {
+  const W = 700, H = height, pad = { l: 50, r: 12, t: 12, b: 22 };
+  const innerW = W - pad.l - pad.r, innerH = H - pad.t - pad.b;
+  const min = Math.min(...data) * 0.985, max = Math.max(...data) * 1.005;
+  const range = max - min;
+  const x = i => pad.l + (i / (data.length - 1)) * innerW;
+  const y = v => pad.t + innerH - ((v - min) / range) * innerH;
+  const pts = data.map((v, i) => `${x(i)},${y(v)}`).join(' L');
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="chart" preserveAspectRatio="none" style={{height: H}}>
+      <defs>
+        <linearGradient id="pf" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="var(--virtual)" stopOpacity="0.18"/>
+          <stop offset="100%" stopColor="var(--virtual)" stopOpacity="0"/>
+        </linearGradient>
+      </defs>
+      {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
+        <g key={i}>
+          <line x1={pad.l} x2={W-pad.r} y1={pad.t+innerH*t} y2={pad.t+innerH*t} className="gridline"/>
+          <text x={pad.l-6} y={pad.t+innerH*t+3} textAnchor="end" className="axis-text">${(max-range*t).toFixed(1)}</text>
+        </g>
+      ))}
+      <path d={`M${x(0)},${y(min)} L${pts} L${x(data.length-1)},${y(min)} Z`} fill="url(#pf)"/>
+      <path d={`M${pts}`} fill="none" stroke="var(--ink)" strokeWidth="1.4"/>
+      {predicted && (
+        <g>
+          <path d={`M${predicted.map((v,i)=>`${x(data.length - 1 + i)},${y(v)}`).join(' L')}`} fill="none" stroke="var(--virtual)" strokeWidth="1.4" strokeDasharray="3 3"/>
+          {/* shaded forecast band */}
+          <path d={`M${predicted.map((v,i)=>`${x(data.length - 1 + i)},${y(v * 1.015)}`).join(' L')} L${predicted.map((v,i)=>`${x(data.length - 1 + i)},${y(v * 0.985)}`).reverse().join(' L')} Z`} fill="var(--virtual)" opacity="0.08"/>
+        </g>
+      )}
+    </svg>
+  );
+};
+
+Object.assign(window, { LineChart, StackedArea, PredVsActual, SwarmViz, Heatmap, Donut, PriceChart, swarmTally });
+
+</script>
+<script type="text/babel" data-presets="react">
+// Dashboard screen — portfolio overview, swarm, KPIs, recent trades
+
+const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
+  const activeSymbol = ctx?.activeSymbol || 'NVDA';
+  const direction = ctx?.direction || 'BOTH';
+  const equityNow = ctx?.balance ?? EQUITY.bot[EQUITY.bot.length - 1];
+  const equityStart = EQUITY.bot[0];
+  const totalRet = (equityNow - equityStart) / equityStart;
+  const benchRet = (EQUITY.bench[EQUITY.bench.length-1] - EQUITY.bench[0]) / EQUITY.bench[0];
+  const visibleTrades = ctx?.trades || [];
+  const wins = visibleTrades.filter(t => t.status === 'WIN').length;
+  const losses = visibleTrades.filter(t => t.status === 'LOSS').length;
+
+  // flash equity when it changes
+  const [flashKey, setFlashKey] = React.useState(0);
+  const prevBalRef = React.useRef(equityNow);
+  React.useEffect(() => {
+    if (prevBalRef.current !== equityNow) { setFlashKey(k => k+1); prevBalRef.current = equityNow; }
+  }, [equityNow]);
+  const winRate = wins / (wins + losses);
+  const openP = visibleTrades.filter(t => t.status === 'OPEN');
+
+  return (
+    <div className="page" data-screen-label="01 Dashboard">
+      <div className="page-head" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
+        <div>
+          <div className="page-eyebrow">Dashboard · {mode === 'LIVE' ? 'Live trading' : 'Paper / virtual'}</div>
+          <h1 className="page-title">A swarm of {AGENTS.length} agents <em>currently disagreeing about the next 12 hours.</em></h1>
+        </div>
+        <div className="mono tiny muted">SHOAL ENGINE v0.4.2 · Last sync 3s ago</div>
+      </div>
+
+      <div className="kpi-grid" style={{marginBottom:16}}>
+        <div className="kpi">
+          <div className="kpi-label" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <span>Equity {mode === 'LIVE' ? '· Live' : '· Virtual'}</span>
+            <span style={{fontSize:9,letterSpacing:'0.12em'}}>
+              <span className={'tick-dot '+(direction==='SHORT'?'short fast':direction==='LONG'?'fast':'')}></span>
+              {direction === 'BOTH' ? 'IDLE' : direction + ' BIAS'}
+            </span>
+          </div>
+          <div key={flashKey} className="kpi-value mono equity-live">{fmtMoney(equityNow, 0)}</div>
+          <div className={'kpi-delta ' + (totalRet >= 0 ? 'up' : 'dn')}>{fmtPct(totalRet)} · {Math.round(EQUITY.bot.length)}d</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">vs S&P 500</div>
+          <div className="kpi-value mono">{fmtPct(totalRet - benchRet)}</div>
+          <div className="kpi-delta muted">alpha · {fmtPct(benchRet)} bench</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Win rate · 30d</div>
+          <div className="kpi-value mono">{(winRate * 100).toFixed(1)}%</div>
+          <div className="kpi-delta up">{wins}W / {losses}L</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Sharpe · trailing</div>
+          <div className="kpi-value mono">1.83</div>
+          <div className="kpi-delta up">+0.21 vs last cycle</div>
+        </div>
+      </div>
+
+      <div className="grid-2-1" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <div className="card-title">Equity curve</div>
+              <div className="mono tiny muted" style={{marginTop:4}}>Bot vs S&P 500 · 180 trading days</div>
+            </div>
+            <div className="legend">
+              <span><span className="legend-dot" style={{background:'var(--virtual)'}}></span>Bot equity</span>
+              <span><span className="legend-dot" style={{background:'var(--ink-3)'}}></span>S&P 500</span>
+            </div>
+          </div>
+          <LineChart series={[EQUITY.bot, EQUITY.bench]} colors={['var(--virtual)','var(--ink-3)']} yFmt={v => '$' + Math.round(v/1000) + 'k'}/>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Swarm consensus · live</div>
+            <div className="card-meta">{activeSymbol} · 14:32:08</div>
+          </div>
+          <SwarmViz agents={AGENTS} decision={direction === 'SHORT' ? 'SELL' : 'BUY'} confidence={0.71} tick={tick}/>
+          <div style={{marginTop:12,display:'flex',justifyContent:'space-between',fontFamily:'var(--mono)',fontSize:11}}>
+            {(() => { const dec = direction === 'SHORT' ? 'SELL' : 'BUY'; const t = swarmTally(AGENTS, dec, 0.71); return (
+              <span className="muted">{t.buy} BUY · {t.sell} SELL · {t.hold} HOLD</span>
+            ); })()}
+            <span className="up">conviction rising →</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid-2" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Open positions</div>
+            <div className="card-meta">{openP.length} live · {fmtMoney(openP.reduce((a,t)=>a+t.qty*t.price,0), 0)}</div>
+          </div>
+          <table className="tbl">
+            <thead><tr><th>Sym</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th style={{textAlign:'right'}}>Unreal P&L</th></tr></thead>
+            <tbody>
+              {openP.slice(0,5).map(t => {
+                const mark = t.price * (1 + (Math.sin(tick*0.3 + t.sym.charCodeAt(0)) * 0.008));
+                const upnl = (mark - t.price) * t.qty * (t.side === 'BUY' ? 1 : -1);
+                return (
+                  <tr key={t.id} onClick={()=>onTradeClick(t)}>
+                    <td className="mono">{t.sym}</td>
+                    <td><span className={'pill ' + (t.side==='BUY'?'buy':'sell')}>{t.side}</span></td>
+                    <td className="mono">{t.qty}</td>
+                    <td className="mono">{fmtNum(t.price)}</td>
+                    <td className="mono">{fmtNum(mark)}</td>
+                    <td className={'mono ' + (upnl>=0?'up':'dn')} style={{textAlign:'right'}}>{fmtMoney(upnl)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Confidence over time</div>
+            <div className="card-meta">90-day rolling</div>
+          </div>
+          <LineChart series={[CONFIDENCE_HISTORY]} colors={['var(--virtual)']} yFmt={v=>(v*100).toFixed(0)+'%'}/>
+          <div style={{marginTop:8}} className="mono tiny muted">Calibration drifts as the market regime shifts — 0.71 today, range 0.48–0.83.</div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div className="card-title">Latest decisions</div>
+          <div className="card-meta">most recent first</div>
+        </div>
+        <div className="feed">
+          {visibleTrades.length === 0 && (
+            <div style={{padding:'30px 16px',textAlign:'center',color:'var(--ink-3)',fontSize:13}}>
+              <div className="mono tiny" style={{letterSpacing:'0.12em',marginBottom:6,color:'var(--ink-3)'}}>FRESH ACCOUNT</div>
+              No trades yet. The swarm will start executing once the next signal clears your confidence threshold.
+            </div>
+          )}
+          {visibleTrades.slice(0, 6).map(t => (
+            <div key={t.id} className="feed-row" onClick={()=>onTradeClick(t)}>
+              <div className="feed-time">{fmtTime(t.ts)}</div>
+              <div className="feed-sym">{t.sym}</div>
+              <div><span className={'pill ' + (t.side==='BUY'?'buy':'sell')}>{t.side}</span></div>
+              <div className="feed-reason">{t.reason}</div>
+              <div className="mono tiny muted">conf {(t.conf*100).toFixed(0)}%</div>
+              <div className={'feed-pnl ' + (t.pnl > 0 ? 'up' : t.pnl < 0 ? 'dn' : 'muted')}>{t.pnl !== null ? fmtMoney(t.pnl) : '— open —'}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+window.ScreenDashboard = ScreenDashboard;
+
+</script>
+<script type="text/babel" data-presets="react">
+// Live activity feed screen
+
+const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
+  const feed = ctx?.trades || [];
+  const [filter, setFilter] = React.useState('ALL');
+
+  // when the user resets the account, drop all old trades from the feed
+  React.useEffect(() => {
+    if (!running) return;
+    return () => {};
+  }, [running, mode]);
+
+  const filtered = filter === 'ALL' ? feed : feed.filter(t => t.side === filter || t.status === filter);
+
+  return (
+    <div className="page" data-screen-label="02 Activity">
+      <div className="page-head">
+        <div className="page-eyebrow">Live activity · {mode === 'LIVE' ? 'real orders' : 'paper orders'}</div>
+        <h1 className="page-title">Every decision, <em>annotated.</em></h1>
+        <p className="page-sub">Each row is a vote that crossed the swarm's confidence threshold. Click any row to see the agents that argued for it, what they each weighed, and how the trade is performing.</p>
+      </div>
+
+      <div className="grid-3" style={{marginBottom:16}}>
+        <div className="card" style={{padding:14}}>
+          <div className="kpi-label">Decisions today</div>
+          <div className="kpi-value mono" style={{fontSize:24}}>{feed.filter(t => Date.now() - t.ts < 86400000).length}</div>
+        </div>
+        <div className="card" style={{padding:14}}>
+          <div className="kpi-label">Avg consensus</div>
+          <div className="kpi-value mono" style={{fontSize:24}}>{(feed.reduce((a,t)=>a+t.conf,0)/feed.length*100).toFixed(0)}%</div>
+        </div>
+        <div className="card" style={{padding:14}}>
+          <div className="kpi-label">Threshold</div>
+          <div className="kpi-value mono" style={{fontSize:24}}>≥ 55%</div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <div className="card-title">Order tape</div>
+            {running && <span className="bot-status" style={{fontSize:9,padding:'3px 8px'}}><span className="led"></span>STREAMING</span>}
+          </div>
+          <div style={{display:'flex',gap:6}}>
+            {['ALL','BUY','SELL','OPEN','WIN','LOSS'].map(f => (
+              <button key={f} className={'tweak-opt ' + (filter===f?'on':'')} onClick={()=>setFilter(f)}>{f}</button>
+            ))}
+          </div>
+        </div>
+        <div className="feed" style={{maxHeight:560,overflowY:'auto'}}>
+          {filtered.map(t => (
+            <div key={t.id} className={'feed-row ' + (t.isNew?'new':'')} onClick={()=>onTradeClick(t)}>
+              <div className="feed-time">{fmtTime(t.ts)}</div>
+              <div className="feed-sym">{t.sym}</div>
+              <div><span className={'pill ' + (t.side==='BUY'?'buy':'sell')}>{t.side}</span></div>
+              <div className="feed-reason">{t.reason}</div>
+              <div className="mono tiny muted">{t.qty}@{fmtNum(t.price)}</div>
+              <div className={'feed-pnl ' + (t.pnl > 0 ? 'up' : t.pnl < 0 ? 'dn' : 'muted')}>{t.pnl !== null ? fmtMoney(t.pnl) : '— open —'}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+window.ScreenActivity = ScreenActivity;
+
+</script>
+<script type="text/babel" data-presets="react">
+// Trade history — complete closed/open record with entry, exit, P&L
+const ScreenHistory = ({ mode, tick, onTradeClick, ctx }) => {
+  const [sort, setSort] = React.useState('time');        // time | pnl | pnlPct | sym
+  const [dir, setDir] = React.useState(-1);              // 1 asc, -1 desc
+  const [statusFilter, setStatusFilter] = React.useState('ALL');  // ALL | WIN | LOSS | OPEN
+  const [sideFilter, setSideFilter] = React.useState('ALL');      // ALL | BUY | SELL
+  const [symFilter, setSymFilter] = React.useState('ALL');        // ALL | {sym}
+  const activeSymbol = ctx?.activeSymbol;
+  const baseTrades = ctx?.trades || [];
+
+  const symbols = React.useMemo(() => Array.from(new Set(baseTrades.map(t => t.sym))).sort(), [baseTrades]);
+
+  // live mark on open positions (so open rows animate)
+  const markedTrades = React.useMemo(() => baseTrades.map(t => {
+    if (t.status !== 'OPEN') return t;
+    const mark = t.price * (1 + Math.sin(tick * 0.3 + t.sym.charCodeAt(0)) * 0.008);
+    const upnl = (mark - t.price) * t.qty * (t.side === 'BUY' ? 1 : -1);
+    return { ...t, _mark: mark, _upnl: upnl, _upnlPct: upnl / (t.qty * t.price) };
+  }), [tick]);
+
+  let filtered = markedTrades.filter(t =>
+    (statusFilter === 'ALL' || t.status === statusFilter) &&
+    (sideFilter === 'ALL' || t.side === sideFilter) &&
+    (symFilter === 'ALL' || t.sym === symFilter)
+  );
+
+  filtered = filtered.slice().sort((a, b) => {
+    let av, bv;
+    if (sort === 'time') { av = a.ts; bv = b.ts; }
+    else if (sort === 'pnl') { av = a.pnl ?? a._upnl ?? 0; bv = b.pnl ?? b._upnl ?? 0; }
+    else if (sort === 'pnlPct') { av = a.pnlPct ?? a._upnlPct ?? 0; bv = b.pnlPct ?? b._upnlPct ?? 0; }
+    else if (sort === 'sym') { av = a.sym; bv = b.sym; return dir * av.localeCompare(bv); }
+    return dir * (av - bv);
+  });
+
+  const closed = baseTrades.filter(t => t.status !== 'OPEN');
+  const wins = closed.filter(t => t.pnl > 0);
+  const losses = closed.filter(t => t.pnl <= 0);
+  const totalRealized = closed.reduce((a, t) => a + (t.pnl || 0), 0);
+  const totalWinAmt = wins.reduce((a, t) => a + t.pnl, 0);
+  const totalLossAmt = losses.reduce((a, t) => a + t.pnl, 0);
+  const avgWin = wins.length ? totalWinAmt / wins.length : 0;
+  const avgLoss = losses.length ? totalLossAmt / losses.length : 0;
+  const profitFactor = losses.length ? totalWinAmt / Math.abs(totalLossAmt) : Infinity;
+  const winRate = closed.length ? wins.length / closed.length : 0;
+  const best = closed.reduce((a, t) => (t.pnl > (a?.pnl || -Infinity) ? t : a), null);
+  const worst = closed.reduce((a, t) => (t.pnl < (a?.pnl || Infinity) ? t : a), null);
+
+  const toggleSort = (k) => {
+    if (sort === k) setDir(d => d * -1);
+    else { setSort(k); setDir(k === 'sym' ? 1 : -1); }
+  };
+  const sortArrow = (k) => sort === k ? (dir === 1 ? ' ↑' : ' ↓') : '';
+
+  const exportCSV = () => {
+    const rows = [['ID','Time','Sym','Side','Qty','Entry','Exit','P&L','P&L %','Status','Reason']];
+    filtered.forEach(t => rows.push([
+      t.id, new Date(t.ts).toISOString(), t.sym, t.side, t.qty,
+      t.price.toFixed(2), t.exit ? t.exit.toFixed(2) : (t._mark ? t._mark.toFixed(2)+' (mark)' : ''),
+      (t.pnl ?? t._upnl ?? '').toString().slice(0,10),
+      ((t.pnlPct ?? t._upnlPct ?? 0) * 100).toFixed(2) + '%',
+      t.status, '"' + t.reason.replace(/"/g,"'") + '"'
+    ]));
+    const csv = rows.map(r => r.join(',')).join('\n');
+    const blob = new Blob([csv], {type: 'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'shoal_trades.csv'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="page" data-screen-label="03 Trade history">
+      <div className="page-head" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+        <div>
+          <div className="page-eyebrow">Trade history · {mode === 'LIVE' ? 'Live' : 'Virtual'}</div>
+          <h1 className="page-title">Every order, <em>every outcome.</em></h1>
+          <p className="page-sub">The unfiltered ledger — entry, exit, and what it cost or made you. Click any row for full reasoning.</p>
+        </div>
+        <button className="btn" onClick={exportCSV}>EXPORT CSV ↓</button>
+      </div>
+
+      <div className="kpi-grid" style={{marginBottom:16}}>
+        <div className="kpi">
+          <div className="kpi-label">Realized P&L</div>
+          <div className={'kpi-value mono '+(totalRealized>=0?'up':'dn')}>{fmtMoney(totalRealized,0)}</div>
+          <div className="kpi-delta muted">{closed.length} closed · {markedTrades.filter(t=>t.status==='OPEN').length} open</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Win rate</div>
+          <div className="kpi-value mono">{(winRate*100).toFixed(1)}%</div>
+          <div className="kpi-delta up">{wins.length}W / <span className="dn">{losses.length}L</span></div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Avg win / loss</div>
+          <div className="kpi-value mono"><span className="up">{fmtMoney(avgWin,0)}</span> <span className="muted">/</span> <span className="dn">{fmtMoney(avgLoss,0)}</span></div>
+          <div className="kpi-delta muted">payoff {(avgLoss?Math.abs(avgWin/avgLoss):0).toFixed(2)}×</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Profit factor</div>
+          <div className="kpi-value mono">{isFinite(profitFactor) ? profitFactor.toFixed(2) : '∞'}</div>
+          <div className="kpi-delta muted">gross wins / gross losses</div>
+        </div>
+      </div>
+
+      <div className="card" style={{marginBottom:0}}>
+        <div className="card-head">
+          <div className="card-title">All trades</div>
+          <div className="card-meta">{filtered.length} shown · {baseTrades.length} total</div>
+        </div>
+
+        {/* filter row */}
+        <div style={{display:'flex',gap:14,flexWrap:'wrap',alignItems:'center',padding:'8px 0 14px',borderBottom:'1px solid var(--line)',marginBottom:0}}>
+          <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            <span className="mono tiny muted" style={{letterSpacing:'0.1em'}}>STATUS</span>
+            <div className="tweak-opts">
+              {['ALL','WIN','LOSS','OPEN'].map(s =>
+                <div key={s} className={'tweak-opt '+(statusFilter===s?'on':'')} onClick={()=>setStatusFilter(s)}>{s}</div>
+              )}
+            </div>
+          </div>
+          <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            <span className="mono tiny muted" style={{letterSpacing:'0.1em'}}>SIDE</span>
+            <div className="tweak-opts">
+              {['ALL','BUY','SELL'].map(s =>
+                <div key={s} className={'tweak-opt '+(sideFilter===s?'on':'')} onClick={()=>setSideFilter(s)}>{s}</div>
+              )}
+            </div>
+          </div>
+          <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            <span className="mono tiny muted" style={{letterSpacing:'0.1em'}}>SYMBOL</span>
+            <select
+              value={symFilter}
+              onChange={e=>setSymFilter(e.target.value)}
+              style={{background:'var(--bg-2)',border:'1px solid var(--line)',color:'var(--ink)',padding:'5px 10px',fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.08em',borderRadius:3}}>
+              <option value="ALL">ALL SYMBOLS</option>
+              {symbols.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            {activeSymbol && symFilter !== activeSymbol && (
+              <button className="tweak-opt" onClick={()=>setSymFilter(activeSymbol)} title="Use the symbol selected in the topbar">◎ {activeSymbol}</button>
+            )}
+          </div>
+          {(statusFilter !== 'ALL' || sideFilter !== 'ALL' || symFilter !== 'ALL') && (
+            <button className="btn ghost" style={{marginLeft:'auto'}} onClick={()=>{setStatusFilter('ALL');setSideFilter('ALL');setSymFilter('ALL');}}>CLEAR</button>
+          )}
+        </div>
+
+        <table className="tbl history">
+          <thead>
+            <tr>
+              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('time')}>Time{sortArrow('time')}</th>
+              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('sym')}>Symbol{sortArrow('sym')}</th>
+              <th>Side</th>
+              <th style={{textAlign:'right'}}>Qty</th>
+              <th style={{textAlign:'right'}}>Entry</th>
+              <th style={{textAlign:'right'}}>Exit</th>
+              <th style={{textAlign:'right',cursor:'pointer'}} onClick={()=>toggleSort('pnl')}>P&L ($){sortArrow('pnl')}</th>
+              <th style={{textAlign:'right',cursor:'pointer'}} onClick={()=>toggleSort('pnlPct')}>P&L (%){sortArrow('pnlPct')}</th>
+              <th>Hold</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 && (
+              <tr><td colSpan="10" style={{textAlign:'center',padding:30,color:'var(--ink-3)'}}>No trades match these filters.</td></tr>
+            )}
+            {filtered.map(t => {
+              const isOpen = t.status === 'OPEN';
+              const pnl = t.pnl ?? t._upnl;
+              const pnlPct = t.pnlPct ?? t._upnlPct;
+              const exit = t.exit ?? t._mark;
+              const hold = isOpen
+                ? Math.round((Date.now() - t.ts) / 60000) + 'm'
+                : t.exitTs ? Math.round((t.exitTs - t.ts) / 60000) + 'm' : '—';
+              return (
+                <tr key={t.id} onClick={()=>onTradeClick(t)} style={{cursor:'pointer'}}>
+                  <td className="mono tiny">{new Date(t.ts).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
+                  <td className="mono"><b>{t.sym}</b></td>
+                  <td><span className={'pill ' + (t.side==='BUY'?'buy':'sell')}>{t.side}</span></td>
+                  <td className="mono" style={{textAlign:'right'}}>{t.qty}</td>
+                  <td className="mono" style={{textAlign:'right'}}>${fmtNum(t.price)}</td>
+                  <td className="mono" style={{textAlign:'right',color:isOpen?'var(--ink-3)':'var(--ink-2)'}}>
+                    {exit ? '$' + fmtNum(exit) : '—'}
+                    {isOpen && exit && <span className="tiny muted" style={{marginLeft:4}}>mark</span>}
+                  </td>
+                  <td className={'mono ' + (pnl>=0?'up':'dn')} style={{textAlign:'right',fontWeight:500}}>
+                    {pnl != null ? fmtMoney(pnl) : '—'}
+                  </td>
+                  <td className={'mono ' + (pnl>=0?'up':'dn')} style={{textAlign:'right'}}>
+                    {pnlPct != null ? fmtPct(pnlPct) : '—'}
+                  </td>
+                  <td className="mono tiny muted">{hold}</td>
+                  <td>
+                    <span className={'pill ' + (t.status==='WIN'?'buy':t.status==='LOSS'?'sell':'hold')} style={{fontSize:9}}>
+                      {t.status}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* extremes */}
+      {best && worst && (
+        <div className="grid-2" style={{marginTop:16}}>
+          <div className="card" onClick={()=>onTradeClick(best)} style={{cursor:'pointer',borderLeft:'3px solid var(--up)'}}>
+            <div className="mono tiny muted" style={{letterSpacing:'0.12em'}}>BEST TRADE</div>
+            <div className="serif" style={{fontSize:22,marginTop:6,marginBottom:4}}>
+              <span className="up">{fmtMoney(best.pnl)}</span> <span className="muted" style={{fontSize:14}}>on {best.sym}</span>
+            </div>
+            <div className="mono tiny muted">{best.qty} @ ${fmtNum(best.price)} → ${fmtNum(best.exit)} · {fmtPct(best.pnlPct)}</div>
+            <div className="tiny" style={{marginTop:8,color:'var(--ink-2)',lineHeight:1.5}}>"{best.reason}"</div>
+          </div>
+          <div className="card" onClick={()=>onTradeClick(worst)} style={{cursor:'pointer',borderLeft:'3px solid var(--down)'}}>
+            <div className="mono tiny muted" style={{letterSpacing:'0.12em'}}>WORST TRADE</div>
+            <div className="serif" style={{fontSize:22,marginTop:6,marginBottom:4}}>
+              <span className="dn">{fmtMoney(worst.pnl)}</span> <span className="muted" style={{fontSize:14}}>on {worst.sym}</span>
+            </div>
+            <div className="mono tiny muted">{worst.qty} @ ${fmtNum(worst.price)} → ${fmtNum(worst.exit)} · {fmtPct(worst.pnlPct)}</div>
+            <div className="tiny" style={{marginTop:8,color:'var(--ink-2)',lineHeight:1.5}}>"{worst.reason}"</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+window.ScreenHistory = ScreenHistory;
+
+</script>
+<script type="text/babel" data-presets="react">
+// Strategy / learning insights screen
+
+const ScreenLearning = ({ mode, ctx }) => {
+  const activeSymbol = ctx?.activeSymbol || 'NVDA';
+  const predData = React.useMemo(() => genPredVsActual(activeSymbol), [activeSymbol]);
+  const colors = AGENTS.map(a => a.color);
+  return (
+    <div className="page" data-screen-label="03 Learning">
+      <div className="page-head">
+        <div className="page-eyebrow">Strategy intelligence · how the bot is adapting</div>
+        <h1 className="page-title">The swarm is <em>re-weighting itself</em> based on what worked yesterday.</h1>
+        <p className="page-sub">Every closed trade adjusts agent weights via reinforcement. Strong signals from the right regime get more vote. Persistent losers get muted. Below is what the bot is currently believing — and why.</p>
+      </div>
+
+      <div className="grid-2" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Agent weights · 90 days</div>
+            <div className="card-meta">stacked, 100% normalized</div>
+          </div>
+          <StackedArea series={WEIGHT_HISTORY} keys={AGENTS.map(a=>a.id)} colors={colors}/>
+          <div className="legend" style={{marginTop:10}}>
+            {AGENTS.map((a, i) => (
+              <span key={a.id}><span className="legend-dot" style={{background:colors[i]}}></span>{a.name.split(' ')[0]}</span>
+            ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Win/loss heatmap by regime</div>
+            <div className="card-meta">all closed trades</div>
+          </div>
+          <Heatmap data={HEATMAP} rows={REGIMES} cols={OUTCOMES}/>
+          <div className="mono tiny muted" style={{marginTop:10}}>
+            Bot performs strongly in <span className="up">trending / risk-on</span> regimes; struggles in <span className="dn">choppy</span> markets — explains the recent uptick in mean-reverter weight.
+          </div>
+        </div>
+      </div>
+
+      <div className="grid-2-1" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Predicted vs actual · {activeSymbol}</div>
+            <div className="card-meta">last 60 sessions · 1d horizon</div>
+          </div>
+          <PredVsActual pred={predData.pred} actual={predData.actual}/>
+          <div className="legend" style={{marginTop:10}}>
+            <span><span className="legend-dot" style={{background:'var(--ink)'}}></span>Actual close</span>
+            <span><span className="legend-dot" style={{background:'var(--virtual)'}}></span>Bot prediction (1d ahead)</span>
+            <span className="muted" style={{marginLeft:'auto'}}>MAE {(predData.mae*100).toFixed(2)}% · directional acc. {(predData.dirAcc*100).toFixed(1)}%</span>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Calibration</div>
+          </div>
+          <div style={{display:'flex',gap:14,alignItems:'center',justifyContent:'space-around'}}>
+            <Donut value={0.647} label="DIR. ACC"/>
+            <Donut value={0.71} label="CONFIDENCE" color="var(--info)"/>
+            <Donut value={0.83} label="SHARPE" color="var(--warn)"/>
+          </div>
+          <div className="divider"></div>
+          <div className="mono tiny muted">When confidence reads ≥ 70%, realized hit-rate is 68.4%. When ≤ 55%, 51.2%. Calibration is improving cycle-over-cycle.</div>
+        </div>
+      </div>
+
+      <div className="grid-1-2">
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Agent roster</div>
+            <div className="card-meta">current weights</div>
+          </div>
+          <div className="agent-strip">
+            {AGENTS.map(a => (
+              <div key={a.id} className="agent-row">
+                <div className="agent-glyph" style={{color: a.color}}>{a.glyph}</div>
+                <div className="agent-info">
+                  <div className="name">{a.name}</div>
+                  <div className="desc">{a.desc}</div>
+                </div>
+                <div className="weight-bar"><div style={{width:`${a.weight*400}%`,background:a.color}}></div></div>
+                <div className="weight-num">{(a.weight*100).toFixed(1)}%</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Adaptive parameter timeline</div>
+            <div className="card-meta">automated tuning events · last 90d</div>
+          </div>
+          <div style={{position:'relative',padding:'8px 0',marginTop:8}}>
+            <svg viewBox="0 0 700 60" preserveAspectRatio="none" style={{width:'100%',height:60}}>
+              <line x1="20" x2="680" y1="30" y2="30" stroke="var(--line-2)" strokeWidth="0.5"/>
+              {PARAM_EVENTS.map((e, i) => {
+                const x = 20 + (e.day / 90) * 660;
+                const c = e.kind === 'risk' ? 'var(--warn)' : 'var(--info)';
+                return (
+                  <g key={i}>
+                    <line x1={x} x2={x} y1={26} y2={34} stroke={c} strokeWidth="1.5"/>
+                    <circle cx={x} cy={30} r="3" fill={c}/>
+                  </g>
+                );
+              })}
+              {[0, 30, 60, 90].map(d => (
+                <text key={d} x={20 + (d/90)*660} y={52} fontFamily="var(--mono)" fontSize="9" fill="var(--ink-3)" textAnchor={d===0?'start':d===90?'end':'middle'}>−{90-d}d</text>
+              ))}
+            </svg>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:6,marginTop:10}}>
+            {PARAM_EVENTS.slice().reverse().map((e, i) => (
+              <div key={i} style={{display:'flex',gap:12,fontSize:12,padding:'6px 0',borderBottom: i < PARAM_EVENTS.length-1 ? '1px solid var(--line)' : 'none'}}>
+                <span className="mono tiny muted" style={{width:50}}>−{90-e.day}d</span>
+                <span className={'pill ' + (e.kind==='risk'?'hold':'')} style={{color: e.kind==='risk'?'var(--warn)':'var(--info)',fontSize:8}}>{e.kind}</span>
+                <span style={{color:'var(--ink)'}}>{e.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+window.ScreenLearning = ScreenLearning;
+
+</script>
+<script type="text/babel" data-presets="react">
+// Trade detail screen — reasoning graph + agent breakdown
+
+const ScreenTrade = ({ trade, onBack, mode, ctx }) => {
+  const activeSymbol = ctx?.activeSymbol || 'NVDA';
+  // If no trade selected, use the most recent trade for the active symbol
+  const fallbackTrade = React.useMemo(() => {
+    const list = ctx?.trades || [];
+    return list.find(t => t.sym === activeSymbol) || list[0] || TRADES.find(t => t.sym === activeSymbol) || TRADES[0];
+  }, [activeSymbol, ctx?.trades]);
+  const t = trade && trade.sym === activeSymbol ? trade : (trade || fallbackTrade);
+  if (!t) {
+    return (
+      <div className="page" data-screen-label="04 Trade">
+        <div className="page-head">
+          <div className="page-eyebrow">Trade reasoning</div>
+          <h1 className="page-title">Pick a trade <em>from anywhere</em> to inspect.</h1>
+          <p className="page-sub">Click any order in the dashboard, activity feed, or backtest results.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const series = PRICE_HISTORY[t.sym] || PRICE_HISTORY.NVDA;
+  const slice = series.slice(-90);
+  const pred = [series[series.length-1], series[series.length-1]*1.005, series[series.length-1]*1.012, series[series.length-1]*1.008, series[series.length-1]*1.018];
+
+  // build per-agent vote breakdown
+  const agentVotes = AGENTS.map((a, i) => {
+    const dir = i % 3 === 2 ? 'HOLD' : (i + (t.side==='BUY'?0:1)) % 2 === 0 ? t.side : (t.side==='BUY'?'SELL':'BUY');
+    const c = 0.4 + (Math.sin(i + t.sym.charCodeAt(0)) * 0.5 + 0.5) * 0.55;
+    return { ...a, dir, conf: c };
+  });
+
+  return (
+    <div className="page" data-screen-label="04 Trade">
+      <div style={{display:'flex',gap:14,alignItems:'center',marginBottom:18}}>
+        <button className="btn ghost" onClick={onBack}>← BACK</button>
+        <span className="mono tiny muted">/ TRADES / {t.id}</span>
+      </div>
+
+      <div className="page-head" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:24}}>
+        <div>
+          <div className="page-eyebrow">{fmtTime(t.ts)} · {new Date(t.ts).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</div>
+          <h1 className="page-title">
+            <span className={t.side==='BUY'?'up':'dn'}>{t.side}</span> {t.qty} <span className="mono">{t.sym}</span> <em>at {fmtNum(t.price)}</em>
+          </h1>
+          <p className="page-sub serif" style={{fontStyle:'italic',marginTop:14}}>"{t.reason}"</p>
+        </div>
+        <div style={{textAlign:'right'}}>
+          <ModeBadge mode={t.mode || mode}/>
+          <div className="mono" style={{fontSize:32,marginTop:10,color: t.pnl > 0 ? 'var(--up)' : t.pnl < 0 ? 'var(--down)' : 'var(--ink-2)'}}>
+            {t.pnl !== null ? fmtMoney(t.pnl) : '— OPEN —'}
+          </div>
+          {t.pnlPct !== null && <div className="mono tiny muted">{fmtPct(t.pnlPct)}</div>}
+        </div>
+      </div>
+
+      <div className="grid-2-1" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">{t.sym} · 90d with forward forecast</div>
+            <div className="card-meta">execution at ▼ marker</div>
+          </div>
+          <PriceChart data={slice} predicted={pred}/>
+          <div className="legend" style={{marginTop:10}}>
+            <span><span className="legend-dot" style={{background:'var(--ink)'}}></span>Actual price</span>
+            <span><span className="legend-dot" style={{background:'var(--virtual)'}}></span>Forecast (5 sessions)</span>
+            <span className="muted" style={{marginLeft:'auto'}}>Forecast band ±1.5%</span>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Swarm at decision time</div>
+            <div className="card-meta">consensus {(t.conf*100).toFixed(0)}%</div>
+          </div>
+          <SwarmViz agents={AGENTS} decision={t.side} confidence={t.conf} tick={0}/>
+        </div>
+      </div>
+
+      <div className="grid-2" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-head"><div className="card-title">Reasoning graph</div><div className="card-meta">decision tree · pruned to firing nodes</div></div>
+          <div className="reasoning">
+            <div className={'reason-node ' + (t.side==='BUY'?'fired':'fired-dn')}>
+              <div className="reason-row">
+                <span className="reason-label">Regime gate</span>
+                <span className="reason-value up">PASS · risk-on / trending</span>
+              </div>
+              <div className="reason-meta">VIX 14.2 · DXY −0.3% · breadth 71% adv</div>
+            </div>
+            <div className={'reason-node ' + (t.side==='BUY'?'fired':'fired-dn')}>
+              <div className="reason-row">
+                <span className="reason-label">Momentum signal</span>
+                <span className="reason-value up">+2.1σ above 20d</span>
+              </div>
+              <div className="reason-meta">5d / 20d crossover · slope +0.34</div>
+            </div>
+            <div className={'reason-node ' + (t.side==='BUY'?'fired':'fired-dn')}>
+              <div className="reason-row">
+                <span className="reason-label">Order flow</span>
+                <span className="reason-value up">bid imbalance 1.6×</span>
+              </div>
+              <div className="reason-meta">3 prints &gt;$5M in last 12 min, 89% on offer</div>
+            </div>
+            <div className="reason-node">
+              <div className="reason-row">
+                <span className="reason-label">Mean reversion check</span>
+                <span className="reason-value muted">no signal · RSI 58</span>
+              </div>
+              <div className="reason-meta">not at extreme · agent weight 0.14 · vote HOLD</div>
+            </div>
+            <div className={'reason-node ' + (t.side==='BUY'?'fired':'fired-dn')}>
+              <div className="reason-row">
+                <span className="reason-label">News sentiment (24h)</span>
+                <span className="reason-value up">+0.42</span>
+              </div>
+              <div className="reason-meta">14 articles · 11 positive · earnings beat narrative</div>
+            </div>
+            <div className={'reason-node ' + (t.side==='BUY'?'fired':'fired-dn')}>
+              <div className="reason-row">
+                <span className="reason-label">Risk gate</span>
+                <span className="reason-value up">PASS · 0.9% portfolio risk</span>
+              </div>
+              <div className="reason-meta">stop −1.6σ · target +3.2σ · R:R 2.0</div>
+            </div>
+            <div className="reason-node fired" style={{borderLeftColor:'transparent'}}>
+              <div className="reason-row">
+                <span className="reason-label" style={{fontWeight:500}}>EXECUTE</span>
+                <span className="reason-value" style={{color: t.side==='BUY'?'var(--up)':'var(--down)'}}>{t.side} {t.qty} @ market</span>
+              </div>
+              <div className="reason-meta">routed via Alpaca · {t.mode === 'LIVE' ? 'live order' : 'paper account'}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-head"><div className="card-title">Agent ballot</div><div className="card-meta">votes weighted by current trust</div></div>
+          <table className="tbl">
+            <thead><tr><th>Agent</th><th>Vote</th><th>Conf.</th><th style={{textAlign:'right'}}>Weighted</th></tr></thead>
+            <tbody>
+              {agentVotes.map(a => (
+                <tr key={a.id}>
+                  <td>
+                    <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                      <span style={{color:a.color}}>{a.glyph}</span>
+                      <span>{a.name}</span>
+                    </div>
+                  </td>
+                  <td><span className={'pill ' + (a.dir==='BUY'?'buy':a.dir==='SELL'?'sell':'hold')}>{a.dir}</span></td>
+                  <td className="mono">{(a.conf*100).toFixed(0)}%</td>
+                  <td className="mono" style={{textAlign:'right',color:'var(--ink)'}}>{(a.conf*a.weight*100).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={{borderTop:'1px solid var(--line-2)'}}>
+                <td colSpan="3" className="mono tiny muted" style={{paddingTop:14}}>NET CONSENSUS</td>
+                <td className="mono" style={{textAlign:'right',color:t.side==='BUY'?'var(--up)':'var(--down)',paddingTop:14,fontSize:15}}>{(t.conf*100).toFixed(0)}% {t.side}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head"><div className="card-title">Order detail</div></div>
+        <div className="dialog-list" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'4px 30px'}}>
+          {[
+            ['Order ID', t.id],
+            ['Mode', t.mode || mode],
+            ['Symbol', t.sym],
+            ['Side', t.side],
+            ['Quantity', t.qty + ' shares'],
+            ['Avg fill', '$' + fmtNum(t.price)],
+            ['Notional', fmtMoney(t.qty * t.price)],
+            ['Routed via', 'Alpaca Markets · IEX'],
+            ['Status', t.status],
+            ['Stop loss', '$' + fmtNum(t.price * (t.side==='BUY' ? 0.984 : 1.016))],
+            ['Target', '$' + fmtNum(t.price * (t.side==='BUY' ? 1.032 : 0.968))],
+            ['Hold horizon', '1–3 sessions'],
+          ].map(([l, v]) => (
+            <div key={l} className="dialog-row">
+              <span className="l">{l}</span>
+              <span className="v">{v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+window.ScreenTrade = ScreenTrade;
+
+</script>
+<script type="text/babel" data-presets="react">
+// Backtest screen — virtual results vs real market
+
+const ScreenBacktest = ({ mode, ctx }) => {
+  const [running, setRunning] = React.useState(false);
+  const [progress, setProgress] = React.useState(100);
+  const [period, setPeriod] = React.useState('1Y');
+  const [strategy, setStrategy] = React.useState('Swarm v0.4');
+
+  const runBacktest = () => {
+    setRunning(true);
+    setProgress(0);
+    const ivl = setInterval(() => {
+      setProgress(p => {
+        if (p >= 100) { clearInterval(ivl); setRunning(false); return 100; }
+        return p + 4;
+      });
+    }, 60);
+  };
+
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const monthlyReturns = [0.034, -0.012, 0.058, 0.021, -0.041, 0.078, 0.034, 0.018, -0.022, 0.066, 0.041, 0.029];
+
+  return (
+    <div className="page" data-screen-label="05 Backtest">
+      <div className="page-head">
+        <div className="page-eyebrow">Backtest · virtual results vs real market history</div>
+        <h1 className="page-title">Replay the swarm <em>against the past.</em></h1>
+        <p className="page-sub">Every trade below was executed against historical price data — no real capital was used. This is how the bot validates new strategies before they're allowed near a live account.</p>
+      </div>
+
+      <div className="backtest-split">
+        <div>
+          <div className="card">
+            <div className="card-head"><div className="card-title">Configuration</div></div>
+
+            <div className="config-block">
+              <div className="config-label">Period</div>
+              <div className="toggle-grid">
+                {['3M','6M','1Y','3Y'].map(p => (
+                  <div key={p} className={'toggle-pill ' + (period===p?'on':'')} onClick={()=>setPeriod(p)}>{p}</div>
+                ))}
+              </div>
+            </div>
+
+            <div className="config-block">
+              <div className="config-label">Strategy</div>
+              <div className="toggle-grid" style={{gridTemplateColumns:'1fr'}}>
+                {['Swarm v0.4','Momentum only','Mean revert only','Equal weight'].map(p => (
+                  <div key={p} className={'toggle-pill ' + (strategy===p?'on':'')} onClick={()=>setStrategy(p)}>{p}</div>
+                ))}
+              </div>
+            </div>
+
+            <div className="config-block">
+              <div className="config-label">Universe</div>
+              <div className="mono tiny" style={{color:'var(--ink-2)'}}>S&P 500 · {TICKERS.length} active</div>
+            </div>
+
+            <div className="config-block">
+              <div className="config-label">Capital</div>
+              <div className="mono" style={{color:'var(--ink)',fontSize:14}}>$100,000.00</div>
+            </div>
+
+            <div className="config-block">
+              <div className="config-label">Slippage / fees</div>
+              <div className="mono tiny" style={{color:'var(--ink-2)'}}>5 bps · $0 commission</div>
+            </div>
+
+            <button className="btn primary" style={{width:'100%',marginTop:8}} onClick={runBacktest} disabled={running}>
+              {running ? `RUNNING · ${progress}%` : 'RUN BACKTEST'}
+            </button>
+            {running && (
+              <div style={{marginTop:10,height:3,background:'var(--bg-3)',borderRadius:2,overflow:'hidden'}}>
+                <div style={{width:progress+'%',height:'100%',background:'var(--virtual)',transition:'width 0.1s'}}></div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="stack">
+          <div className="kpi-grid">
+            <div className="kpi"><div className="kpi-label">Final equity</div><div className="kpi-value mono">{fmtMoney(EQUITY.bot[EQUITY.bot.length-1],0)}</div><div className="kpi-delta up">+{((EQUITY.bot[EQUITY.bot.length-1]/100000-1)*100).toFixed(1)}%</div></div>
+            <div className="kpi"><div className="kpi-label">Max drawdown</div><div className="kpi-value mono">−4.2%</div><div className="kpi-delta dn">14 days</div></div>
+            <div className="kpi"><div className="kpi-label">Sharpe</div><div className="kpi-value mono">1.83</div><div className="kpi-delta up">vs 0.91 bench</div></div>
+            <div className="kpi"><div className="kpi-label">Trades</div><div className="kpi-value mono">412</div><div className="kpi-delta up">61.2% win</div></div>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
+              <div className="card-title">Bot vs S&P 500 · {period} backtest</div>
+              <div className="card-meta">simulated · no real capital</div>
+            </div>
+            <LineChart series={[EQUITY.bot, EQUITY.bench]} colors={['var(--virtual)','var(--ink-3)']} yFmt={v => '$' + Math.round(v/1000) + 'k'} height={260}/>
+            <div className="legend" style={{marginTop:10}}>
+              <span><span className="legend-dot" style={{background:'var(--virtual)'}}></span>Bot ({strategy})</span>
+              <span><span className="legend-dot" style={{background:'var(--ink-3)'}}></span>S&P 500 buy-and-hold</span>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head"><div className="card-title">Monthly returns</div><div className="card-meta">2025</div></div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(12,1fr)',gap:6,padding:'8px 0'}}>
+              {months.map((m, i) => {
+                const r = monthlyReturns[i];
+                const h = Math.abs(r) * 800;
+                return (
+                  <div key={m} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+                    <div style={{height:80,display:'flex',alignItems:'flex-end',width:'100%',justifyContent:'center'}}>
+                      <div style={{width:'70%',height:h+'px',background:r>=0?'var(--virtual)':'var(--down)',opacity:0.85,borderRadius:'2px 2px 0 0'}}></div>
+                    </div>
+                    <div className="mono tiny" style={{color:r>=0?'var(--up)':'var(--down)'}}>{(r*100).toFixed(1)}</div>
+                    <div className="mono tiny muted" style={{fontSize:9}}>{m}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+window.ScreenBacktest = ScreenBacktest;
+
+</script>
+<script type="text/babel" data-presets="react">
+// Market analysis screen — sector / correlation map
+
+const ScreenMarket = ({ tick, mode, ctx }) => {
+  // build flattened universe with synthetic returns
+  const universe = [];
+  SECTORS.forEach((s, si) => {
+    SECTOR_TICKERS[s].forEach((sym, ti) => {
+      const seed = (si * 8 + ti);
+      const chg = (Math.sin(seed + tick * 0.05) + Math.cos(seed * 1.7)) * 1.8;
+      const conf = 0.4 + (Math.sin(seed * 2.3) * 0.5 + 0.5) * 0.5;
+      universe.push({ sym, sector: s, chg, conf, watched: ['NVDA','AAPL','MSFT','TSLA','META','JPM'].includes(sym) });
+    });
+  });
+
+  return (
+    <div className="page" data-screen-label="06 Market">
+      <div className="page-head">
+        <div className="page-eyebrow">Market analysis · sector correlation map</div>
+        <h1 className="page-title">The whole market, <em>at one glance.</em></h1>
+        <p className="page-sub">Color = today's return. Brightness = swarm confidence. The bot scans every cell every minute, looking for clusters where multiple agents simultaneously agree.</p>
+      </div>
+
+      <div className="grid-2-1" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Universe map</div>
+            <div className="card-meta">{universe.length} tickers · live</div>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:14}}>
+            {SECTORS.map(s => (
+              <div key={s}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:6}}>
+                  <span className="mono tiny" style={{color:'var(--ink-2)',letterSpacing:'0.14em',textTransform:'uppercase'}}>{s}</span>
+                  <span className="mono tiny muted">{universe.filter(u=>u.sector===s).length} symbols</span>
+                </div>
+                <div className="sector-map" style={{gridTemplateColumns:'repeat(8,1fr)'}}>
+                  {universe.filter(u=>u.sector===s).map(u => {
+                    const isUp = u.chg >= 0;
+                    const intensity = Math.min(1, Math.abs(u.chg) / 3);
+                    const bg = isUp
+                      ? `rgba(125, 216, 125, ${0.08 + intensity * 0.4})`
+                      : `rgba(255, 107, 107, ${0.08 + intensity * 0.4})`;
+                    return (
+                      <div key={u.sym} className="sector-cell" style={{background:bg, border: u.watched ? '1px solid var(--virtual)' : '1px solid transparent'}}>
+                        <div className="sym">{u.sym}</div>
+                        <div className="pct" style={{color: isUp?'var(--up)':'var(--down)'}}>{u.chg>=0?'+':''}{u.chg.toFixed(2)}%</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="stack">
+          <div className="card">
+            <div className="card-head"><div className="card-title">Hot signals</div><div className="card-meta">conf ≥ 70%</div></div>
+            <div style={{display:'flex',flexDirection:'column'}}>
+              {universe.filter(u=>u.conf>=0.7).slice(0,8).map(u => (
+                <div key={u.sym} style={{display:'grid',gridTemplateColumns:'60px 60px 1fr 60px',gap:10,padding:'10px 0',borderBottom:'1px solid var(--line)',alignItems:'center',fontSize:12}}>
+                  <span className="mono" style={{color:'var(--ink)',fontWeight:500}}>{u.sym}</span>
+                  <span className={'pill ' + (u.chg>=0?'buy':'sell')}>{u.chg>=0?'BUY':'SELL'}</span>
+                  <span className="mono tiny muted">{u.sector} · {(u.conf*100).toFixed(0)}% conf</span>
+                  <Sparkline data={Array.from({length:20},(_,i)=>50+Math.sin(i+u.sym.charCodeAt(0))*10)} color={u.chg>=0?'var(--virtual)':'var(--down)'} width={60} height={20}/>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head"><div className="card-title">Regime</div></div>
+            <div style={{padding:'8px 0'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6}}>
+                <span className="mono tiny muted">CURRENT</span>
+                <span className="serif" style={{fontSize:18,fontStyle:'italic'}}>Risk-on · trending</span>
+              </div>
+              <div style={{height:6,background:'var(--bg-3)',borderRadius:3,position:'relative',marginTop:14,marginBottom:8}}>
+                <div style={{position:'absolute',left:'0',right:'0',top:'-18px',display:'flex',justifyContent:'space-between'}}>
+                  <span className="mono tiny" style={{color:'var(--down)'}}>RISK-OFF</span>
+                  <span className="mono tiny" style={{color:'var(--up)'}}>RISK-ON</span>
+                </div>
+                <div style={{position:'absolute',top:-3,left:'72%',width:12,height:12,borderRadius:'50%',background:'var(--virtual)',border:'2px solid var(--bg)'}}></div>
+              </div>
+              <div className="mono tiny muted" style={{marginTop:18}}>VIX 14.2 · DXY 102.4 · 10Y 4.31% · breadth 71% adv</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+window.ScreenMarket = ScreenMarket;
+
+</script>
+<script type="text/babel" data-presets="react">
+// Settings screen — Alpaca connection + risk parameters
+
+const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset }) => {
+  const [showConnect, setShowConnect] = React.useState(false);
+  const [connecting, setConnecting] = React.useState(false);
+  const [connectErr, setConnectErr] = React.useState('');
+  const [form, setForm] = React.useState({
+    env: 'paper',   // 'paper' | 'live'
+    keyId: '',
+    secret: '',
+    showSecret: false,
+  });
+
+  const startConnect = () => {
+    setConnectErr('');
+    setConnecting(false);
+    setForm({ env: 'paper', keyId: '', secret: '', showSecret: false });
+    setShowConnect(true);
+  };
+
+  const submitConnect = () => {
+    setConnectErr('');
+    // Alpaca keys: key id is typically ~20 chars starting "PK" (paper) or "AK" (live); secret is ~40 chars.
+    // We don't actually hit their API from here (no CORS/keys shipped) — we validate shape and stash locally.
+    const id = form.keyId.trim();
+    const sec = form.secret.trim();
+    if (id.length < 16) { setConnectErr('Key ID looks too short. Check you copied the whole value.'); return; }
+    if (sec.length < 30) { setConnectErr('Secret looks too short. Alpaca secrets are ~40 characters.'); return; }
+    if (form.env === 'paper' && !/^PK/i.test(id)) {
+      setConnectErr('Paper key IDs start with "PK". Did you mean to select Live?'); return;
+    }
+    if (form.env === 'live' && !/^AK/i.test(id)) {
+      setConnectErr('Live key IDs start with "AK". Did you mean to select Paper?'); return;
+    }
+    setConnecting(true);
+    // Simulated round-trip — a real integration would POST to an edge fn that calls /v2/account.
+    setTimeout(() => {
+      const masked = id.slice(0, 4) + '····' + id.slice(-4);
+      setAlpaca({
+        connected: true,
+        env: form.env,
+        keyId: id,
+        secretMasked: '••••••••••••••' + sec.slice(-4),
+        keyMasked: masked,
+        account: form.env === 'paper' ? 'PA' + Math.floor(10000000 + Math.random()*89999999) : 'A' + Math.floor(10000000 + Math.random()*89999999),
+        balance: form.env === 'paper' ? 100000 : 24850.42,
+        broker: 'Alpaca Markets',
+        endpoint: form.env === 'paper' ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets',
+      });
+      setConnecting(false);
+    }, 1400);
+  };
+
+  return (
+    <div className="page" data-screen-label="07 Settings">
+      <div className="page-head">
+        <div className="page-eyebrow">Settings</div>
+        <h1 className="page-title">Broker, risk, <em>and the rules of the game.</em></h1>
+      </div>
+
+      <div className="grid-2" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-head"><div className="card-title">Broker connection</div><div className="card-meta">Alpaca Markets API</div></div>
+
+          <div style={{display:'flex',gap:10,padding:'10px 12px',background:'rgba(255,170,40,0.06)',border:'1px solid rgba(255,170,40,0.3)',borderRadius:4,marginBottom:14,alignItems:'flex-start'}}>
+            <span style={{color:'var(--warn)',fontSize:14,lineHeight:1,marginTop:1}}>◉</span>
+            <div style={{lineHeight:1.5}}>
+              <div className="mono tiny" style={{color:'var(--warn)',letterSpacing:'0.1em',marginBottom:3}}>SIMULATED · PROTOTYPE</div>
+              <div className="tiny" style={{color:'var(--ink-2)'}}>
+                No orders are sent to Alpaca from this session. Trades, fills, and P&L shown throughout the app are generated locally for design review. Connecting your keys validates their shape and stores them in this browser only — they never reach Alpaca or Shoal's servers.
+              </div>
+            </div>
+          </div>
+
+          {!alpaca.connected ? (
+            <div>
+              <div style={{padding:'24px 16px',textAlign:'center',background:'var(--bg-2)',borderRadius:6,marginBottom:14}}>
+                <div style={{width:48,height:48,margin:'0 auto 12px',borderRadius:'50%',background:'var(--bg-3)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--mono)',fontSize:16,color:'var(--ink-3)'}}>α</div>
+                <div className="serif" style={{fontSize:18,marginBottom:6}}>No broker connected</div>
+                <div className="tiny muted">Live trading is disabled until you connect an account.</div>
+              </div>
+              <button className="btn primary" style={{width:'100%'}} onClick={startConnect}>CONNECT ALPACA →</button>
+              <div className="mono tiny muted" style={{marginTop:10,textAlign:'center'}}>You'll be redirected to alpaca.markets to authorize.</div>
+            </div>
+          ) : (
+            <div>
+              <div style={{padding:'14px 16px',background:'var(--bg-2)',borderRadius:6,marginBottom:14,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div>
+                  <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                    <span style={{width:8,height:8,borderRadius:'50%',background:'var(--virtual)',boxShadow:'0 0 6px currentColor'}}></span>
+                    <span className="mono" style={{fontSize:12,letterSpacing:'0.06em'}}>{alpaca.broker}</span>
+                  </div>
+                  <div className="mono tiny muted" style={{marginTop:6}}>
+                    {alpaca.env === 'live' ? 'LIVE' : 'PAPER'} · Account {alpaca.account}
+                  </div>
+                </div>
+                <button className="btn ghost" onClick={()=>setAlpaca({...alpaca, connected: false})}>DISCONNECT</button>
+              </div>
+              <div className="dialog-list">
+                <div className="dialog-row"><span className="l">Environment</span><span className="v" style={{color: alpaca.env === 'live' ? 'var(--live)' : 'var(--virtual)'}}>{alpaca.env === 'live' ? 'Live' : 'Paper'} · {alpaca.endpoint ? alpaca.endpoint.replace('https://','') : 'paper-api.alpaca.markets'}</span></div>
+                <div className="dialog-row"><span className="l">API key ID</span><span className="v mono">{alpaca.keyMasked || '—'}</span></div>
+                <div className="dialog-row"><span className="l">Secret</span><span className="v mono">{alpaca.secretMasked || '—'}</span></div>
+                <div className="dialog-row"><span className="l">Buying power</span><span className="v">{fmtMoney(alpaca.balance)}</span></div>
+                <div className="dialog-row"><span className="l">Account type</span><span className="v">Margin · individual</span></div>
+                <div className="dialog-row"><span className="l">Day trades used</span><span className="v">2 / 3</span></div>
+                <div className="dialog-row"><span className="l">Data feed</span><span className="v">IEX (free) · upgrade for SIP</span></div>
+                <div className="dialog-row"><span className="l">API permission</span><span className="v" style={{color:'var(--virtual)'}}>READ + TRADE</span></div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-head"><div className="card-title">Risk parameters</div><div className="card-meta">applies to current mode</div></div>
+
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Risk per trade</div>
+              <div className="mono" style={{fontSize:13}}>{risk.perTrade.toFixed(1)}%</div>
+            </div>
+            <input type="range" min="0.1" max="5" step="0.1" value={risk.perTrade} onChange={e=>setRisk({...risk, perTrade: +e.target.value})}/>
+          </div>
+
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Max position size</div>
+              <div className="mono" style={{fontSize:13}}>{risk.maxPos}% of equity</div>
+            </div>
+            <input type="range" min="1" max="20" step="1" value={risk.maxPos} onChange={e=>setRisk({...risk, maxPos: +e.target.value})}/>
+          </div>
+
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Daily loss limit</div>
+              <div className="mono" style={{fontSize:13}}>{risk.dailyLoss}% kill switch</div>
+            </div>
+            <input type="range" min="1" max="10" step="0.5" value={risk.dailyLoss} onChange={e=>setRisk({...risk, dailyLoss: +e.target.value})}/>
+          </div>
+
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Confidence threshold</div>
+              <div className="mono" style={{fontSize:13}}>≥ {risk.confidence}%</div>
+            </div>
+            <input type="range" min="40" max="90" step="1" value={risk.confidence} onChange={e=>setRisk({...risk, confidence: +e.target.value})}/>
+          </div>
+
+          <div className="divider"></div>
+
+          <div className="dialog-row">
+            <span className="l">Allow shorts</span>
+            <button className={'tweak-opt ' + (risk.shorts?'on':'')} onClick={()=>setRisk({...risk,shorts:!risk.shorts})}>{risk.shorts?'ON':'OFF'}</button>
+          </div>
+          <div className="dialog-row">
+            <span className="l">After-hours trading</span>
+            <button className={'tweak-opt ' + (risk.ah?'on':'')} onClick={()=>setRisk({...risk,ah:!risk.ah})}>{risk.ah?'ON':'OFF'}</button>
+          </div>
+          <div className="dialog-row">
+            <span className="l">Auto-pause on drawdown</span>
+            <button className={'tweak-opt on'}>ON</button>
+          </div>
+          <div className="dialog-row">
+            <span className="l">Trade direction</span>
+            <div className="tweak-opts">
+              {['LONG','SHORT','BOTH'].map(d => (
+                <div key={d} className={'tweak-opt '+(direction===d?'on':'')} onClick={()=>setDirection(d)}>
+                  {d==='LONG'?'↑':d==='SHORT'?'↓':'⇅'} {d}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="divider"></div>
+          <div className="dialog-row">
+            <span className="l">
+              <div>Reset virtual account</div>
+              <div className="tiny muted" style={{marginTop:2}}>Wipe P&L, keep learned weights</div>
+            </span>
+            <button className="btn" onClick={onReset}>RESET →</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head"><div className="card-title">Trading mode</div><div className="card-meta">currently <ModeBadge mode={mode}/></div></div>
+        <div style={{padding:'10px 0',display:'grid',gridTemplateColumns:'1fr 1fr',gap:18}}>
+          <div style={{padding:18,border:'1px solid '+(mode==='VIRTUAL'?'var(--virtual)':'var(--line-2)'),borderRadius:6}}>
+            <div className="mono tiny" style={{color:'var(--virtual)',letterSpacing:'0.18em'}}>◐ VIRTUAL</div>
+            <div className="serif" style={{fontSize:22,marginTop:8,marginBottom:6}}>Paper trading</div>
+            <div className="tiny" style={{color:'var(--ink-2)',lineHeight:1.5,marginBottom:10}}>
+              Trades execute against simulated fills. No money moves. The bot still learns from outcomes — this is how you train the swarm safely.
+            </div>
+            <div className="mono tiny muted">No financial exposure · unlimited resets</div>
+          </div>
+          <div style={{padding:18,border:'1px solid '+(mode==='LIVE'?'var(--live)':'var(--line-2)'),borderRadius:6,background: mode==='LIVE' ? 'rgba(255,138,61,0.04)' : 'transparent'}}>
+            <div className="mono tiny" style={{color:'var(--live)',letterSpacing:'0.18em'}}>◉ LIVE</div>
+            <div className="serif" style={{fontSize:22,marginTop:8,marginBottom:6}}>Real trading</div>
+            <div className="tiny" style={{color:'var(--ink-2)',lineHeight:1.5,marginBottom:10}}>
+              Orders route to your Alpaca account. Real capital. Real fills. Real losses possible. The chrome turns orange so you'll never confuse the two.
+            </div>
+            <div className="mono tiny" style={{color:'var(--live)'}}>{alpaca.connected ? 'Broker ready · use header toggle' : 'Connect broker first'}</div>
+          </div>
+        </div>
+      </div>
+
+      {showConnect && (
+        <div className="modal-backdrop" onClick={()=>!connecting && setShowConnect(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+            <div className="modal-head">
+              <div className="modal-title">Connect Alpaca</div>
+              <button className="btn ghost" onClick={()=>!connecting && setShowConnect(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              {alpaca.connected && !connecting ? (
+                <div style={{textAlign:'center',padding:'20px 0'}}>
+                  <div className="serif" style={{fontSize:24,marginBottom:6}}>Connected ✓</div>
+                  <div className="tiny" style={{color:'var(--ink-2)',marginBottom:4}}>
+                    {alpaca.env === 'live' ? 'LIVE' : 'PAPER'} account <span className="mono">{alpaca.account}</span>
+                  </div>
+                  <div className="mono tiny muted">{alpaca.endpoint}</div>
+                  <button className="btn primary" style={{marginTop:22}} onClick={()=>setShowConnect(false)}>DONE</button>
+                </div>
+              ) : connecting ? (
+                <div style={{textAlign:'center',padding:'28px 0'}}>
+                  <div style={{margin:'0 auto 16px',width:44,height:44,border:'2px solid var(--line-2)',borderTopColor:'var(--virtual)',borderRadius:'50%',animation:'rotate 0.9s linear infinite'}}></div>
+                  <div className="serif" style={{fontSize:18}}>Validating credentials…</div>
+                  <div className="mono tiny muted" style={{marginTop:6}}>GET {form.env === 'paper' ? 'paper-api' : 'api'}.alpaca.markets/v2/account</div>
+                </div>
+              ) : (
+                <div>
+                  <div className="tiny" style={{color:'var(--ink-2)',lineHeight:1.55,marginBottom:16}}>
+                    Paste an API key pair from your Alpaca dashboard. Keys are stored locally in this browser and never transmitted to Shoal's servers. You can revoke them anytime from{' '}
+                    <a href="https://app.alpaca.markets/paper/dashboard/overview" target="_blank" rel="noreferrer" style={{color:'var(--ink)'}}>app.alpaca.markets</a>.
+                  </div>
+
+                  <div className="field-label" style={{marginBottom:8}}>Environment</div>
+                  <div className="tweak-opts" style={{marginBottom:18}}>
+                    <div className={'tweak-opt '+(form.env==='paper'?'on':'')} onClick={()=>setForm(f=>({...f,env:'paper'}))}>
+                      PAPER <span className="tiny muted" style={{marginLeft:4}}>paper-api.alpaca.markets</span>
+                    </div>
+                    <div className={'tweak-opt '+(form.env==='live'?'on':'')} onClick={()=>setForm(f=>({...f,env:'live'}))} style={form.env==='live'?{color:'var(--live)',borderColor:'var(--live)'}:{}}>
+                      LIVE <span className="tiny muted" style={{marginLeft:4}}>api.alpaca.markets</span>
+                    </div>
+                  </div>
+
+                  <div className="field">
+                    <div className="field-label">API Key ID</div>
+                    <input
+                      className="field-input mono"
+                      placeholder={form.env === 'paper' ? 'PKXXXXXXXXXXXXXXXXXX' : 'AKXXXXXXXXXXXXXXXXXX'}
+                      value={form.keyId}
+                      onChange={e=>setForm(f=>({...f,keyId:e.target.value}))}
+                      spellCheck={false}
+                      autoComplete="off"
+                    />
+                  </div>
+
+                  <div className="field">
+                    <div className="field-label" style={{display:'flex',justifyContent:'space-between'}}>
+                      <span>API Secret Key</span>
+                      <span className="tiny muted" style={{cursor:'pointer',letterSpacing:'0.08em'}} onClick={()=>setForm(f=>({...f,showSecret:!f.showSecret}))}>
+                        {form.showSecret ? '◉ HIDE' : '○ SHOW'}
+                      </span>
+                    </div>
+                    <input
+                      className="field-input mono"
+                      type={form.showSecret ? 'text' : 'password'}
+                      placeholder="40-character secret"
+                      value={form.secret}
+                      onChange={e=>setForm(f=>({...f,secret:e.target.value}))}
+                      spellCheck={false}
+                      autoComplete="off"
+                    />
+                  </div>
+
+                  {form.env === 'live' && (
+                    <div className="tiny" style={{color:'var(--live)',padding:'10px 12px',background:'rgba(230,110,60,0.08)',border:'1px solid rgba(230,110,60,0.35)',borderRadius:3,marginTop:4,lineHeight:1.5}}>
+                      <b style={{letterSpacing:'0.06em'}}>LIVE ACCOUNT:</b> Orders placed from this session will execute with real capital. Double-check you're pasting the correct key pair.
+                    </div>
+                  )}
+
+                  {connectErr && (
+                    <div className="tiny" style={{color:'var(--down)',marginTop:12,padding:'8px 12px',background:'rgba(220,80,80,0.08)',border:'1px solid rgba(220,80,80,0.3)',borderRadius:3}}>
+                      {connectErr}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            {!alpaca.connected && !connecting && (
+              <div className="modal-foot">
+                <button className="btn ghost" onClick={()=>setShowConnect(false)}>CANCEL</button>
+                <button className="btn primary" onClick={submitConnect} disabled={!form.keyId || !form.secret}>
+                  CONNECT {form.env === 'paper' ? 'PAPER' : 'LIVE'} →
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+window.ScreenSettings = ScreenSettings;
+
+</script>
+<script type="text/babel" data-presets="react">
+// First-run onboarding
+
+const ScreenOnboarding = ({ onDone }) => {
+  const [step, setStep] = React.useState(0);
+  const steps = [
+    {
+      eyebrow: 'Welcome to Shoal',
+      title: <>A trading bot that <em>learns from itself.</em></>,
+      body: 'Shoal runs a swarm of small specialist agents — one watches momentum, one watches news, one hunts patterns from history. Each gets a vote. The system keeps score and tunes their weights based on what actually worked.',
+      art: 'swarm',
+    },
+    {
+      eyebrow: 'Step 1 of 3 · Safety',
+      title: <>You'll always start in <em>virtual mode.</em></>,
+      body: 'Every Shoal account begins paper-trading. The bot makes the same decisions it would with real money, but no orders touch the market. You watch the swarm operate, the agents adapt, the equity curve grow — at zero financial risk.',
+      art: 'virtual',
+    },
+    {
+      eyebrow: 'Step 2 of 3 · Connect',
+      title: <>When ready, plug in <em>Alpaca.</em></>,
+      body: "Switching to live trading requires an Alpaca account. We use their open trading API — broker authorization happens once, you can revoke it anytime. The interface turns orange whenever real money is at stake. There's no way to forget which mode you're in.",
+      art: 'broker',
+    },
+    {
+      eyebrow: 'Step 3 of 3 · Watch & adapt',
+      title: <>The swarm <em>tells you what it's thinking.</em></>,
+      body: 'Every trade comes with a reasoning graph: which agent voted what, what regime the market was in, what the predicted return was. Over time you can see weights drifting, win-rate climbing, and confidence calibrating. You stay in control — pause it, adjust risk, or stop it cold.',
+      art: 'reasoning',
+    },
+  ];
+
+  const s = steps[step];
+
+  const renderArt = (kind) => {
+    if (kind === 'swarm') {
+      return <SwarmViz agents={AGENTS} decision="BUY" confidence={0.71} tick={0}/>;
+    }
+    if (kind === 'virtual') {
+      return (
+        <div style={{height:'100%',display:'flex',alignItems:'center',justifyContent:'center',padding:30,flexDirection:'column'}}>
+          <div className="pill virtual" style={{fontSize:11,padding:'6px 14px',marginBottom:18}}>◐ VIRTUAL MODE</div>
+          <div style={{width:'100%',height:160}}>
+            <LineChart series={[EQUITY.bot.slice(0,90)]} colors={['var(--virtual)']} yFmt={v=>'$'+Math.round(v/1000)+'k'} height={160}/>
+          </div>
+          <div className="mono tiny muted" style={{marginTop:12,letterSpacing:'0.12em'}}>+12.4% · 90 PAPER SESSIONS</div>
+        </div>
+      );
+    }
+    if (kind === 'broker') {
+      return (
+        <div style={{height:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:30}}>
+          <div style={{width:90,height:90,borderRadius:'50%',background:'radial-gradient(circle at 30% 30%, var(--virtual), var(--virtual-dim))',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--serif)',fontSize:32,color:'#0a1f0a',fontStyle:'italic'}}>S</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6,alignItems:'center'}}>
+            <div className="mono tiny muted">←—— OAUTH ——→</div>
+            <div style={{height:1,width:80,background:'var(--virtual)'}}></div>
+            <div className="mono tiny up">SECURE TOKEN</div>
+          </div>
+          <div style={{width:90,height:90,borderRadius:6,background:'var(--bg-2)',border:'1px solid var(--line-2)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--mono)',fontSize:30,color:'var(--ink-2)'}}>α</div>
+        </div>
+      );
+    }
+    if (kind === 'reasoning') {
+      return (
+        <div style={{padding:30,height:'100%',display:'flex',alignItems:'center'}}>
+          <div className="reasoning" style={{width:'100%'}}>
+            <div className="reason-node fired"><div className="reason-row"><span className="reason-label">Regime: risk-on</span><span className="reason-value up">PASS</span></div></div>
+            <div className="reason-node fired"><div className="reason-row"><span className="reason-label">Momentum +2.1σ</span><span className="reason-value up">FIRE</span></div></div>
+            <div className="reason-node fired"><div className="reason-row"><span className="reason-label">Order flow imbal.</span><span className="reason-value up">FIRE</span></div></div>
+            <div className="reason-node fired"><div className="reason-row"><span className="reason-label">Risk gate</span><span className="reason-value up">PASS</span></div></div>
+            <div className="reason-node fired" style={{borderLeftColor:'transparent'}}><div className="reason-row"><span className="reason-label" style={{fontWeight:500}}>EXECUTE</span><span className="reason-value up">BUY 32 NVDA</span></div></div>
+          </div>
+        </div>
+      );
+    }
+  };
+
+  return (
+    <div className="onb">
+      <div className="onb-top">
+        <div style={{display:'flex',gap:10,alignItems:'center'}}>
+          <span className="brand-mark" style={{display:'inline-block'}}></span>
+          <span className="serif" style={{fontSize:16,color:'var(--ink)',letterSpacing:'-0.01em'}}>Shoal</span>
+        </div>
+        <button className="btn ghost" onClick={onDone}>SKIP →</button>
+      </div>
+      <div className="onb-step">
+        <div>
+          <div className="onb-eyebrow">{s.eyebrow}</div>
+          <h1 className="onb-title">{s.title}</h1>
+          <p className="onb-body">{s.body}</p>
+          <div style={{display:'flex',gap:10}}>
+            {step > 0 && <button className="btn" onClick={()=>setStep(step-1)}>← BACK</button>}
+            {step < steps.length - 1
+              ? <button className="btn primary" onClick={()=>setStep(step+1)}>CONTINUE →</button>
+              : <button className="btn primary" onClick={onDone}>ENTER DASHBOARD →</button>}
+          </div>
+        </div>
+        <div className="onb-art">{renderArt(s.art)}</div>
+      </div>
+      <div className="onb-foot">
+        <div className="mono tiny muted">SHOAL v0.4.2 · ALL DATA SHOWN IS SIMULATED</div>
+        <div className="onb-dots">{steps.map((_, i) => <div key={i} className={'onb-dot ' + (i<=step?'active':'')}/>)}</div>
+      </div>
+    </div>
+  );
+};
+
+window.ScreenOnboarding = ScreenOnboarding;
+
+</script>
+<script type="text/babel" data-presets="react">
+// Mode switch ceremony modal
+
+const ModeSwitchModal = ({ targetMode, alpaca, onConfirm, onCancel }) => {
+  const [checks, setChecks] = React.useState({});
+  const items = targetMode === 'LIVE' ? [
+    { id: 'a', text: 'I understand real capital will be at risk on every order.' },
+    { id: 'b', text: 'I have reviewed my risk parameters in Settings.' },
+    { id: 'c', text: 'I accept that the bot can lose money — past performance is not indicative.' },
+    { id: 'd', text: 'I have a daily loss kill-switch configured.' },
+  ] : [
+    { id: 'a', text: 'I want to switch back to virtual / paper trading. No more live orders will be placed.' },
+  ];
+  const allChecked = items.every(i => checks[i.id]);
+  const blocked = targetMode === 'LIVE' && !alpaca.connected;
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <div className="modal-head">
+          <div className="modal-title">{targetMode === 'LIVE' ? 'Switch to LIVE trading' : 'Return to virtual mode'}</div>
+          <button className="btn ghost" onClick={onCancel}>×</button>
+        </div>
+        <div className="modal-body">
+          {targetMode === 'LIVE' && (
+            <div className="danger-banner">
+              <b>◉ Live trading</b> — orders will route to <span className="mono">{alpaca.broker || 'Alpaca'}</span> and execute against real markets. Capital can be lost. The bot's models are statistical and have failure modes.
+            </div>
+          )}
+          {blocked && (
+            <div className="danger-banner" style={{borderColor:'var(--warn)',color:'var(--warn)'}}>
+              No broker is connected. <b>Settings → Connect Alpaca</b> first.
+            </div>
+          )}
+          <div className="checklist">
+            {items.map(item => (
+              <div key={item.id} className={'check-row ' + (checks[item.id]?'checked':'')} onClick={()=>setChecks({...checks, [item.id]: !checks[item.id]})}>
+                <div className="check-box">{checks[item.id]?'✓':''}</div>
+                <span>{item.text}</span>
+              </div>
+            ))}
+          </div>
+          {targetMode === 'LIVE' && (
+            <div style={{marginTop:18,padding:14,background:'var(--bg-2)',borderRadius:6,fontSize:12,color:'var(--ink-2)',lineHeight:1.6}}>
+              <div className="mono tiny muted" style={{marginBottom:6}}>WHAT WILL CHANGE</div>
+              <ul style={{listStyle:'none',padding:0,margin:0}}>
+                <li>· Header chrome turns orange</li>
+                <li>· Persistent <span className="mono">LIVE TRADING</span> banner at top of screen</li>
+                <li>· Pulsing indicator next to bot status</li>
+                <li>· Order tape labels each fill <span className="pill live" style={{fontSize:8}}>LIVE</span></li>
+              </ul>
+            </div>
+          )}
+        </div>
+        <div className="modal-foot">
+          <button className="btn ghost" onClick={onCancel}>CANCEL</button>
+          <button
+            className={'btn ' + (targetMode === 'LIVE' ? 'danger' : 'primary')}
+            disabled={!allChecked || blocked}
+            style={{opacity: (!allChecked || blocked) ? 0.4 : 1, cursor: (!allChecked || blocked) ? 'not-allowed' : 'pointer'}}
+            onClick={onConfirm}
+          >{targetMode === 'LIVE' ? '◉ ENABLE LIVE TRADING' : '◐ RETURN TO VIRTUAL'}</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+window.ModeSwitchModal = ModeSwitchModal;
+
+</script>
+<script type="text/babel" data-presets="react">
+// Tweaks panel (toolbar-toggled)
+
+const TweaksPanel = ({ tweaks, setTweaks }) => {
+  return (
+    <div className="tweaks-panel">
+      <header>
+        <h4>Tweaks</h4>
+        <span className="mono tiny muted">live</span>
+      </header>
+      <div className="tweaks-body">
+        <div className="tweak-row">
+          <label>Density</label>
+          <div className="tweak-opts">
+            {['Cozy','Compact'].map(d => <div key={d} className={'tweak-opt '+(tweaks.density===d?'on':'')} onClick={()=>setTweaks({...tweaks,density:d})}>{d}</div>)}
+          </div>
+        </div>
+        <div className="tweak-row">
+          <label>Accent</label>
+          <div className="tweak-opts">
+            {[['Green','#7dd87d'],['Cyan','#7dd8c0'],['Amber','#f0c674']].map(([n,c]) => (
+              <div key={n} className={'tweak-opt '+(tweaks.accent===n?'on':'')} onClick={()=>{setTweaks({...tweaks,accent:n});document.documentElement.style.setProperty('--virtual',c);}} style={{borderLeft:`3px solid ${c}`}}>{n}</div>
+            ))}
+          </div>
+        </div>
+        <div className="tweak-row">
+          <label>Show reasoning</label>
+          <div className="tweak-opts">
+            <div className={'tweak-opt '+(tweaks.reasoning?'on':'')} onClick={()=>setTweaks({...tweaks,reasoning:!tweaks.reasoning})}>{tweaks.reasoning?'ON':'OFF'}</div>
+          </div>
+        </div>
+        <div className="tweak-row">
+          <label>Animated tape</label>
+          <div className="tweak-opts">
+            <div className={'tweak-opt '+(tweaks.animated?'on':'')} onClick={()=>setTweaks({...tweaks,animated:!tweaks.animated})}>{tweaks.animated?'ON':'OFF'}</div>
+          </div>
+        </div>
+        <div className="tweak-row">
+          <label>Brand glyph</label>
+          <div className="tweak-opts">
+            {['◐','◯','✦'].map(g => <div key={g} className={'tweak-opt '+(tweaks.glyph===g?'on':'')} onClick={()=>setTweaks({...tweaks,glyph:g})}>{g}</div>)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+window.TweaksPanel = TweaksPanel;
+
+const ALL_SYMBOLS = (() => {
+  const out = [];
+  Object.keys(SECTOR_TICKERS).forEach(sec => {
+    SECTOR_TICKERS[sec].forEach(s => {
+      const t = TICKERS.find(x => x.sym === s);
+      out.push({ sym: s, sector: sec, name: t ? t.name : s, last: t ? t.last : 100 + (s.charCodeAt(0) % 400) });
+    });
+  });
+  return out;
+})();
+
+const SymbolPicker = ({ onPick, onClose }) => {
+  const [q, setQ] = React.useState('');
+  const [idx, setIdx] = React.useState(0);
+  const inputRef = React.useRef(null);
+  React.useEffect(() => { inputRef.current?.focus(); }, []);
+  const filtered = ALL_SYMBOLS.filter(s =>
+    !q || s.sym.toLowerCase().includes(q.toLowerCase()) || s.sector.toLowerCase().includes(q.toLowerCase()) || s.name.toLowerCase().includes(q.toLowerCase())
+  ).slice(0, 40);
+  const onKey = (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setIdx(i => Math.min(filtered.length-1, i+1)); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); setIdx(i => Math.max(0, i-1)); }
+    if (e.key === 'Enter' && filtered[idx]) onPick(filtered[idx].sym);
+  };
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560,marginTop:'-10vh'}}>
+        <div style={{padding:'14px 18px',borderBottom:'1px solid var(--line)',display:'flex',gap:10,alignItems:'center'}}>
+          <span className="mono tiny muted">◎</span>
+          <input ref={inputRef} style={{flex:1,border:'none',background:'transparent',padding:4,fontSize:15,color:'var(--ink)',outline:'none',fontFamily:'var(--mono)'}} placeholder="Search symbol, name or sector…" value={q} onChange={e=>{setQ(e.target.value); setIdx(0);}} onKeyDown={onKey}/>
+          <span className="mono tiny muted">ESC</span>
+        </div>
+        <div style={{maxHeight:'52vh',overflowY:'auto'}}>
+          {filtered.map((s, i) => (
+            <div key={s.sym}
+              onMouseEnter={()=>setIdx(i)}
+              onClick={()=>onPick(s.sym)}
+              style={{display:'grid',gridTemplateColumns:'72px 1fr 100px 80px',gap:12,padding:'10px 18px',borderBottom:'1px solid var(--line)',cursor:'pointer',background: i===idx?'var(--bg-2)':'transparent',alignItems:'center'}}>
+              <span className="mono" style={{color:'var(--ink)',fontWeight:500}}>{s.sym}</span>
+              <span style={{fontSize:13,color:'var(--ink-2)'}}>{s.name}</span>
+              <span className="mono tiny muted" style={{letterSpacing:'0.1em',textTransform:'uppercase'}}>{s.sector}</span>
+              <span className="mono tiny" style={{textAlign:'right',color:'var(--ink-2)'}}>${s.last.toFixed(2)}</span>
+            </div>
+          ))}
+          {filtered.length === 0 && <div style={{padding:30,textAlign:'center',color:'var(--ink-3)'}}>No matches</div>}
+        </div>
+        <div style={{padding:'8px 18px',borderTop:'1px solid var(--line)',display:'flex',gap:16,fontFamily:'var(--mono)',fontSize:10,color:'var(--ink-3)',letterSpacing:'0.08em',textTransform:'uppercase'}}>
+          <span>↑↓ NAV</span><span>↵ SELECT</span><span>/ OPEN</span><span>{filtered.length} RESULTS</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ResetModal = ({ onConfirm, onCancel }) => {
+  const [bal, setBal] = React.useState(10000);
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <div className="modal-head">
+          <div className="modal-title">Reset virtual account</div>
+          <button className="btn ghost" onClick={onCancel}>×</button>
+        </div>
+        <div className="modal-body">
+          <p style={{color:'var(--ink-2)',fontSize:13,lineHeight:1.6,marginBottom:14}}>
+            Wipes virtual P&L, clears all trade history, and resets equity to a starting balance. The swarm keeps its learned weights — only the paper account is zeroed.
+          </p>
+          <div className="field">
+            <div className="field-label">Starting balance</div>
+            <input className="field-input" type="number" value={bal} onChange={e=>setBal(+e.target.value)} min="1000" step="1000"/>
+          </div>
+          <div className="tweak-opts" style={{marginTop:-6}}>
+            {[10000, 50000, 100000, 250000, 1000000].map(v => (
+              <div key={v} className={'tweak-opt '+(bal===v?'on':'')} onClick={()=>setBal(v)}>${v>=1e6?(v/1e6)+'M':(v/1000)+'k'}</div>
+            ))}
+          </div>
+          <div className="tiny" style={{color:'var(--warn)',marginTop:14,padding:'10px 12px',background:'rgba(255,170,40,0.06)',border:'1px solid rgba(255,170,40,0.25)',borderRadius:3,lineHeight:1.5}}>
+            <b style={{letterSpacing:'0.06em'}}>WARNING:</b> All {''}<span className="mono">{TRADES.length}</span> existing trades will be removed. The Trade history page will start empty until the swarm executes new trades.
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button className="btn ghost" onClick={onCancel}>CANCEL</button>
+          <button className="btn primary" onClick={()=>onConfirm(bal)}>RESET TO ${bal>=1e6?(bal/1e6)+'M':(bal/1000)+'K'}</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+window.SymbolPicker = SymbolPicker;
+window.ResetModal = ResetModal;
+
+</script>
+<script type="text/babel" data-presets="react">
+// Top-level App + sidebar nav + mode chrome
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "density": "Compact",
+  "accent": "Green",
+  "reasoning": true,
+  "animated": true,
+  "glyph": "◐"
+}/*EDITMODE-END*/;
+
+const NAV = [
+  { id: 'dashboard', label: 'Dashboard', icon: 'dash' },
+  { id: 'activity', label: 'Live activity', icon: 'feed' },
+  { id: 'history', label: 'Trade history', icon: 'history' },
+  { id: 'learning', label: 'Strategy / learning', icon: 'brain' },
+  { id: 'trade', label: 'Trade detail', icon: 'trade' },
+  { id: 'backtest', label: 'Backtest', icon: 'back' },
+  { id: 'market', label: 'Market map', icon: 'market' },
+  { id: 'settings', label: 'Settings', icon: 'gear' },
+];
+
+const App = () => {
+  const [mode, setMode] = React.useState(() => localStorage.getItem('shoal_mode') || 'VIRTUAL');
+  const [route, setRoute] = React.useState(() => localStorage.getItem('shoal_route') || 'dashboard');
+  const [showOnboarding, setShowOnboarding] = React.useState(() => !localStorage.getItem('shoal_onboarded'));
+  const [running, setRunning] = React.useState(true);
+  const [tick, setTick] = React.useState(0);
+  const [selectedTrade, setSelectedTrade] = React.useState(null);
+  const [pendingMode, setPendingMode] = React.useState(null);
+  const [tweaks, setTweaks] = React.useState(TWEAK_DEFAULTS);
+  const [editMode, setEditMode] = React.useState(false);
+  const [activeSymbol, setActiveSymbol] = React.useState(() => localStorage.getItem('shoal_sym') || 'NVDA');
+  const [direction, setDirection] = React.useState(() => localStorage.getItem('shoal_dir') || 'BOTH');
+  const [symbolPicker, setSymbolPicker] = React.useState(false);
+  const [showReset, setShowReset] = React.useState(false);
+  const [tradesResetAt, setTradesResetAt] = React.useState(() => {
+    const s = localStorage.getItem('shoal_trades_reset_at');
+    return s ? +s : 0;
+  });
+  // Global trade store — seeded from TRADES (filtered by reset), appended-to by the swarm tick.
+  const [trades, setTrades] = React.useState(() => {
+    const resetAt = +(localStorage.getItem('shoal_trades_reset_at') || 0);
+    return TRADES.filter(t => t.ts >= resetAt);
+  });
+  const [balance, setBalance] = React.useState(() => {
+    const s = localStorage.getItem('shoal_balance');
+    return s ? +s : EQUITY.bot[EQUITY.bot.length-1];
+  });
+  const [pnl, setPnl] = React.useState(() => {
+    const s = localStorage.getItem('shoal_pnl');
+    return s ? +s : EQUITY.bot[EQUITY.bot.length-1] - EQUITY.bot[0];
+  });
+  const [alpaca, setAlpaca] = React.useState(() => {
+    const saved = localStorage.getItem('shoal_alpaca');
+    return saved ? JSON.parse(saved) : { connected: false, balance: 0, account: null, broker: 'Alpaca Markets' };
+  });
+  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false });
+
+  React.useEffect(() => { localStorage.setItem('shoal_sym', activeSymbol); }, [activeSymbol]);
+  React.useEffect(() => { localStorage.setItem('shoal_dir', direction); }, [direction]);
+  React.useEffect(() => { localStorage.setItem('shoal_balance', balance); }, [balance]);
+  React.useEffect(() => { localStorage.setItem('shoal_pnl', pnl); }, [pnl]);
+  React.useEffect(() => { localStorage.setItem('shoal_trades_reset_at', tradesResetAt); }, [tradesResetAt]);
+
+  React.useEffect(() => {
+    const h = (e) => {
+      if (e.key === '/' && !['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)) {
+        e.preventDefault(); setSymbolPicker(true);
+      }
+      if (e.key === 'Escape') { setSymbolPicker(false); }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
+
+  const resetAccount = (startingBal) => {
+    setBalance(startingBal);
+    setPnl(0);
+    const now = Date.now();
+    setTradesResetAt(now);
+    setTrades([]);
+    setShowReset(false);
+  };
+
+  // Global swarm execution — generate new trades on a tick, regardless of which screen is mounted.
+  React.useEffect(() => {
+    if (!running) return;
+    const ivl = setInterval(() => {
+      // 1) close some open positions stochastically (turn into WIN/LOSS)
+      setTrades(prev => {
+        const next = prev.map(t => {
+          if (t.status !== 'OPEN') return t;
+          // ~25% chance per tick to close
+          if (Math.random() < 0.25) {
+            const pnlAmt = (Math.random() - 0.42) * t.qty * t.price * 0.022;
+            const exit = t.price + (pnlAmt / t.qty) * (t.side === 'BUY' ? 1 : -1);
+            return {
+              ...t,
+              status: pnlAmt > 0 ? 'WIN' : 'LOSS',
+              pnl: pnlAmt,
+              pnlPct: pnlAmt / (t.qty * t.price),
+              exit,
+              exitTs: Date.now(),
+              isNew: false,
+            };
+          }
+          return t;
+        });
+        return next;
+      });
+
+      // 2) sometimes open a new trade (~55% per tick)
+      if (Math.random() < 0.55) {
+        const t = TICKERS[Math.floor(Math.random() * TICKERS.length)];
+        let side;
+        if (direction === 'LONG') side = 'BUY';
+        else if (direction === 'SHORT') side = 'SELL';
+        else side = Math.random() > 0.5 ? 'BUY' : 'SELL';
+        const qty = Math.floor(Math.random() * 60) + 5;
+        const conf = 0.55 + Math.random() * 0.35;
+        const price = t.last * (1 + (Math.random() - 0.5) * 0.02);
+        const reasonList = REASONS[side === 'BUY' ? 'buy' : 'sell'];
+        const newT = {
+          id: 'TX-' + Math.floor(11000 + Math.random() * 9999),
+          ts: Date.now(),
+          exitTs: null,
+          sym: t.sym, side, qty, price, exit: null,
+          conf,
+          reason: reasonList[Math.floor(Math.random() * reasonList.length)],
+          pnl: null, pnlPct: null,
+          status: 'OPEN',
+          mode,
+          consensus: Math.floor(conf * 8),
+          isNew: true,
+        };
+        setTrades(prev => [newT, ...prev].slice(0, 200));
+      }
+    }, 3500);
+    return () => clearInterval(ivl);
+  }, [running, mode, direction]);
+
+  // Live equity pulse — faster when a directional bias is active.
+  // Each tick: small drift + jitter. BOTH = slow & balanced, LONG/SHORT = faster with directional drift.
+  React.useEffect(() => {
+    if (!running) return;
+    const hz = direction === 'BOTH' ? 1400 : 600; // ms between updates
+    const driftBias = direction === 'LONG' ? 0.0008 : direction === 'SHORT' ? 0.0007 : 0.0004;
+    const vol = direction === 'BOTH' ? 0.0008 : 0.0018;
+    const ivl = setInterval(() => {
+      const r = (Math.random() - 0.5) * vol * 2 + driftBias;
+      setBalance(b => Math.max(1000, b * (1 + r)));
+      setPnl(p => p + (Math.random() - 0.48) * 140 * (direction === 'BOTH' ? 0.6 : 1.4));
+    }, hz);
+    return () => clearInterval(ivl);
+  }, [running, direction]);
+
+  React.useEffect(() => { localStorage.setItem('shoal_mode', mode); }, [mode]);
+  React.useEffect(() => { localStorage.setItem('shoal_route', route); }, [route]);
+  React.useEffect(() => { localStorage.setItem('shoal_alpaca', JSON.stringify(alpaca)); }, [alpaca]);
+
+  // global tick for animations
+  React.useEffect(() => {
+    const ivl = setInterval(() => setTick(t => t + 1), 800);
+    return () => clearInterval(ivl);
+  }, []);
+
+  // edit mode protocol
+  React.useEffect(() => {
+    const handler = (e) => {
+      if (e.data?.type === '__activate_edit_mode') setEditMode(true);
+      if (e.data?.type === '__deactivate_edit_mode') setEditMode(false);
+    };
+    window.addEventListener('message', handler);
+    window.parent.postMessage({type:'__edit_mode_available'}, '*');
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  const handleTradeClick = (t) => { setSelectedTrade(t); setRoute('trade'); };
+
+  const requestMode = (m) => {
+    if (m === mode) return;
+    setPendingMode(m);
+  };
+  const confirmMode = () => {
+    setMode(pendingMode);
+    setPendingMode(null);
+  };
+
+  if (showOnboarding) {
+    return <ScreenOnboarding onDone={() => { localStorage.setItem('shoal_onboarded', '1'); setShowOnboarding(false); }}/>;
+  }
+
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades };
+  const screens = {
+    dashboard: <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
+    activity: <ScreenActivity mode={mode} tick={tick} onTradeClick={handleTradeClick} running={running} ctx={ctx}/>,
+    history: <ScreenHistory mode={mode} tick={tick} onTradeClick={handleTradeClick} ctx={ctx}/>,
+    learning: <ScreenLearning mode={mode} ctx={ctx}/>,
+    trade: <ScreenTrade trade={selectedTrade || TRADES[0]} onBack={()=>setRoute('dashboard')} mode={mode} ctx={ctx}/>,
+    backtest: <ScreenBacktest mode={mode} ctx={ctx}/>,
+    market: <ScreenMarket tick={tick} mode={mode} ctx={ctx}/>,
+    settings: <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)}/>,
+  };
+
+  const navItem = NAV.find(n => n.id === route);
+  const navItemLabel = navItem ? navItem.label : 'Dashboard';
+
+  return (
+    <div className={'shell ' + (mode === 'LIVE' ? 'live' : '')}>
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-row">
+            <span className="brand-mark"></span>
+            <span className="brand-name">Shoal</span>
+          </div>
+          <div className="brand-sub">Adaptive · v0.4.2</div>
+        </div>
+
+        <div className="mode-pill" onClick={()=>requestMode(mode === 'VIRTUAL' ? 'LIVE' : 'VIRTUAL')}>
+          <div className="mode-pill-row">
+            <span className="mode-pill-label">Trading mode</span>
+            <span className="mono tiny muted">↻ switch</span>
+          </div>
+          <div style={{marginTop:6}}>
+            <span className="mode-dot"></span>
+            <span className="mode-pill-value">{mode === 'LIVE' ? 'LIVE TRADING' : 'VIRTUAL · PAPER'}</span>
+          </div>
+        </div>
+
+        <div className="nav-section">
+          <div className="nav-label">Workspace</div>
+          {NAV.slice(0, 7).map(n => (
+            <div key={n.id} className={'nav-item ' + (route===n.id?'active':'')} onClick={()=>setRoute(n.id)}>
+              <span className="nav-icon"><Icon name={n.icon}/></span>
+              <span>{n.label}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="nav-section">
+          <div className="nav-label">System</div>
+          {NAV.slice(7).map(n => (
+            <div key={n.id} className={'nav-item ' + (route===n.id?'active':'')} onClick={()=>setRoute(n.id)}>
+              <span className="nav-icon"><Icon name={n.icon}/></span>
+              <span>{n.label}</span>
+              {n.id === 'settings' && !alpaca.connected && <span className="nav-num warn" style={{color:'var(--warn)'}}>!</span>}
+            </div>
+          ))}
+        </div>
+
+        <div className="sidebar-foot">
+          <div className="row"><span>Engine</span><span className="ok">● online</span></div>
+          <div className="row"><span>Data feed</span><span className="ok">● IEX</span></div>
+          <div className="row"><span>Broker</span><span className={alpaca.connected ? 'ok' : ''}>{alpaca.connected ? '● Alpaca' : '○ none'}</span></div>
+          <div className="row"><span>Latency</span><span>{42 + (tick % 8)}ms</span></div>
+        </div>
+      </aside>
+
+      <main className="main">
+        <div className="topbar">
+          <div className="crumb">SHOAL / <b>{navItemLabel}</b></div>
+          <button className="btn" style={{marginLeft:8,padding:'6px 12px',display:'flex',alignItems:'center',gap:10}} onClick={()=>setSymbolPicker(true)} title="Switch symbol ( / )">
+            <span className="mono" style={{color:'var(--ink)',fontWeight:500,letterSpacing:'0.02em'}}>◎ {activeSymbol}</span>
+            <span className="mono tiny muted" style={{letterSpacing:'0.1em'}}>⌘/</span>
+          </button>
+          <div className="tweak-opts" style={{marginLeft:6}}>
+            {['LONG','SHORT','BOTH'].map(d => (
+              <div key={d} className={'tweak-opt '+(direction===d?'on':'')} onClick={()=>setDirection(d)}
+                title={d==='LONG'?'Buy-only · no shorting':d==='SHORT'?'Short-only · contrarian':'Both directions'}>
+                {d==='LONG'?'↑ LONG':d==='SHORT'?'↓ SHORT':'⇅ BOTH'}
+              </div>
+            ))}
+          </div>
+          <div className="topbar-spacer"></div>
+          {tweaks.animated && <TickerStrip tickers={TICKERS} tick={tick}/>}
+          <div className={'bot-status ' + (running ? '' : 'paused')}>
+            <span className="led"></span>
+            <span>{running ? 'BOT RUNNING' : 'BOT PAUSED'}</span>
+            <button onClick={()=>setRunning(!running)}>{running ? 'PAUSE' : 'RESUME'}</button>
+          </div>
+        </div>
+
+        {screens[route]}
+      </main>
+
+      {pendingMode && <ModeSwitchModal targetMode={pendingMode} alpaca={alpaca} onConfirm={confirmMode} onCancel={()=>setPendingMode(null)}/>}
+      {symbolPicker && <SymbolPicker onPick={(s)=>{setActiveSymbol(s); setSymbolPicker(false);}} onClose={()=>setSymbolPicker(false)}/>}
+      {showReset && <ResetModal onConfirm={resetAccount} onCancel={()=>setShowReset(false)}/>}
+      {editMode && <TweaksPanel tweaks={tweaks} setTweaks={(nt) => {
+        setTweaks(nt);
+        window.parent.postMessage({type:'__edit_mode_set_keys', edits: nt}, '*');
+      }}/>}
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+
+</script>
+
+</body>
+</html>
