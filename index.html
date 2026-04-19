@@ -1619,6 +1619,12 @@ function genPredVsActual(sym = 'NVDA') {
 const PRED_ACTUAL = genPredVsActual('NVDA');
 window.genPredVsActual = genPredVsActual;
 
+// Pre-compute signals for every ticker once (price history is static per session).
+// The ensemble re-evaluates each tick as weights adapt, but raw signals don't change.
+const SIGNALS_ALL = Object.fromEntries(
+  TICKERS.map(tk => [tk.sym, computeSignals(tk.sym, PRICE_HISTORY)]).filter(([, v]) => v)
+);
+
 // param tuning timeline events
 const PARAM_EVENTS = [
   { day: 6, label: 'Risk per trade ↓ 1.4% → 1.1%', kind: 'risk' },
@@ -1680,7 +1686,9 @@ const Icon = ({ name, size = 14 }) => {
     case 'play': return <svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><path d="M4 3 L4 13 L13 8 Z"/></svg>;
     case 'pause': return <svg viewBox="0 0 16 16" fill="currentColor" stroke="none"><rect x="4" y="3" width="3" height="10"/><rect x="9" y="3" width="3" height="10"/></svg>;
     case 'arr': return <svg viewBox="0 0 16 16" {...s}><path d="M3 8 L13 8 M9 4 L13 8 L9 12"/></svg>;
-    case 'plus': return <svg viewBox="0 0 16 16" {...s}><path d="M8 3 L8 13 M3 8 L13 8"/></svg>;
+    case 'plus':  return <svg viewBox="0 0 16 16" {...s}><path d="M8 3 L8 13 M3 8 L13 8"/></svg>;
+    case 'perf':  return <svg viewBox="0 0 16 16" {...s}><path d="M2 12 L5 8 L8 10 L11 5 L14 7"/><path d="M2 12 L5 9 L8 7 L11 10 L14 6" strokeOpacity="0.4"/></svg>;
+    case 'trend': return <svg viewBox="0 0 16 16" {...s}><path d="M2 11 L6 6 L9 8 L13 3"/><line x1="2" x2="14" y1="13" y2="13" strokeWidth="0.8" strokeOpacity="0.4"/></svg>;
     default: return null;
   }
 };
@@ -3727,6 +3735,198 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "glyph": "◐"
 }/*EDITMODE-END*/;
 
+// ── Per-trade P&L bars (used in ScreenPnlTrend) ─────────────────────────────
+const PnlBars = ({ trades, height = 110 }) => {
+  if (!trades.length) return null;
+  const maxAbs = Math.max(...trades.map(t => Math.abs(t.pnl || 0)), 1);
+  const W = 700, H = height, mid = H / 2;
+  const barW = Math.max(2, Math.floor((W - 20) / trades.length) - 1);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="chart" preserveAspectRatio="none" style={{height}}>
+      <line x1="10" x2={W - 10} y1={mid} y2={mid} stroke="var(--line-2)" strokeWidth="0.5"/>
+      {trades.map((t, i) => {
+        const x = 10 + i * ((W - 20) / trades.length);
+        const h = Math.max(1, (Math.abs(t.pnl) / maxAbs) * (mid - 6));
+        return <rect key={t.id} x={x} y={t.pnl > 0 ? mid - h : mid} width={Math.max(1, barW)} height={h} fill={t.pnl > 0 ? 'var(--up)' : 'var(--down)'} opacity="0.85"/>;
+      })}
+    </svg>
+  );
+};
+
+// ── ScreenAgentPerf ──────────────────────────────────────────────────────────
+const ScreenAgentPerf = ({ mode, ctx }) => {
+  const agentAccuracySeries = ctx?.agentAccuracySeries || {};
+  const agentHistory        = ctx?.agentHistory        || {};
+  const agentWeights        = ctx?.agentWeights        || {};
+  const maxLen = AGENTS.reduce((m, a) => Math.max(m, (agentAccuracySeries[a.id] || []).length), 0);
+
+  return (
+    <div className="page" data-screen-label="08 Agent Performance">
+      <div className="page-head">
+        <div className="page-eyebrow">Agent intelligence · win/loss accuracy over time</div>
+        <h1 className="page-title">Which agents are <em>earning their weight</em>?</h1>
+        <p className="page-sub">Rolling accuracy is computed from each agent's last 30 closed calls. Weights shift via reinforcement after every close — strong agents grow, weak agents shrink.</p>
+      </div>
+
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-head">
+          <div className="card-title">Rolling accuracy · all agents</div>
+          <div className="card-meta">{maxLen} data point{maxLen !== 1 ? 's' : ''} · rolling 30-trade window per agent</div>
+        </div>
+        {maxLen < 3
+          ? <div style={{padding:'40px 0',textAlign:'center',color:'var(--ink-3)',fontFamily:'var(--mono)',fontSize:12}}>
+              Collecting… {maxLen} closed trade{maxLen !== 1 ? 's' : ''} with votes recorded — need at least 3
+            </div>
+          : <>
+              <LineChart
+                series={AGENTS.map(a => agentAccuracySeries[a.id] || [a.accuracy])}
+                colors={AGENTS.map(a => a.color)}
+                height={260}
+                yFmt={v => (v * 100).toFixed(0) + '%'}
+                fillFirst={false}
+              />
+              <div className="legend" style={{marginTop:10,display:'flex',flexWrap:'wrap',gap:'4px 14px'}}>
+                {AGENTS.map(a => <span key={a.id}><span className="legend-dot" style={{background:a.color}}></span>{a.name.split(' ')[0]}</span>)}
+              </div>
+            </>
+        }
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div className="card-title">Current standing</div>
+          <div className="card-meta">sorted by rolling accuracy · — = insufficient data</div>
+        </div>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Family</th>
+              <th style={{textAlign:'right'}}>Calls</th>
+              <th style={{textAlign:'right'}}>Accuracy</th>
+              <th style={{textAlign:'right'}}>Weight</th>
+            </tr>
+          </thead>
+          <tbody>
+            {AGENTS
+              .map(a => {
+                const hist = agentHistory[a.id] || [];
+                const acc  = hist.length >= 3 ? hist.filter(Boolean).length / hist.length : null;
+                const w    = agentWeights[a.id] ?? a.weight;
+                return { ...a, hist, acc, w };
+              })
+              .sort((a, b) => (b.acc ?? b.accuracy) - (a.acc ?? a.accuracy))
+              .map(a => (
+                <tr key={a.id}>
+                  <td><span style={{color:a.color,marginRight:8}}>{a.glyph}</span>{a.name}</td>
+                  <td className="mono tiny muted">{a.family}</td>
+                  <td className="mono" style={{textAlign:'right'}}>{a.hist.length}</td>
+                  <td style={{textAlign:'right'}}>
+                    {a.acc !== null
+                      ? <span className={a.acc >= 0.6 ? 'up' : a.acc < 0.5 ? 'dn' : ''}>{(a.acc * 100).toFixed(1)}%</span>
+                      : <span className="muted">–</span>}
+                  </td>
+                  <td className="mono" style={{textAlign:'right'}}>{(a.w * 100).toFixed(1)}%</td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// ── ScreenPnlTrend ───────────────────────────────────────────────────────────
+const ScreenPnlTrend = ({ mode, ctx }) => {
+  const { trades, tradesResetAt } = ctx || {};
+  const resetAt = tradesResetAt || 0;
+
+  const closed = React.useMemo(() =>
+    (trades || [])
+      .filter(t => t.pnl != null && t.ts >= resetAt)
+      .sort((a, b) => (a.exitTs || a.ts) - (b.exitTs || b.ts)),
+    [trades, resetAt]
+  );
+
+  if (!closed.length) return (
+    <div className="page" data-screen-label="09 P/L Trend">
+      <div className="page-head">
+        <div className="page-eyebrow">Portfolio performance · since last reset</div>
+        <h1 className="page-title">P/L trend</h1>
+        <p className="page-sub">No closed trades since last reset.</p>
+      </div>
+    </div>
+  );
+
+  let cum = 0;
+  const cumSeries = closed.map(t => { cum += t.pnl; return cum; });
+  const totalPnl  = cumSeries[cumSeries.length - 1] || 0;
+  const wins      = closed.filter(t => t.pnl > 0);
+  const losses    = closed.filter(t => t.pnl <= 0);
+  const winRate   = closed.length ? wins.length / closed.length : 0;
+  const avgWin    = wins.length   ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length   : 0;
+  const avgLoss   = losses.length ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
+  const maxDD     = cumSeries.reduce((dd, v, i, a) => {
+    const peak = Math.max(...a.slice(0, i + 1));
+    return Math.min(dd, v - peak);
+  }, 0);
+
+  return (
+    <div className="page" data-screen-label="09 P/L Trend">
+      <div className="page-head">
+        <div className="page-eyebrow">Portfolio performance · since last reset</div>
+        <h1 className="page-title">
+          Cumulative <em className={totalPnl >= 0 ? 'up' : 'dn'}>{totalPnl >= 0 ? 'gain' : 'loss'}</em> across {closed.length} closed trade{closed.length !== 1 ? 's' : ''}
+        </h1>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:12,marginBottom:16}}>
+        {[
+          { label: 'TOTAL P&L',  val: fmtMoney(totalPnl),           cls: totalPnl >= 0 ? 'up' : 'dn' },
+          { label: 'WIN RATE',   val: (winRate * 100).toFixed(1) + '%', cls: winRate >= 0.5 ? 'up' : 'dn' },
+          { label: 'AVG WIN',    val: fmtMoney(avgWin),              cls: 'up' },
+          { label: 'AVG LOSS',   val: fmtMoney(avgLoss),             cls: 'dn' },
+          { label: 'MAX DRAWDN', val: fmtMoney(maxDD),               cls: 'dn' },
+        ].map(k => (
+          <div key={k.label} className="card" style={{padding:'14px 16px'}}>
+            <div className="mono tiny muted" style={{letterSpacing:'0.1em',marginBottom:6}}>{k.label}</div>
+            <div className={'mono ' + k.cls} style={{fontSize:18}}>{k.val}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-head">
+          <div className="card-title">Cumulative P&L</div>
+          <div className="card-meta">{closed.length} trades · running total</div>
+        </div>
+        <LineChart
+          series={[cumSeries]}
+          colors={[totalPnl >= 0 ? 'var(--up)' : 'var(--down)']}
+          height={240}
+          yFmt={v => fmtMoney(v, 0)}
+          fillFirst={true}
+        />
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div className="card-title">Per-trade P&L</div>
+          <div className="card-meta">{wins.length}W · {losses.length}L · green above zero, red below</div>
+        </div>
+        <PnlBars trades={closed}/>
+        <div style={{marginTop:10,display:'flex',flexWrap:'wrap',gap:8}}>
+          {closed.slice(-12).reverse().map(t => (
+            <div key={t.id} style={{fontFamily:'var(--mono)',fontSize:10,padding:'4px 8px',borderRadius:3,background:'var(--bg-2)',color: t.pnl > 0 ? 'var(--up)' : 'var(--down)'}}>
+              {t.sym} {t.side} {t.pnl >= 0 ? '+' : ''}{fmtMoney(t.pnl, 0)}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: 'dash' },
   { id: 'activity', label: 'Live activity', icon: 'feed' },
@@ -3735,6 +3935,8 @@ const NAV = [
   { id: 'trade', label: 'Trade detail', icon: 'trade' },
   { id: 'backtest', label: 'Backtest', icon: 'back' },
   { id: 'market', label: 'Market map', icon: 'market' },
+  { id: 'agentperf', label: 'Agent performance', icon: 'perf' },
+  { id: 'pnltrend', label: 'P/L trend', icon: 'trend' },
   { id: 'settings', label: 'Settings', icon: 'gear' },
 ];
 
@@ -3783,18 +3985,34 @@ const App = () => {
     return w;
   });
   const [agentHistory, setAgentHistory] = React.useState({});
-  const [lastSignals, setLastSignals] = React.useState(() => computeSignals('NVDA', PRICE_HISTORY));
+  const [agentAccuracySeries, setAgentAccuracySeries] = React.useState({});
+  const [lastSignals, setLastSignals] = React.useState(() => SIGNALS_ALL['NVDA'] || null);
   const agentWeightsRef = React.useRef(agentWeights);
+  const agentHistoryRef  = React.useRef(agentHistory);
   React.useEffect(() => { agentWeightsRef.current = agentWeights; }, [agentWeights]);
+  React.useEffect(() => { agentHistoryRef.current  = agentHistory;  }, [agentHistory]);
+  // Keep lastSignals in sync with active symbol
+  React.useEffect(() => { setLastSignals(SIGNALS_ALL[activeSymbol] || null); }, [activeSymbol]);
 
-  // Watch for newly closed trades → update agent weights + accuracy history
+  // Watch for newly closed trades → update agent weights + accuracy history + accuracy series
   const prevTradesRef = React.useRef([]);
   React.useEffect(() => {
     const prevIds = new Set(prevTradesRef.current.filter(t => t.pnl != null).map(t => t.id));
     const newlyClosed = trades.filter(t => t.pnl != null && t.votes && !prevIds.has(t.id));
     if (newlyClosed.length > 0) {
+      const newHistory = newlyClosed.reduce((acc, t) => updateAgentHistory(acc, t), agentHistoryRef.current);
       setAgentWeights(w => newlyClosed.reduce(updateAgentWeights, w));
-      setAgentHistory(h => newlyClosed.reduce((acc, t) => updateAgentHistory(acc, t), h));
+      setAgentHistory(newHistory);
+      // Append one accuracy data-point per agent for every batch of closes (keeps series lengths in sync)
+      setAgentAccuracySeries(series => {
+        const next = { ...series };
+        for (const a of AGENTS) {
+          const hist = newHistory[a.id] || [];
+          const acc  = hist.length >= 2 ? hist.filter(Boolean).length / hist.length : a.accuracy;
+          next[a.id] = [...(next[a.id] || []), acc];
+        }
+        return next;
+      });
     }
     prevTradesRef.current = trades;
   }, [trades]);
@@ -3961,50 +4179,56 @@ const App = () => {
         });
       });
 
-      // 2) Compute real signals for the active symbol and place a trade when there is conviction
+      // 2) Scan all tickers for conviction; probabilistic selection weighted by confidence²
       const isLiveReal = mode === 'LIVE' && !!alpacaRef.current?.token;
       if (Math.random() < 0.55) {
-        const signals = computeSignals(activeSymbol, PRICE_HISTORY);
-        if (!signals) return;
-        setLastSignals(signals);
+        const candidates = [];
+        for (const tk of TICKERS) {
+          const sigs = SIGNALS_ALL[tk.sym];
+          if (!sigs) continue;
+          const ens = computeEnsemble(sigs, agentWeightsRef.current);
+          if (!ens.dir) continue;
+          let side = ens.dir;
+          if (direction === 'LONG'  && side === 'SELL') continue;
+          if (direction === 'SHORT' && side === 'BUY')  continue;
+          candidates.push({ tk, sigs, ens, side });
+        }
+        if (!candidates.length) return;
 
-        const ensemble = computeEnsemble(signals, agentWeightsRef.current);
-        if (!ensemble.dir) return; // no net signal this tick
+        // Weighted random selection — higher confidence² is more likely but not guaranteed
+        const totalScore = candidates.reduce((s, c) => s + c.ens.confidence ** 2, 0);
+        let rand = Math.random() * totalScore;
+        let chosen = candidates[0];
+        for (const c of candidates) { rand -= c.ens.confidence ** 2; if (rand <= 0) { chosen = c; break; } }
 
-        // Honour direction constraint
-        let side = ensemble.dir;
-        if (direction === 'LONG' && side === 'SELL') return;
-        if (direction === 'SHORT' && side === 'BUY') return;
-
-        // Size proportional to conviction (Kelly-flavoured)
+        const { tk, sigs, ens: ensemble, side } = chosen;
         const qty = Math.max(5, Math.round(ensemble.confidence * 70));
-        const ticker = TICKERS.find(tk => tk.sym === activeSymbol) || TICKERS[0];
 
         if (isLiveReal) {
           fetch(`${BACKEND_URL}/api/orders`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaRef.current.token },
-            body: JSON.stringify({ symbol: ticker.sym, qty: String(qty), side: side === 'BUY' ? 'buy' : 'sell', type: 'market', time_in_force: 'day' }),
+            body: JSON.stringify({ symbol: tk.sym, qty: String(qty), side: side === 'BUY' ? 'buy' : 'sell', type: 'market', time_in_force: 'day' }),
           }).catch(() => {});
         } else {
-          const price = ticker.last * (1 + (Math.random() - 0.5) * 0.01);
+          const price = tk.last * (1 + (Math.random() - 0.5) * 0.01);
           setTrades(prev => [{
             id:        'TX-' + Math.floor(11000 + Math.random() * 9999),
             ts:        Date.now(), exitTs: null,
-            sym:       ticker.sym, side, qty, price, exit: null,
+            sym:       tk.sym, side, qty, price, exit: null,
             conf:      ensemble.confidence,
-            reason:    buildReason(signals, ensemble),
+            reason:    buildReason(sigs, ensemble),
             pnl: null, pnlPct: null, status: 'OPEN', mode,
             consensus: ensemble.consensus,
             votes:     ensemble.votes,
-            signals,
+            signals:   sigs,
             isNew:     true,
           }, ...prev].slice(0, 200));
         }
       }
     }, 3500);
     return () => clearInterval(ivl);
-  }, [running, mode, direction, activeSymbol]);
+  }, [running, mode, direction]);
 
   // Live equity pulse — faster when a directional bias is active.
   // Each tick: small drift + jitter. BOTH = slow & balanced, LONG/SHORT = faster with directional drift.
@@ -4059,15 +4283,17 @@ const App = () => {
     return <ScreenOnboarding onDone={() => { localStorage.setItem('shoal_onboarded', '1'); setShowOnboarding(false); }}/>;
   }
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, lastSignals };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals };
   const screens = {
     dashboard: <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
     activity: <ScreenActivity mode={mode} tick={tick} onTradeClick={handleTradeClick} running={running} ctx={ctx}/>,
     history: <ScreenHistory mode={mode} tick={tick} onTradeClick={handleTradeClick} ctx={ctx}/>,
     learning: <ScreenLearning mode={mode} ctx={ctx}/>,
     trade: <ScreenTrade trade={selectedTrade || TRADES[0]} onBack={()=>setRoute('dashboard')} mode={mode} ctx={ctx}/>,
-    backtest: <ScreenBacktest mode={mode} ctx={ctx}/>,
-    market: <ScreenMarket tick={tick} mode={mode} ctx={ctx}/>,
+    backtest:  <ScreenBacktest mode={mode} ctx={ctx}/>,
+    market:    <ScreenMarket tick={tick} mode={mode} ctx={ctx}/>,
+    agentperf: <ScreenAgentPerf mode={mode} ctx={ctx}/>,
+    pnltrend:  <ScreenPnlTrend mode={mode} ctx={ctx}/>,
     settings: <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} backendOk={backendOk}/>,
   };
 
