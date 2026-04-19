@@ -167,13 +167,14 @@ app.get('/api/stream', auth, (req, res) => {
 
   const push = async () => {
     try {
-      const [rAcc, rPos, rOrd] = await Promise.all([
+      const [rAcc, rPos, rOrd, rClk] = await Promise.all([
         fetch(`${BASE[session.env]}/v2/account`,           { headers: alpacaHeaders(session) }),
         fetch(`${BASE[session.env]}/v2/positions`,         { headers: alpacaHeaders(session) }),
         fetch(`${BASE[session.env]}/v2/orders?status=all&limit=50`, { headers: alpacaHeaders(session) }),
+        fetch(`${BASE[session.env]}/v2/clock`,             { headers: alpacaHeaders(session) }),
       ]);
-      const [account, positions, orders] = await Promise.all([rAcc.json(), rPos.json(), rOrd.json()]);
-      res.write(`data: ${JSON.stringify({ account, positions, orders })}\n\n`);
+      const [account, positions, orders, clock] = await Promise.all([rAcc.json(), rPos.json(), rOrd.json(), rClk.json()]);
+      res.write(`data: ${JSON.stringify({ account, positions, orders, clock })}\n\n`);
     } catch (err) {
       res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
     }

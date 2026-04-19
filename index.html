@@ -1191,6 +1191,37 @@ const SEED = 1337;
 const BACKEND_URL = (typeof window !== 'undefined' && window.SHOAL_BACKEND_URL) || 'http://localhost:3001';
 Object.assign(window, { BACKEND_URL });
 
+function getMarketStatus() {
+  const now = new Date();
+  // "Fake ET" trick: parse ET string as local time so .getHours() returns ET hours
+  const etNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const h = etNow.getHours(), m = etNow.getMinutes();
+  const day = etNow.getDay();
+  const isWeekday = day >= 1 && day <= 5;
+  const afterOpen = h > 9 || (h === 9 && m >= 30);
+  const beforeClose = h < 16;
+  const isOpen = isWeekday && afterOpen && beforeClose;
+  // etOffset converts "fake ET" timestamps back to real UTC-based time
+  const etOffset = now.getTime() - etNow.getTime();
+
+  const skipToWeekday = (d) => {
+    while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  };
+
+  const nextOpenET = new Date(etNow);
+  nextOpenET.setHours(9, 30, 0, 0);
+  if (!isWeekday || afterOpen) {
+    nextOpenET.setDate(nextOpenET.getDate() + 1);
+    skipToWeekday(nextOpenET);
+  }
+
+  return {
+    isOpen,
+    nextOpen: new Date(nextOpenET.getTime() + etOffset),
+    source: 'client',
+  };
+}
+
 function mulberry32(a) {
   return function() {
     a |= 0; a = a + 0x6D2B79F5 | 0;
@@ -3367,7 +3398,7 @@ const ALL_SYMBOLS = (() => {
   return out;
 })();
 
-const SymbolPicker = ({ onPick, onClose }) => {
+const SymbolPicker = ({ onPick, onClose, marketStatus }) => {
   const [q, setQ] = React.useState('');
   const [idx, setIdx] = React.useState(0);
   const inputRef = React.useRef(null);
@@ -3388,6 +3419,17 @@ const SymbolPicker = ({ onPick, onClose }) => {
           <input ref={inputRef} style={{flex:1,border:'none',background:'transparent',padding:4,fontSize:15,color:'var(--ink)',outline:'none',fontFamily:'var(--mono)'}} placeholder="Search symbol, name or sector…" value={q} onChange={e=>{setQ(e.target.value); setIdx(0);}} onKeyDown={onKey}/>
           <span className="mono tiny muted">ESC</span>
         </div>
+        {marketStatus && !marketStatus.isOpen && (
+          <div style={{padding:'10px 18px',background:'rgba(240,198,116,0.07)',borderBottom:'1px solid var(--line)',display:'flex',alignItems:'center',gap:12}}>
+            <span style={{fontFamily:'var(--mono)',fontSize:9,letterSpacing:'0.12em',fontWeight:500,color:'var(--warn)'}}>MARKET CLOSED</span>
+            <span style={{fontSize:12,color:'var(--ink-2)'}}>
+              Opens {marketStatus.nextOpen
+                ? marketStatus.nextOpen.toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})
+                : '–'}
+            </span>
+            {marketStatus.source === 'client' && <span style={{fontSize:10,color:'var(--ink-4)',fontFamily:'var(--mono)'}}>est.</span>}
+          </div>
+        )}
         <div style={{maxHeight:'52vh',overflowY:'auto'}}>
           {filtered.map((s, i) => (
             <div key={s.sym}
@@ -3511,6 +3553,13 @@ const App = () => {
   // Backend availability (null = checking, true = online, false = offline)
   const [backendOk, setBackendOk] = React.useState(null);
 
+  const [marketStatus, setMarketStatus] = React.useState(() => getMarketStatus());
+  React.useEffect(() => {
+    setMarketStatus(getMarketStatus());
+    const id = setInterval(() => setMarketStatus(getMarketStatus()), 30000);
+    return () => clearInterval(id);
+  }, []);
+
   // Stable ref so interval callbacks can read latest alpaca without re-subscribing
   const alpacaRef = React.useRef(alpaca);
   React.useEffect(() => { alpacaRef.current = alpaca; }, [alpaca]);
@@ -3542,8 +3591,17 @@ const App = () => {
     streamRef.current = es;
     es.onmessage = (e) => {
       try {
-        const { account, positions, orders, error } = JSON.parse(e.data);
+        const { account, positions, orders, clock, error } = JSON.parse(e.data);
         if (error) return;
+
+        if (clock) {
+          setMarketStatus(s => ({
+            ...s,
+            isOpen: clock.is_open,
+            nextOpen: clock.next_open ? new Date(clock.next_open) : s.nextOpen,
+            source: 'alpaca',
+          }));
+        }
 
         // Real account equity → replace simulated balance
         if (account?.equity) {
@@ -3828,6 +3886,7 @@ const App = () => {
           <div className="row"><span>Engine</span><span className="ok">● online</span></div>
           <div className="row"><span>Backend</span><span className={backendOk===true?'ok':backendOk===false?'dn':'muted'}>{backendOk===true?'● online':backendOk===false?'○ offline':'○ …'}</span></div>
           <div className="row"><span>Broker</span><span className={alpaca.connected ? 'ok' : ''}>{alpaca.connected ? '● Alpaca' + (alpaca.token ? ' ⟳' : '') : '○ none'}</span></div>
+          <div className="row"><span>Market</span><span className={marketStatus.isOpen ? 'ok' : ''} style={!marketStatus.isOpen ? {color:'var(--warn)'} : {}}>{marketStatus.isOpen ? '● open' : '○ closed'}</span></div>
           <div className="row"><span>Latency</span><span>{42 + (tick % 8)}ms</span></div>
         </div>
       </aside>
@@ -3837,6 +3896,7 @@ const App = () => {
           <div className="crumb">SHOAL / <b>{navItemLabel}</b></div>
           <button className="btn" style={{marginLeft:8,padding:'6px 12px',display:'flex',alignItems:'center',gap:10}} onClick={()=>setSymbolPicker(true)} title="Switch symbol ( / )">
             <span className="mono" style={{color:'var(--ink)',fontWeight:500,letterSpacing:'0.02em'}}>◎ {activeSymbol}</span>
+            {!marketStatus.isOpen && <span style={{fontSize:9,letterSpacing:'0.12em',padding:'2px 6px',borderRadius:3,background:'var(--line-2)',color:'var(--warn)',fontFamily:'var(--mono)',fontWeight:500}}>CLOSED</span>}
             <span className="mono tiny muted" style={{letterSpacing:'0.1em'}}>⌘/</span>
           </button>
           <div className="tweak-opts" style={{marginLeft:6}}>
@@ -3860,7 +3920,7 @@ const App = () => {
       </main>
 
       {pendingMode && <ModeSwitchModal targetMode={pendingMode} alpaca={alpaca} onConfirm={confirmMode} onCancel={()=>setPendingMode(null)}/>}
-      {symbolPicker && <SymbolPicker onPick={(s)=>{setActiveSymbol(s); setSymbolPicker(false);}} onClose={()=>setSymbolPicker(false)}/>}
+      {symbolPicker && <SymbolPicker onPick={(s)=>{setActiveSymbol(s); setSymbolPicker(false);}} onClose={()=>setSymbolPicker(false)} marketStatus={marketStatus}/>}
       {showReset && <ResetModal onConfirm={resetAccount} onCancel={()=>setShowReset(false)}/>}
       {editMode && <TweaksPanel tweaks={tweaks} setTweaks={(nt) => {
         setTweaks(nt);
