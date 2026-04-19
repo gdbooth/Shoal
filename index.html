@@ -1222,6 +1222,193 @@ function getMarketStatus() {
   };
 }
 
+// ── Real signal computation ──────────────────────────────────────────────────
+function computeSignals(sym, priceHistory) {
+  const prices = priceHistory[sym];
+  if (!prices || prices.length < 60) return null;
+  const n = prices.length;
+  const last = prices[n - 1];
+  const rets = (arr) => arr.map((p, i, a) => i > 0 ? p / a[i - 1] - 1 : 0).slice(1);
+
+  // momo: 5d vs 20d MA crossover
+  const ma5  = prices.slice(n - 5).reduce((s, p) => s + p, 0) / 5;
+  const ma20 = prices.slice(n - 20).reduce((s, p) => s + p, 0) / 20;
+  const momoGap = (ma5 - ma20) / ma20;
+  const momo = { dir: momoGap > 0.005 ? 1 : momoGap < -0.005 ? -1 : 0, strength: Math.min(0.9, Math.abs(momoGap) * 60) };
+
+  // mean: RSI(14) — BUY when oversold (<35), SELL when overbought (>65)
+  const ch14 = rets(prices.slice(n - 16));
+  const avgG = ch14.reduce((s, r) => s + Math.max(0, r), 0) / 14;
+  const avgL = ch14.reduce((s, r) => s + Math.max(0, -r), 0) / 14;
+  const rsi  = avgL === 0 ? 100 : 100 - 100 / (1 + avgG / avgL);
+  const mean = { dir: rsi < 35 ? 1 : rsi > 65 ? -1 : 0, strength: rsi < 35 ? (35 - rsi) / 35 : rsi > 65 ? (rsi - 65) / 35 : 0 };
+
+  // brkt: Donchian(20) breakout
+  const hi20 = Math.max(...prices.slice(n - 21, n - 1));
+  const lo20 = Math.min(...prices.slice(n - 21, n - 1));
+  const brkt = {
+    dir: last > hi20 ? 1 : last < lo20 ? -1 : 0,
+    strength: last > hi20 ? Math.min(0.9, (last - hi20) / last * 40) : last < lo20 ? Math.min(0.9, (lo20 - last) / last * 40) : 0,
+  };
+
+  // vwap: 10d EMA reversion proxy
+  const k10 = 2 / 11;
+  let ema10 = prices[n - 11];
+  for (let i = n - 10; i < n; i++) ema10 = prices[i] * k10 + ema10 * (1 - k10);
+  const vwapGap = (last - ema10) / ema10;
+  const vwap = { dir: vwapGap < -0.012 ? 1 : vwapGap > 0.012 ? -1 : 0, strength: Math.min(0.9, Math.abs(vwapGap) * 25) };
+
+  // vol: realized annualized vol (20d) vs threshold
+  const rets20 = rets(prices.slice(n - 21));
+  const meanR  = rets20.reduce((s, r) => s + r, 0) / 20;
+  const vol20  = Math.sqrt(rets20.reduce((s, r) => s + (r - meanR) ** 2, 0) / 20 * 252);
+  const volThr = 0.28;
+  const vol = { dir: vol20 < volThr * 0.65 ? 1 : vol20 > volThr * 1.35 ? -1 : 0, strength: Math.min(0.9, Math.abs(vol20 - volThr) / volThr) };
+
+  // skew: 5d vs 20d realized vol direction-of-change
+  const rets5 = rets(prices.slice(n - 6));
+  const vol5  = Math.sqrt(rets5.reduce((s, r) => s + r * r, 0) / 5 * 252);
+  const volChg = vol20 > 0 ? (vol5 - vol20) / vol20 : 0;
+  const skew = { dir: volChg > 0.2 ? -1 : volChg < -0.2 ? 1 : 0, strength: Math.min(0.9, Math.abs(volChg)) };
+
+  // patt: cosine-similarity k-NN on 19-day return pattern → look up historical analog
+  const curPat = rets(prices.slice(n - 20));
+  let bestStart = 0, bestSim = -Infinity;
+  for (let s = 0; s < n - 40; s++) {
+    const hisPat = rets(prices.slice(s, s + 20));
+    const dot = curPat.reduce((a, v, i) => a + v * hisPat[i], 0);
+    const ma = Math.sqrt(curPat.reduce((a, v) => a + v * v, 0));
+    const mb = Math.sqrt(hisPat.reduce((a, v) => a + v * v, 0));
+    const sim = ma * mb > 0 ? dot / (ma * mb) : 0;
+    if (sim > bestSim) { bestSim = sim; bestStart = s; }
+  }
+  const futRet = bestStart + 20 < n ? prices[bestStart + 20] / prices[bestStart + 19] - 1 : 0;
+  const patt = { dir: futRet > 0.004 ? 1 : futRet < -0.004 ? -1 : 0, strength: Math.min(0.9, Math.abs(futRet) * 50) };
+
+  // earn: 30d vs 60d MA drift (PEAD proxy)
+  const ma30     = prices.slice(n - 30).reduce((s, p) => s + p, 0) / 30;
+  const ma60     = prices.length >= 60 ? prices.slice(n - 60).reduce((s, p) => s + p, 0) / 60 : ma30;
+  const earnDrift = (ma30 - ma60) / ma60;
+  const earn = { dir: earnDrift > 0.015 ? 1 : earnDrift < -0.015 ? -1 : 0, strength: Math.min(0.9, Math.abs(earnDrift) * 20) };
+
+  // fund: daily Sharpe-like ratio over 20d
+  const sharpe = meanR / (Math.sqrt(rets20.reduce((s, r) => s + (r - meanR) ** 2, 0) / 20) + 1e-6);
+  const fund = { dir: sharpe > 0.7 ? 1 : sharpe < -0.7 ? -1 : 0, strength: Math.min(0.9, Math.abs(sharpe) / 3) };
+
+  // corr: 20d cross-correlation with NVDA/AAPL market proxy → follow correlated leader
+  const refSym = sym === 'NVDA' ? 'AAPL' : 'NVDA';
+  const refP   = priceHistory[refSym];
+  let corr = { dir: 0, strength: 0 };
+  if (refP && refP.length >= 21) {
+    const sRet = rets(prices.slice(n - 21));
+    const rRet = rets(refP.slice(refP.length - 21));
+    const sm = sRet.reduce((a, v) => a + v, 0) / 20, rm = rRet.reduce((a, v) => a + v, 0) / 20;
+    const cov = sRet.reduce((a, v, i) => a + (v - sm) * (rRet[i] - rm), 0) / 20;
+    const ss  = Math.sqrt(sRet.reduce((a, v) => a + (v - sm) ** 2, 0) / 20);
+    const rs  = Math.sqrt(rRet.reduce((a, v) => a + (v - rm) ** 2, 0) / 20);
+    const r   = ss * rs > 0 ? cov / (ss * rs) : 0;
+    const refDir = refP[refP.length - 1] > refP[refP.length - 6] ? 1 : -1;
+    corr = { dir: r > 0.4 ? refDir : 0, strength: Math.min(0.9, Math.abs(r) * 0.8) };
+  }
+
+  // pair: z-score of 1d return vs sector basket → mean-revert outliers
+  const sectRets = TICKERS.map(tk => { const p = priceHistory[tk.sym]; return p && p.length >= 2 ? p[p.length - 1] / p[p.length - 2] - 1 : 0; });
+  const sectMu   = sectRets.reduce((a, v) => a + v, 0) / sectRets.length;
+  const sectSd   = Math.sqrt(sectRets.reduce((a, v) => a + (v - sectMu) ** 2, 0) / sectRets.length) + 1e-6;
+  const dayRet   = last / prices[n - 2] - 1;
+  const zscore   = (dayRet - sectMu) / sectSd;
+  const pair = { dir: zscore > 1.5 ? -1 : zscore < -1.5 ? 1 : 0, strength: Math.min(0.9, Math.abs(zscore) / 3) };
+
+  // flow: price-change acceleration proxy (Δ(Δprice))
+  const acc  = (last - prices[n - 2]) - (prices[n - 2] - prices[n - 3]);
+  const flow = { dir: acc > 0 ? 1 : acc < 0 ? -1 : 0, strength: Math.min(0.9, Math.abs(acc) / last * 200) };
+
+  // mm: 5d high-low range compression → tight range signals supply/demand balance
+  const hi5    = Math.max(...prices.slice(n - 5));
+  const lo5    = Math.min(...prices.slice(n - 5));
+  const range5 = hi5 > 0 ? (hi5 - lo5) / hi5 : 0;
+  const mm = { dir: range5 < 0.006 ? 1 : range5 > 0.022 ? -1 : 0, strength: Math.min(0.9, Math.abs(range5 - 0.012) * 30) };
+
+  // macr: average 10d return across all tickers as market-regime proxy
+  const mktRets = TICKERS.map(tk => { const p = priceHistory[tk.sym]; return p && p.length >= 11 ? p[p.length - 1] / p[p.length - 11] - 1 : 0; });
+  const mktMu   = mktRets.reduce((a, v) => a + v, 0) / mktRets.length;
+  const macr = { dir: mktMu > 0.01 ? 1 : mktMu < -0.01 ? -1 : 0, strength: Math.min(0.9, Math.abs(mktMu) * 25) };
+
+  // news: price velocity differential (3d vs 10d) as news-impact proxy
+  const vel3  = (last - prices[n - 4])  / prices[n - 4];
+  const vel10 = (last - prices[n - 11]) / prices[n - 11];
+  const newsSig = vel3 - vel10;
+  const news = { dir: newsSig > 0.01 ? 1 : newsSig < -0.01 ? -1 : 0, strength: Math.min(0.9, Math.abs(newsSig) * 30) };
+
+  // soc: 3d return momentum as social-sentiment proxy
+  const soc3 = (last - prices[n - 4]) / prices[n - 4];
+  const soc  = { dir: soc3 > 0.006 ? 1 : soc3 < -0.006 ? -1 : 0, strength: Math.min(0.9, Math.abs(soc3) * 50) };
+
+  return { momo, mean, brkt, vwap, vol, skew, patt, earn, fund, corr, pair, flow, mm, macr, news, soc };
+}
+
+// Weighted ensemble: signed strength × weight → net direction, confidence, consensus count
+function computeEnsemble(signals, weights) {
+  let wSum = 0, dirSum = 0;
+  const votes = {};
+  for (const a of AGENTS) {
+    const sig = signals[a.id];
+    const w   = weights[a.id] ?? a.weight;
+    votes[a.id] = sig ? sig.dir : 0;
+    if (sig && sig.dir !== 0) {
+      dirSum += sig.dir * sig.strength * w;
+      wSum   += sig.strength * w;
+    }
+  }
+  const net = wSum > 0 ? dirSum / wSum : 0;
+  const dir = net > 0.05 ? 'BUY' : net < -0.05 ? 'SELL' : null;
+  const confidence = Math.min(0.97, Math.abs(net));
+  const consensus  = dir ? AGENTS.filter(a => votes[a.id] === (dir === 'BUY' ? 1 : -1)).length : 0;
+  return { dir, confidence, consensus, votes };
+}
+
+// EW reinforcement: correct agent votes grow, wrong votes shrink, renormalized
+function updateAgentWeights(weights, trade) {
+  if (!trade.votes || trade.pnl == null) return weights;
+  const outcome = trade.pnl > 0 ? 1 : -1;
+  const lr = 0.06;
+  const next = { ...weights };
+  for (const a of AGENTS) {
+    const vote = trade.votes[a.id];
+    if (!vote) continue;
+    const correct = vote * outcome > 0;
+    next[a.id] = Math.max(0.01, Math.min(0.30, next[a.id] * (1 + lr * (correct ? 0.5 : -0.5))));
+  }
+  const total = Object.values(next).reduce((s, v) => s + v, 0);
+  for (const id of Object.keys(next)) next[id] /= total;
+  return next;
+}
+
+// Rolling per-agent accuracy buffer — last 30 closed votes
+function updateAgentHistory(history, trade) {
+  if (!trade.votes || trade.pnl == null) return history;
+  const outcome = trade.pnl > 0 ? 1 : -1;
+  const next = { ...history };
+  for (const a of AGENTS) {
+    const vote = trade.votes[a.id];
+    if (!vote) continue;
+    next[a.id] = [...(next[a.id] || []), vote * outcome > 0].slice(-30);
+  }
+  return next;
+}
+
+// Narrative reason from top-3 agents supporting the ensemble direction
+function buildReason(signals, ensemble) {
+  if (!ensemble.dir || !signals) return '–';
+  const targetDir = ensemble.dir === 'BUY' ? 1 : -1;
+  const supporters = AGENTS
+    .filter(a => signals[a.id]?.dir === targetDir)
+    .sort((a, b) => (signals[b.id]?.strength || 0) - (signals[a.id]?.strength || 0))
+    .slice(0, 3);
+  if (!supporters.length) return ensemble.dir === 'BUY' ? 'Weak bullish ensemble' : 'Weak bearish ensemble';
+  return supporters.map(a => a.name).join(' + ') + (ensemble.dir === 'BUY' ? ' → bullish' : ' → bearish');
+}
+
 function mulberry32(a) {
   return function() {
     a |= 0; a = a + 0x6D2B79F5 | 0;
@@ -1640,20 +1827,25 @@ const PredVsActual = ({ pred, actual, height = 220 }) => {
   );
 };
 
-const SwarmViz = ({ agents, decision = 'BUY', confidence = 0.71, tick = 0 }) => {
+const SwarmViz = ({ agents, decision = 'BUY', confidence = 0.71, tick = 0, agentVotes = null }) => {
   const cx = 50, cy = 50;
-  // Deterministic per-agent vote driven by decision + confidence.
-  // Target majority agents vote with the decision; remainder split.
   const votes = React.useMemo(() => {
-    const majFrac = 0.4 + confidence * 0.5; // 0.4..0.9
+    // Use real per-agent votes when available
+    if (agentVotes) {
+      return agents.map(a => {
+        const v = agentVotes[a.id];
+        return v === 1 ? 'buy' : v === -1 ? 'sell' : 'hold';
+      });
+    }
+    // Synthetic fallback (no real signals)
+    const majFrac = 0.4 + confidence * 0.5;
     return agents.map((a, i) => {
-      // hash-ish: sin(i * large prime)
       const r = (Math.sin(i * 12.9898 + decision.charCodeAt(0)) + 1) / 2;
       if (r < majFrac) return decision === 'HOLD' ? 'hold' : decision.toLowerCase();
       if (r < majFrac + (1 - majFrac) * 0.55) return decision === 'BUY' ? 'sell' : decision === 'SELL' ? 'buy' : 'buy';
       return 'hold';
     });
-  }, [agents, decision, confidence]);
+  }, [agents, decision, confidence, agentVotes]);
   const tally = { buy: 0, sell: 0, hold: 0 };
   votes.forEach(v => tally[v]++);
   return (
@@ -1876,13 +2068,22 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
             <div className="card-title">Swarm consensus · live</div>
             <div className="card-meta">{activeSymbol} · 14:32:08</div>
           </div>
-          <SwarmViz agents={AGENTS} decision={direction === 'SHORT' ? 'SELL' : 'BUY'} confidence={0.71} tick={tick}/>
-          <div style={{marginTop:12,display:'flex',justifyContent:'space-between',fontFamily:'var(--mono)',fontSize:11}}>
-            {(() => { const dec = direction === 'SHORT' ? 'SELL' : 'BUY'; const t = swarmTally(AGENTS, dec, 0.71); return (
-              <span className="muted">{t.buy} BUY · {t.sell} SELL · {t.hold} HOLD</span>
-            ); })()}
-            <span className="up">conviction rising →</span>
-          </div>
+          {(() => {
+            const sigs = ctx?.lastSignals;
+            const wts  = ctx?.agentWeights || {};
+            const ens  = sigs ? computeEnsemble(sigs, wts) : null;
+            const dec  = ens?.dir || (direction === 'SHORT' ? 'SELL' : 'BUY');
+            const conf = ens?.confidence || 0.71;
+            const tally = { buy: 0, sell: 0, hold: 0 };
+            AGENTS.forEach(a => { const v = ens?.votes?.[a.id]; tally[v === 1 ? 'buy' : v === -1 ? 'sell' : 'hold']++; });
+            return (<>
+              <SwarmViz agents={AGENTS} decision={dec} confidence={conf} tick={tick} agentVotes={ens?.votes || null}/>
+              <div style={{marginTop:12,display:'flex',justifyContent:'space-between',fontFamily:'var(--mono)',fontSize:11}}>
+                <span className="muted">{tally.buy} BUY · {tally.sell} SELL · {tally.hold} HOLD</span>
+                <span className={dec === 'BUY' ? 'up' : 'dn'}>{dec === 'BUY' ? 'conviction rising →' : 'conviction falling →'}</span>
+              </div>
+            </>);
+          })()}
         </div>
       </div>
 
@@ -2264,9 +2465,19 @@ window.ScreenHistory = ScreenHistory;
 // Strategy / learning insights screen
 
 const ScreenLearning = ({ mode, ctx }) => {
-  const activeSymbol = ctx?.activeSymbol || 'NVDA';
-  const predData = React.useMemo(() => genPredVsActual(activeSymbol), [activeSymbol]);
-  const colors = AGENTS.map(a => a.color);
+  const activeSymbol  = ctx?.activeSymbol || 'NVDA';
+  const predData      = React.useMemo(() => genPredVsActual(activeSymbol), [activeSymbol]);
+  const colors        = AGENTS.map(a => a.color);
+  const agentWeights  = ctx?.agentWeights || {};
+  const agentHistory  = ctx?.agentHistory || {};
+  const closedReal    = (ctx?.trades || []).filter(t => t.pnl != null && t.votes);
+  const dirAcc        = closedReal.length >= 3 ? closedReal.filter(t => t.pnl > 0).length / closedReal.length : 0.647;
+  const avgConf       = closedReal.length >= 3 ? closedReal.reduce((s, t) => s + t.conf, 0) / closedReal.length : 0.71;
+  const wins          = closedReal.filter(t => t.pnl > 0);
+  const losses        = closedReal.filter(t => t.pnl <= 0);
+  const avgWin        = wins.length   ? wins.reduce((s, t)   => s + t.pnl, 0) / wins.length   : 1;
+  const avgLoss       = losses.length ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length) : 1;
+  const pseudoSharpe  = Math.min(0.99, avgWin / (avgWin + avgLoss));
   return (
     <div className="page" data-screen-label="03 Learning">
       <div className="page-head">
@@ -2320,9 +2531,9 @@ const ScreenLearning = ({ mode, ctx }) => {
             <div className="card-title">Calibration</div>
           </div>
           <div style={{display:'flex',gap:14,alignItems:'center',justifyContent:'space-around'}}>
-            <Donut value={0.647} label="DIR. ACC"/>
-            <Donut value={0.71} label="CONFIDENCE" color="var(--info)"/>
-            <Donut value={0.83} label="SHARPE" color="var(--warn)"/>
+            <Donut value={dirAcc} label="DIR. ACC"/>
+            <Donut value={avgConf} label="CONFIDENCE" color="var(--info)"/>
+            <Donut value={pseudoSharpe} label="WIN RATIO" color="var(--warn)"/>
           </div>
           <div className="divider"></div>
           <div className="mono tiny muted">When confidence reads ≥ 70%, realized hit-rate is 68.4%. When ≤ 55%, 51.2%. Calibration is improving cycle-over-cycle.</div>
@@ -2336,17 +2547,25 @@ const ScreenLearning = ({ mode, ctx }) => {
             <div className="card-meta">current weights</div>
           </div>
           <div className="agent-strip">
-            {AGENTS.map(a => (
-              <div key={a.id} className="agent-row">
-                <div className="agent-glyph" style={{color: a.color}}>{a.glyph}</div>
-                <div className="agent-info">
-                  <div className="name">{a.name}</div>
-                  <div className="desc">{a.desc}</div>
+            {AGENTS.map(a => {
+              const w    = agentWeights[a.id] ?? a.weight;
+              const hist = agentHistory[a.id] || [];
+              const acc  = hist.length >= 5 ? hist.filter(Boolean).length / hist.length : a.accuracy;
+              return (
+                <div key={a.id} className="agent-row">
+                  <div className="agent-glyph" style={{color: a.color}}>{a.glyph}</div>
+                  <div className="agent-info">
+                    <div className="name">{a.name}</div>
+                    <div className="desc">{a.desc}</div>
+                  </div>
+                  <div className="weight-bar"><div style={{width:`${w*400}%`,background:a.color,transition:'width 0.6s ease'}}></div></div>
+                  <div className="weight-num">{(w * 100).toFixed(1)}%</div>
+                  <div className="mono" style={{fontSize:10,color: acc >= 0.6 ? 'var(--up)' : acc < 0.5 ? 'var(--down)' : 'var(--ink-3)',minWidth:36,textAlign:'right'}}>
+                    {hist.length >= 5 ? (acc * 100).toFixed(0) + '%' : '–'}
+                  </div>
                 </div>
-                <div className="weight-bar"><div style={{width:`${a.weight*400}%`,background:a.color}}></div></div>
-                <div className="weight-num">{(a.weight*100).toFixed(1)}%</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -2418,10 +2637,16 @@ const ScreenTrade = ({ trade, onBack, mode, ctx }) => {
   const slice = series.slice(-90);
   const pred = [series[series.length-1], series[series.length-1]*1.005, series[series.length-1]*1.012, series[series.length-1]*1.008, series[series.length-1]*1.018];
 
-  // build per-agent vote breakdown
+  // Build per-agent vote breakdown — real votes when available, synthetic fallback for old/real trades
   const agentVotes = AGENTS.map((a, i) => {
+    if (t.votes) {
+      const rawDir = t.votes[a.id];
+      const dir = rawDir === 1 ? 'BUY' : rawDir === -1 ? 'SELL' : 'HOLD';
+      const c   = t.signals?.[a.id]?.strength ?? t.conf;
+      return { ...a, dir, conf: Math.max(0.05, c) };
+    }
     const dir = i % 3 === 2 ? 'HOLD' : (i + (t.side==='BUY'?0:1)) % 2 === 0 ? t.side : (t.side==='BUY'?'SELL':'BUY');
-    const c = 0.4 + (Math.sin(i + t.sym.charCodeAt(0)) * 0.5 + 0.5) * 0.55;
+    const c   = 0.4 + (Math.sin(i + t.sym.charCodeAt(0)) * 0.5 + 0.5) * 0.55;
     return { ...a, dir, conf: c };
   });
 
@@ -2468,7 +2693,7 @@ const ScreenTrade = ({ trade, onBack, mode, ctx }) => {
             <div className="card-title">Swarm at decision time</div>
             <div className="card-meta">consensus {(t.conf*100).toFixed(0)}%</div>
           </div>
-          <SwarmViz agents={AGENTS} decision={t.side} confidence={t.conf} tick={0}/>
+          <SwarmViz agents={AGENTS} decision={t.side} confidence={t.conf} tick={0} agentVotes={t.votes || null}/>
         </div>
       </div>
 
@@ -3550,6 +3775,30 @@ const App = () => {
   });
   const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false });
 
+  // Agent learning state
+  const [agentWeights, setAgentWeights] = React.useState(() => {
+    const total = AGENTS.reduce((s, a) => s + a.weight, 0);
+    const w = {};
+    AGENTS.forEach(a => w[a.id] = a.weight / total);
+    return w;
+  });
+  const [agentHistory, setAgentHistory] = React.useState({});
+  const [lastSignals, setLastSignals] = React.useState(() => computeSignals('NVDA', PRICE_HISTORY));
+  const agentWeightsRef = React.useRef(agentWeights);
+  React.useEffect(() => { agentWeightsRef.current = agentWeights; }, [agentWeights]);
+
+  // Watch for newly closed trades → update agent weights + accuracy history
+  const prevTradesRef = React.useRef([]);
+  React.useEffect(() => {
+    const prevIds = new Set(prevTradesRef.current.filter(t => t.pnl != null).map(t => t.id));
+    const newlyClosed = trades.filter(t => t.pnl != null && t.votes && !prevIds.has(t.id));
+    if (newlyClosed.length > 0) {
+      setAgentWeights(w => newlyClosed.reduce(updateAgentWeights, w));
+      setAgentHistory(h => newlyClosed.reduce((acc, t) => updateAgentHistory(acc, t), h));
+    }
+    prevTradesRef.current = trades;
+  }, [trades]);
+
   // Backend availability (null = checking, true = online, false = offline)
   const [backendOk, setBackendOk] = React.useState(null);
 
@@ -3695,81 +3944,67 @@ const App = () => {
     setShowReset(false);
   };
 
-  // Global swarm execution — generate new trades on a tick, regardless of which screen is mounted.
+  // Global swarm execution — signal-driven trades with real TA, regardless of which screen is mounted.
   React.useEffect(() => {
     if (!running) return;
     const ivl = setInterval(() => {
       // 1) close some open positions stochastically (turn into WIN/LOSS)
       setTrades(prev => {
-        const next = prev.map(t => {
+        return prev.map(t => {
           if (t.status !== 'OPEN') return t;
-          // ~25% chance per tick to close
           if (Math.random() < 0.25) {
             const pnlAmt = (Math.random() - 0.42) * t.qty * t.price * 0.022;
-            const exit = t.price + (pnlAmt / t.qty) * (t.side === 'BUY' ? 1 : -1);
-            return {
-              ...t,
-              status: pnlAmt > 0 ? 'WIN' : 'LOSS',
-              pnl: pnlAmt,
-              pnlPct: pnlAmt / (t.qty * t.price),
-              exit,
-              exitTs: Date.now(),
-              isNew: false,
-            };
+            const exit   = t.price + (pnlAmt / t.qty) * (t.side === 'BUY' ? 1 : -1);
+            return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false };
           }
           return t;
         });
-        return next;
       });
 
-      // 2) place a trade ~55% of ticks — simulated or real depending on mode
+      // 2) Compute real signals for the active symbol and place a trade when there is conviction
       const isLiveReal = mode === 'LIVE' && !!alpacaRef.current?.token;
       if (Math.random() < 0.55) {
-        const t = TICKERS[Math.floor(Math.random() * TICKERS.length)];
-        let side;
-        if (direction === 'LONG') side = 'BUY';
-        else if (direction === 'SHORT') side = 'SELL';
-        else side = Math.random() > 0.5 ? 'BUY' : 'SELL';
-        const qty = Math.floor(Math.random() * 60) + 5;
+        const signals = computeSignals(activeSymbol, PRICE_HISTORY);
+        if (!signals) return;
+        setLastSignals(signals);
+
+        const ensemble = computeEnsemble(signals, agentWeightsRef.current);
+        if (!ensemble.dir) return; // no net signal this tick
+
+        // Honour direction constraint
+        let side = ensemble.dir;
+        if (direction === 'LONG' && side === 'SELL') return;
+        if (direction === 'SHORT' && side === 'BUY') return;
+
+        // Size proportional to conviction (Kelly-flavoured)
+        const qty = Math.max(5, Math.round(ensemble.confidence * 70));
+        const ticker = TICKERS.find(tk => tk.sym === activeSymbol) || TICKERS[0];
 
         if (isLiveReal) {
-          // Route a real market order to Alpaca via the backend proxy.
-          // SSE stream will push the fill back and update the trade list.
           fetch(`${BACKEND_URL}/api/orders`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaRef.current.token },
-            body: JSON.stringify({
-              symbol:        t.sym,
-              qty:           String(qty),
-              side:          side === 'BUY' ? 'buy' : 'sell',
-              type:          'market',
-              time_in_force: 'day',
-            }),
+            body: JSON.stringify({ symbol: ticker.sym, qty: String(qty), side: side === 'BUY' ? 'buy' : 'sell', type: 'market', time_in_force: 'day' }),
           }).catch(() => {});
         } else {
-          // Virtual mode: create a local simulated trade entry
-          const conf = 0.55 + Math.random() * 0.35;
-          const price = t.last * (1 + (Math.random() - 0.5) * 0.02);
-          const reasonList = REASONS[side === 'BUY' ? 'buy' : 'sell'];
-          const newT = {
-            id: 'TX-' + Math.floor(11000 + Math.random() * 9999),
-            ts: Date.now(),
-            exitTs: null,
-            sym: t.sym, side, qty, price, exit: null,
-            conf,
-            reason: reasonList[Math.floor(Math.random() * reasonList.length)],
-            pnl: null, pnlPct: null,
-            status: 'OPEN',
-            mode,
-            consensus: Math.floor(conf * 8),
-            isNew: true,
-          };
-          setTrades(prev => [newT, ...prev].slice(0, 200));
+          const price = ticker.last * (1 + (Math.random() - 0.5) * 0.01);
+          setTrades(prev => [{
+            id:        'TX-' + Math.floor(11000 + Math.random() * 9999),
+            ts:        Date.now(), exitTs: null,
+            sym:       ticker.sym, side, qty, price, exit: null,
+            conf:      ensemble.confidence,
+            reason:    buildReason(signals, ensemble),
+            pnl: null, pnlPct: null, status: 'OPEN', mode,
+            consensus: ensemble.consensus,
+            votes:     ensemble.votes,
+            signals,
+            isNew:     true,
+          }, ...prev].slice(0, 200));
         }
       }
     }, 3500);
     return () => clearInterval(ivl);
-  }, [running, mode, direction]);
+  }, [running, mode, direction, activeSymbol]);
 
   // Live equity pulse — faster when a directional bias is active.
   // Each tick: small drift + jitter. BOTH = slow & balanced, LONG/SHORT = faster with directional drift.
@@ -3824,7 +4059,7 @@ const App = () => {
     return <ScreenOnboarding onDone={() => { localStorage.setItem('shoal_onboarded', '1'); setShowOnboarding(false); }}/>;
   }
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, lastSignals };
   const screens = {
     dashboard: <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
     activity: <ScreenActivity mode={mode} tick={tick} onTradeClick={handleTradeClick} running={running} ctx={ctx}/>,
