@@ -1330,14 +1330,17 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
 
   // corr: market breadth (fraction above 5d MA) — replaces near-zero synthetic correlation
   const cHi = gp('corr','breadthHi',0.6), cLo = gp('corr','breadthLo',0.4);
+  let breadthValid = 0;
   const breadthCnt = TICKERS.reduce((cnt, tk) => {
     const p = xp(tk.sym);
     if (p.length < 6) return cnt;
-    const ma5c = p.slice(p.length-5).reduce((s,v)=>s+v,0)/5;
-    return cnt + (p[p.length-1] > ma5c ? 1 : 0);
+    breadthValid++;
+    const ma5c = p.slice(p.length - 5).reduce((s, v) => s + v, 0) / 5;
+    return cnt + (p[p.length - 1] > ma5c ? 1 : 0);
   }, 0);
-  const breadth = breadthCnt / TICKERS.length;
-  const corr = { dir: breadth > cHi ? 1 : breadth < cLo ? -1 : 0, strength: Math.min(0.9, Math.abs(breadth-0.5)*3) };
+  // Divide by valid-data count only; avoids near-zero breadth when most TICKERS lack PRICE_HISTORY data
+  const breadth = breadthValid > 0 ? breadthCnt / breadthValid : 0.5;
+  const corr = { dir: breadth > cHi ? 1 : breadth < cLo ? -1 : 0, strength: Math.min(0.9, Math.abs(breadth - 0.5) * 3) };
 
   // pair: z-score vs sector 1d return → mean-revert outliers
   const pThr   = gp('pair','thr',1.5);
@@ -2414,8 +2417,15 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
             <div className="card-title">Confidence over time</div>
             <div className="card-meta">90-day rolling</div>
           </div>
-          <LineChart series={[CONFIDENCE_HISTORY]} colors={['var(--virtual)']} labels={['Confidence']} yFmt={v=>(v*100).toFixed(0)+'%'}/>
-          <div style={{marginTop:8}} className="mono tiny muted">Calibration drifts as the market regime shifts — 0.71 today, range 0.48–0.83.</div>
+          <LineChart series={[ctx?.confHistory || CONFIDENCE_HISTORY]} colors={['var(--virtual)']} labels={['Confidence']} yFmt={v=>(v*100).toFixed(0)+'%'}/>
+          <div style={{marginTop:8}} className="mono tiny muted">
+            {(() => {
+              const ch = ctx?.confHistory || CONFIDENCE_HISTORY;
+              const cur = ch[ch.length - 1];
+              const lo = Math.min(...ch), hi = Math.max(...ch);
+              return `Live confidence for ${ctx?.activeSymbol || 'NVDA'} — ${(cur*100).toFixed(0)}% now · range ${(lo*100).toFixed(0)}%–${(hi*100).toFixed(0)}% · updates every 3 s`;
+            })()}
+          </div>
         </div>
       </div>
 
@@ -4725,13 +4735,13 @@ const ScreenGuide = () => {
 };
 
 const NAV = [
-  { id: 'guide', label: 'How it works', icon: 'dash' },
   { id: 'dashboard', label: 'Dashboard', icon: 'dash' },
   { id: 'activity', label: 'Live activity', icon: 'feed' },
   { id: 'history', label: 'Trade history', icon: 'history' },
   { id: 'learning', label: 'Strategy / learning', icon: 'brain' },
   { id: 'trade', label: 'Trade detail', icon: 'trade' },
   { id: 'backtest', label: 'Backtest', icon: 'back' },
+  { id: 'guide', label: 'How it works', icon: 'dash' },
   { id: 'market', label: 'Market map', icon: 'market' },
   { id: 'agentperf', label: 'Agent performance', icon: 'perf' },
   { id: 'pnltrend', label: 'P/L trend', icon: 'trend' },
@@ -4793,16 +4803,19 @@ const App = () => {
   const [lastSignals, setLastSignals] = React.useState(() => SIGNALS_ALL['NVDA'] || null);
   const [agentParams, setAgentParams] = React.useState({});
   const [enabledAgents, setEnabledAgents] = React.useState(() => new Set(AGENTS.map(a => a.id)));
+  const [confHistory, setConfHistory] = React.useState(() => [...CONFIDENCE_HISTORY]);
   const agentWeightsRef  = React.useRef(agentWeights);
   const agentHistoryRef  = React.useRef(agentHistory);
   const enabledAgentsRef = React.useRef(enabledAgents);
   const riskRef          = React.useRef(risk);
   const tradesRef        = React.useRef(trades);
+  const activeSymbolRef  = React.useRef(activeSymbol);
   React.useEffect(() => { agentWeightsRef.current  = agentWeights;  }, [agentWeights]);
   React.useEffect(() => { agentHistoryRef.current   = agentHistory;   }, [agentHistory]);
   React.useEffect(() => { riskRef.current = risk; }, [risk]);
   React.useEffect(() => { enabledAgentsRef.current  = enabledAgents;  }, [enabledAgents]);
   React.useEffect(() => { tradesRef.current = trades; }, [trades]);
+  React.useEffect(() => { activeSymbolRef.current = activeSymbol; }, [activeSymbol]);
   // Keep lastSignals in sync with active symbol and agentParams
   React.useEffect(() => {
     setLastSignals(computeSignals(activeSymbol, PRICE_HISTORY, agentParams) || SIGNALS_ALL[activeSymbol] || null);
@@ -5099,6 +5112,13 @@ const App = () => {
           }, ...prev].slice(0, 200));
         }
       }
+
+      // Append live confidence for the active symbol to the rolling chart
+      const activeSigs = SIGNALS_ALL[activeSymbolRef.current];
+      if (activeSigs) {
+        const activeEns = computeEnsemble(activeSigs, agentWeightsRef.current, dynamicEnabled);
+        setConfHistory(prev => [...prev.slice(-89), +(activeEns.confidence.toFixed(3))]);
+      }
     }, 3500);
     return () => clearInterval(ivl);
   }, [running, mode, direction, risk]);
@@ -5166,7 +5186,7 @@ const App = () => {
     }).map(a => a.id));
   }, [agentHistory, risk.minAgentAccuracy, enabledAgents]);
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, marketStatus, dynamicExcluded };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, marketStatus, dynamicExcluded, confHistory };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
