@@ -15,5 +15,8 @@
   },
   "engines": {
     "node": ">=16.0.0"
+  },
+  "devDependencies": {
+    "@babel/parser": "^7.29.2"
   }
 }
