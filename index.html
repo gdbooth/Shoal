@@ -4220,7 +4220,7 @@ const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnab
 
       <div style={{display:'flex',justifyContent:'flex-end',marginBottom:16,gap:10}}>
         <button className="btn" style={{fontSize:11}} onClick={() => setEnabledAgents(new Set(AGENTS.map(a => a.id)))}>Enable all</button>
-        <button className="btn" style={{fontSize:11}} onClick={() => setAgentParams({}); setOptResults({})}>Reset all params</button>
+        <button className="btn" style={{fontSize:11}} onClick={() => { setAgentParams({}); setOptResults({}); }}>Reset all params</button>
       </div>
 
       {families.map(family => (
