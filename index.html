@@ -4600,24 +4600,35 @@ const App = () => {
   React.useEffect(() => {
     if (!running) return;
     const ivl = setInterval(() => {
+      const alpacaNow    = alpacaRef.current;
+      const isLiveReal   = mode === 'LIVE'    && !!alpacaNow?.token && alpacaNow?.env === 'live';
+      const isBrokerPaper= mode === 'VIRTUAL' && !!alpacaNow?.token && alpacaNow?.env === 'paper';
+
       // 1) close some open positions stochastically (turn into WIN/LOSS)
+      //    Skip _real positions — those are managed by the broker; SSE will update them.
+      //    For _brokerSent trades, also dispatch a close order to the paper account.
+      const closeOrders = []; // collected outside setTrades to avoid side-effects in pure updater
       setTrades(prev => {
         return prev.map(t => {
-          if (t.status !== 'OPEN') return t;
+          if (t.status !== 'OPEN' || t._real) return t;
           if (Math.random() < 0.25) {
             const pnlAmt = (Math.random() - 0.42) * t.qty * t.price * 0.022;
             const exit   = t.price + (pnlAmt / t.qty) * (t.side === 'BUY' ? 1 : -1);
+            if (t._brokerSent) closeOrders.push({ sym: t.sym, qty: t.qty, side: t.side });
             return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false };
           }
           return t;
         });
       });
-
-      // 2) Scan all tickers for conviction; probabilistic selection weighted by confidence²
-      // LIVE = real orders to Alpaca live account; VIRTUAL = paper broker but local fills; SIMULATED = local only
-      const alpacaNow = alpacaRef.current;
-      const isLiveReal   = mode === 'LIVE'    && !!alpacaNow?.token && alpacaNow?.env === 'live';
-      const isBrokerPaper= mode === 'VIRTUAL' && !!alpacaNow?.token && alpacaNow?.env === 'paper';
+      if (isBrokerPaper && alpacaNow?.token && closeOrders.length) {
+        closeOrders.forEach(o => {
+          fetch(`${BACKEND_URL}/api/orders`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaNow.token },
+            body: JSON.stringify({ symbol: o.sym, qty: String(o.qty), side: o.side === 'BUY' ? 'sell' : 'buy', type: 'market', time_in_force: 'day' }),
+          }).catch(() => {});
+        });
+      }
 
       // Compute dynamic enabled set: exclude agents with ≥5 trades and accuracy below threshold; re-include when recovered
       const minAcc = (riskRef.current?.minAgentAccuracy ?? 35) / 100;
@@ -4657,14 +4668,31 @@ const App = () => {
         const maxQtyByVal = Math.floor(maxVal / price);
         const qty = Math.max(1, Math.min(maxQtyByVal, Math.round(ensemble.confidence * 70)));
 
-        if (isLiveReal) {
+        if (isLiveReal || isBrokerPaper) {
+          // Send to broker: live → real account, virtual → paper account (same endpoint, different session env)
           fetch(`${BACKEND_URL}/api/orders`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaNow.token },
             body: JSON.stringify({ symbol: tk.sym, qty: String(qty), side: side === 'BUY' ? 'buy' : 'sell', type: 'market', time_in_force: 'day' }),
           }).catch(() => {});
+          // VIRTUAL: also add an optimistic local fill for immediate UI feedback and P&L tracking
+          if (!isLiveReal) {
+            setTrades(prev => [{
+              id:        'TX-' + Math.floor(11000 + Math.random() * 9999),
+              ts:        Date.now(), exitTs: null,
+              sym:       tk.sym, side, qty, price, exit: null,
+              conf:      ensemble.confidence,
+              reason:    buildReason(sigs, ensemble),
+              pnl: null, pnlPct: null, status: 'OPEN', mode,
+              consensus: ensemble.consensus,
+              votes:     ensemble.votes,
+              signals:   sigs,
+              isNew:     true,
+              _brokerSent: true,
+            }, ...prev].slice(0, 200));
+          }
         } else {
-          // VIRTUAL (broker paper) and SIMULATED both fill locally so trading works even when market is closed
+          // SIMULATED: local fill only
           setTrades(prev => [{
             id:        'TX-' + Math.floor(11000 + Math.random() * 9999),
             ts:        Date.now(), exitTs: null,
