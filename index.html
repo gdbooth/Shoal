@@ -2867,22 +2867,25 @@ const ScreenTrade = ({ trade, onBack, mode, ctx }) => {
     return { ...a, dir, conf: c };
   });
 
-  const { setActiveSymbol } = ctx || {};
+  const { setSelectedTrade: navTo } = ctx || {};
+  const allTrades = ctx?.trades || TRADES;
+  const currentIdx = allTrades.findIndex(x => x.id === t?.id);
+  const hasPrev = currentIdx < allTrades.length - 1;
+  const hasNext = currentIdx > 0;
+  const isLatest = currentIdx === 0;
 
   return (
     <div className="page" data-screen-label="04 Trade">
       <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:18,flexWrap:'wrap'}}>
         <button className="btn ghost" onClick={onBack}>← BACK</button>
         <span className="mono tiny muted">/ TRADES /</span>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {TICKERS.map(tk => (
-            <button key={tk.sym}
-              className={'btn' + (t?.sym === tk.sym ? ' primary' : '')}
-              style={{padding:'4px 10px',fontSize:11,fontFamily:'var(--mono)'}}
-              onClick={() => setActiveSymbol && setActiveSymbol(tk.sym)}
-            >{tk.sym}</button>
-          ))}
-        </div>
+        <button className="btn ghost" disabled={!hasPrev} onClick={() => navTo && navTo(allTrades[currentIdx + 1])}
+          style={{opacity: hasPrev ? 1 : 0.35}}>← PREV</button>
+        <button className="btn ghost" disabled={!hasNext} onClick={() => navTo && navTo(allTrades[currentIdx - 1])}
+          style={{opacity: hasNext ? 1 : 0.35}}>NEXT →</button>
+        <button className={'btn' + (isLatest ? ' primary' : '')} disabled={isLatest} onClick={() => navTo && navTo(allTrades[0])}
+          style={{opacity: isLatest ? 1 : 0.7}}>LATEST ↑</button>
+        {allTrades.length > 0 && <span className="mono tiny muted">{currentIdx < 0 ? '—' : currentIdx + 1} / {allTrades.length}</span>}
       </div>
 
       <div className="page-head" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:24}}>
@@ -3466,8 +3469,17 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
               <div className="field-label">Max trade value</div>
               <div className="mono" style={{fontSize:13}}>{fmtMoney(risk.maxTradeValue ?? 5000, 0)}</div>
             </div>
-            <input type="range" min="500" max="50000" step="500" value={risk.maxTradeValue ?? 5000} onChange={e=>setRisk({...risk, maxTradeValue: +e.target.value})}/>
+            <input type="range" min="1" max="50000" step="10" value={risk.maxTradeValue ?? 5000} onChange={e=>setRisk({...risk, maxTradeValue: +e.target.value})}/>
             <div className="mono tiny muted" style={{marginTop:4}}>Maximum notional value (qty × price) for any single transaction</div>
+          </div>
+
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Min agent accuracy</div>
+              <div className="mono" style={{fontSize:13}}>≥ {risk.minAgentAccuracy ?? 35}%</div>
+            </div>
+            <input type="range" min="10" max="80" step="1" value={risk.minAgentAccuracy ?? 35} onChange={e=>setRisk({...risk, minAgentAccuracy: +e.target.value})}/>
+            <div className="mono tiny muted" style={{marginTop:4}}>Agents below this accuracy (after ≥5 trades) are excluded from consensus. They rejoin automatically when they recover.</div>
           </div>
 
           <div className="divider"></div>
@@ -4383,7 +4395,7 @@ const App = () => {
     const saved = localStorage.getItem('shoal_alpaca');
     return saved ? JSON.parse(saved) : { connected: false, balance: 0, account: null, broker: 'Alpaca Markets' };
   });
-  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000 });
+  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35 });
 
   // Agent learning state
   const [agentWeights, setAgentWeights] = React.useState(() => {
@@ -4400,8 +4412,10 @@ const App = () => {
   const agentWeightsRef  = React.useRef(agentWeights);
   const agentHistoryRef  = React.useRef(agentHistory);
   const enabledAgentsRef = React.useRef(enabledAgents);
+  const riskRef          = React.useRef(risk);
   React.useEffect(() => { agentWeightsRef.current  = agentWeights;  }, [agentWeights]);
   React.useEffect(() => { agentHistoryRef.current   = agentHistory;   }, [agentHistory]);
+  React.useEffect(() => { riskRef.current = risk; }, [risk]);
   React.useEffect(() => { enabledAgentsRef.current  = enabledAgents;  }, [enabledAgents]);
   // Keep lastSignals in sync with active symbol and agentParams
   React.useEffect(() => {
@@ -4493,8 +4507,9 @@ const App = () => {
           setAlpaca(a => ({ ...a, balance: parseFloat(account.buying_power) }));
         }
 
-        // Real orders → replace trade list (most recent 50)
-        if (Array.isArray(orders) && orders.length > 0) {
+        // Real orders → replace trade list only in LIVE mode (paper env keeps local swarm fills)
+        const isLiveEnv = alpacaRef.current?.env === 'live';
+        if (isLiveEnv && Array.isArray(orders) && orders.length > 0) {
           const mapped = orders.map(o => ({
             id:     o.id,
             ts:     new Date(o.submitted_at || o.created_at).getTime(),
@@ -4511,13 +4526,13 @@ const App = () => {
             pnl: null, pnlPct: null,
             status: ['filled','partially_filled'].includes(o.status) ? 'OPEN'
                   : ['canceled','expired','replaced','rejected'].includes(o.status) ? 'LOSS' : 'OPEN',
-            mode: alpacaRef.current?.env === 'live' ? 'LIVE' : 'VIRTUAL',
+            mode: 'LIVE',
             consensus: 12, isNew: false, _real: true,
           }));
           setTrades(mapped.slice(0, 200));
         }
 
-        // Real positions → keep as OPEN entries, merge with closed history
+        // Real positions → merge with local fills in VIRTUAL mode; replace in LIVE mode
         if (Array.isArray(positions) && positions.length > 0) {
           const realPos = positions.map(p => ({
             id:     'POS-' + p.symbol,
@@ -4532,15 +4547,20 @@ const App = () => {
             reason: `Live position · ${p.side} · unrealized ${parseFloat(p.unrealized_plpc || 0) >= 0 ? '+' : ''}${(parseFloat(p.unrealized_plpc || 0) * 100).toFixed(2)}%`,
             pnl: null, pnlPct: null,
             status: 'OPEN',
-            mode: alpacaRef.current?.env === 'live' ? 'LIVE' : 'VIRTUAL',
+            mode: isLiveEnv ? 'LIVE' : 'VIRTUAL',
             consensus: 12, isNew: false, _real: true,
-            // Use Alpaca's real unrealized P&L — keys match what ScreenHistory reads
             _upnl:    parseFloat(p.unrealized_pl  || 0),
             _upnlPct: parseFloat(p.unrealized_plpc || 0),
           }));
           setTrades(prev => {
-            const closedHistory = prev.filter(t => t._real && t.status !== 'OPEN');
-            return [...realPos, ...closedHistory].slice(0, 200);
+            if (isLiveEnv) {
+              const closedHistory = prev.filter(t => t._real && t.status !== 'OPEN');
+              return [...realPos, ...closedHistory].slice(0, 200);
+            }
+            // VIRTUAL: keep all local swarm fills; just merge in real positions without wiping
+            const localFills = prev.filter(t => !t._real);
+            const closedReal = prev.filter(t => t._real && t.status !== 'OPEN');
+            return [...realPos, ...localFills, ...closedReal].slice(0, 200);
           });
           if (account?.portfolio_value) setBalance(parseFloat(account.portfolio_value));
         }
@@ -4598,12 +4618,24 @@ const App = () => {
       const alpacaNow = alpacaRef.current;
       const isLiveReal   = mode === 'LIVE'    && !!alpacaNow?.token && alpacaNow?.env === 'live';
       const isBrokerPaper= mode === 'VIRTUAL' && !!alpacaNow?.token && alpacaNow?.env === 'paper';
+
+      // Compute dynamic enabled set: exclude agents with ≥5 trades and accuracy below threshold; re-include when recovered
+      const minAcc = (riskRef.current?.minAgentAccuracy ?? 35) / 100;
+      const hist = agentHistoryRef.current;
+      const dynamicEnabled = new Set(
+        [...enabledAgentsRef.current].filter(id => {
+          const h = hist[id];
+          if (!h || h.length < 5) return true; // not enough data, keep included
+          return h.filter(Boolean).length / h.length >= minAcc;
+        })
+      );
+
       if (Math.random() < 0.55) {
         const candidates = [];
         for (const tk of TICKERS) {
           const sigs = SIGNALS_ALL[tk.sym];
           if (!sigs) continue;
-          const ens = computeEnsemble(sigs, agentWeightsRef.current, enabledAgentsRef.current);
+          const ens = computeEnsemble(sigs, agentWeightsRef.current, dynamicEnabled);
           // Determine side based on direction constraint (fixes SHORT mode always being empty)
           let side;
           if (direction === 'LONG') side = 'BUY';
@@ -4704,7 +4736,7 @@ const App = () => {
     return <ScreenOnboarding onDone={() => { localStorage.setItem('shoal_onboarded', '1'); setShowOnboarding(false); }}/>;
   }
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade };
   const screens = {
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
     activity:    <ScreenActivity mode={mode} tick={tick} onTradeClick={handleTradeClick} running={running} ctx={ctx}/>,
