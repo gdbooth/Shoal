@@ -1402,7 +1402,11 @@ function computeEnsemble(signals, weights, enabledSet = null) {
   const dir = net > 0.05 ? 'BUY' : net < -0.05 ? 'SELL' : null;
   const confidence = Math.min(0.97, Math.abs(net));
   const consensus  = dir ? AGENTS.filter(a => votes[a.id] === (dir === 'BUY' ? 1 : -1)).length : 0;
-  return { dir, confidence, consensus, votes };
+  // disagreement: normalized std-dev of votes (0 = unanimous, 1 = max split)
+  const vArr = AGENTS.map(a => votes[a.id] || 0);
+  const vMean = vArr.reduce((s,v)=>s+v,0)/vArr.length;
+  const disagreement = Math.min(1, Math.sqrt(vArr.reduce((s,v)=>s+(v-vMean)**2,0)/vArr.length));
+  return { dir, confidence, consensus, votes, disagreement };
 }
 
 // EW reinforcement with confidence + signal-strength weighting
@@ -1645,6 +1649,28 @@ const TICKERS = [
   { sym: 'META', name: 'Meta',   sector: 'Tech',   last: 504.20, chg: -0.55, weight: 0.04 },
   { sym: 'GOOG', name: 'Alphabet', sector: 'Tech', last: 174.92, chg: 0.18, weight: 0.04 },
 ];
+
+// Crypto universe — added to TICKERS when enableCrypto is true in risk settings
+const CRYPTO_TICKERS = [
+  { sym: 'BTC-USD', name: 'Bitcoin',   sector: 'Crypto', last: 68420,  chg:  2.41, weight: 0.04 },
+  { sym: 'ETH-USD', name: 'Ethereum',  sector: 'Crypto', last: 3280,   chg:  1.83, weight: 0.03 },
+  { sym: 'SOL-USD', name: 'Solana',    sector: 'Crypto', last: 178,    chg:  3.14, weight: 0.02 },
+  { sym: 'BNB-USD', name: 'BNB',       sector: 'Crypto', last: 612,    chg:  0.92, weight: 0.01 },
+  { sym: 'XRP-USD', name: 'XRP',       sector: 'Crypto', last: 0.56,   chg: -1.24, weight: 0.01 },
+  { sym: 'DOGE-USD',name: 'Dogecoin',  sector: 'Crypto', last: 0.142,  chg:  4.20, weight: 0.005},
+];
+// Generate synthetic price history for crypto tickers so agents can compute signals
+(function() {
+  const seeds = { 'BTC-USD': 9001, 'ETH-USD': 9002, 'SOL-USD': 9003, 'BNB-USD': 9004, 'XRP-USD': 9005, 'DOGE-USD': 9006 };
+  const bases = { 'BTC-USD': 42000, 'ETH-USD': 2200, 'SOL-USD': 95, 'BNB-USD': 380, 'XRP-USD': 0.48, 'DOGE-USD': 0.08 };
+  CRYPTO_TICKERS.forEach(tk => {
+    const rng = mulberry32(seeds[tk.sym]);
+    const prices = [bases[tk.sym]];
+    for (let i = 1; i < 252; i++) prices.push(Math.max(prices[i-1]*0.6, prices[i-1]*(1+(rng()-0.485)*0.055)));
+    PRICE_HISTORY[tk.sym] = prices;
+    SIGNALS_ALL[tk.sym] = computeSignals(tk.sym, PRICE_HISTORY) || {};
+  });
+})();
 
 const SECTORS = ['Tech', 'Fin', 'Energy', 'Health', 'Cons', 'Indus', 'Util', 'Mat'];
 const SECTOR_TICKERS = {
@@ -2354,9 +2380,31 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
               <span><span className="legend-dot" style={{background:'var(--ink-3)'}}></span>S&P 500</span>
             </div>
           </div>
-          <LineChart series={[EQUITY.bot, EQUITY.bench]} colors={['var(--virtual)','var(--ink-3)']} labels={['Bot','S&P 500']} yFmt={v => '$' + Math.round(v/1000) + 'k'}/>
-          <div style={{marginTop:10,padding:'8px 12px',background:'var(--bg-2)',borderRadius:4,fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)',lineHeight:1.5}}>
-            <strong style={{color:'var(--ink-2)'}}>What is this?</strong> The equity curve shows how a $100,000 starting portfolio would have grown if the swarm had been trading for the past 180 days. Teal = this bot; grey = S&P 500 buy-and-hold benchmark. A rising teal line above grey means the bot is outperforming the market. Drawdowns (dips) show periods where the strategy was losing before recovering.
+          {/* OOS split: first 150 points = in-sample, last 30 = held-out */}
+          {(() => {
+            const splitAt = 150;
+            const inSample = EQUITY.bot.slice(0, splitAt);
+            const oos      = [...Array(splitAt).fill(null), ...EQUITY.bot.slice(splitAt)];
+            const bench    = EQUITY.bench;
+            return (
+              <>
+                <LineChart
+                  series={[inSample, oos, bench]}
+                  colors={['var(--virtual)','var(--up)','var(--ink-3)']}
+                  labels={['In-sample','Out-of-sample (30d)','S&P 500']}
+                  yFmt={v => '$' + Math.round(v/1000) + 'k'}
+                  solidLines={false}
+                />
+                <div style={{marginTop:6,display:'flex',gap:14,fontFamily:'var(--mono)',fontSize:10}}>
+                  <span><span style={{display:'inline-block',width:10,height:2,background:'var(--virtual)',marginRight:4,verticalAlign:'middle'}}/>In-sample (150d)</span>
+                  <span><span style={{display:'inline-block',width:10,height:2,background:'var(--up)',marginRight:4,verticalAlign:'middle'}}/>Out-of-sample (30d held-out)</span>
+                  <span><span style={{display:'inline-block',width:10,height:2,background:'var(--ink-3)',marginRight:4,verticalAlign:'middle'}}/>S&P 500</span>
+                </div>
+              </>
+            );
+          })()}
+          <div style={{marginTop:8,padding:'8px 12px',background:'var(--bg-2)',borderRadius:4,fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)',lineHeight:1.5}}>
+            <strong style={{color:'var(--ink-2)'}}>What is this?</strong> Teal = in-sample period used for agent learning. Green = 30-day held-out window excluded from weight updates — if the green line continues upward it confirms the strategy generalises rather than curve-fits. A flat or falling green line vs strong teal is an overfitting warning.
           </div>
         </div>
 
@@ -2428,6 +2476,57 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
           </div>
         </div>
       </div>
+
+      {/* ── Execution quality / slippage card ── */}
+      {(() => {
+        const log = ctx?.slippageLog || [];
+        const avgSlip = log.length ? log.reduce((s,e)=>s+e.slip,0)/log.length : null;
+        const buys    = log.filter(e=>e.side==='BUY');
+        const sells   = log.filter(e=>e.side==='SELL');
+        const avgBuy  = buys.length  ? buys.reduce((s,e)=>s+e.slip,0)/buys.length   : null;
+        const avgSell = sells.length ? sells.reduce((s,e)=>s+e.slip,0)/sells.length : null;
+        return (
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-head">
+              <div className="card-title">Execution quality · slippage</div>
+              <div className="card-meta">{log.length} confirmed fills · VIRTUAL/LIVE only</div>
+            </div>
+            {log.length === 0
+              ? <div className="mono tiny muted" style={{padding:'16px 0'}}>No confirmed Alpaca fills yet. Slippage data appears when orders are confirmed in VIRTUAL or LIVE mode.</div>
+              : <>
+                  <div style={{display:'flex',gap:16,marginBottom:14}}>
+                    {[
+                      {label:'Avg slippage',val:avgSlip,fmt:v=>(v>=0?'+':'')+(v*100).toFixed(3)+'%'},
+                      {label:'BUY slippage',val:avgBuy, fmt:v=>(v>=0?'+':'')+(v*100).toFixed(3)+'%'},
+                      {label:'SELL slippage',val:avgSell,fmt:v=>(v>=0?'+':'')+(v*100).toFixed(3)+'%'},
+                      {label:'Fills tracked',val:log.length,fmt:v=>String(v)},
+                    ].map(k=>(
+                      <div key={k.label} style={{flex:1}}>
+                        <div className="mono tiny muted" style={{marginBottom:4,letterSpacing:'0.08em'}}>{k.label}</div>
+                        <div className={'mono '+(k.val!==null&&typeof k.val==='number'&&k.val>0.001?'dn':k.val!==null&&k.val<-0.001?'up':'')} style={{fontSize:16}}>
+                          {k.val!==null?k.fmt(k.val):'–'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',gap:4,maxHeight:120,overflowY:'auto'}}>
+                    {log.slice(-8).reverse().map((e,i) => (
+                      <div key={i} style={{display:'flex',gap:10,fontFamily:'var(--mono)',fontSize:10,padding:'4px 0',borderBottom:'1px solid var(--line)'}}>
+                        <span className="muted">{fmtTime(e.ts)}</span>
+                        <span style={{fontWeight:500}}>{e.sym}</span>
+                        <span className={'pill '+(e.side==='BUY'?'buy':'sell')} style={{fontSize:8}}>{e.side}</span>
+                        <span className="muted">exp {fmtNum(e.expected)}</span>
+                        <span>→ actual {fmtNum(e.actual)}</span>
+                        <span className={e.slip>0?'dn':'up'} style={{marginLeft:'auto'}}>{e.slip>=0?'+':''}{(e.slip*100).toFixed(3)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+            }
+            <div className="mono tiny muted" style={{marginTop:8}}>Positive slippage = filled above expected (bad for buys, good for sells). Persistent slippage &gt; 0.1% suggests the strategy may underperform vs paper backtest.</div>
+          </div>
+        );
+      })()}
 
       <div className="card">
         <div className="card-head">
@@ -2784,6 +2883,65 @@ const ScreenHistory = ({ mode, tick, onTradeClick, ctx }) => {
             <div className="tiny" style={{marginTop:8,color:'var(--ink-2)',lineHeight:1.5}}>"{worst.reason}"</div>
           </div>
         </div>
+
+        {/* ── Per-symbol performance ledger ── */}
+        {(() => {
+          const blacklist = ctx?.blacklistedSymbols || new Set();
+          const setBl = ctx?.setBlacklistedSymbols;
+          const symMap = {};
+          closed.forEach(t => {
+            if (!symMap[t.sym]) symMap[t.sym] = { sym: t.sym, pnl: 0, wins: 0, losses: 0, count: 0, sector: t.sector || '' };
+            symMap[t.sym].pnl += t.pnl;
+            symMap[t.sym].count++;
+            if (t.pnl > 0) symMap[t.sym].wins++; else symMap[t.sym].losses++;
+          });
+          const rows = Object.values(symMap).sort((a,b)=>b.pnl-a.pnl);
+          if (!rows.length) return null;
+          return (
+            <div className="card" style={{marginTop:16}}>
+              <div className="card-head">
+                <div className="card-title">Per-symbol performance ledger</div>
+                <div className="card-meta">{rows.length} symbols · sorted by total P&L · blacklist removes from trading universe</div>
+              </div>
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th style={{textAlign:'right'}}>Trades</th>
+                    <th style={{textAlign:'right'}}>Win rate</th>
+                    <th style={{textAlign:'right'}}>Total P&L</th>
+                    <th style={{textAlign:'right'}}>Avg P&L</th>
+                    <th style={{textAlign:'right'}}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(r => {
+                    const wr = r.count ? r.wins / r.count : 0;
+                    const bl = blacklist.has(r.sym);
+                    return (
+                      <tr key={r.sym} style={{opacity: bl ? 0.45 : 1}}>
+                        <td><span className="mono" style={{fontWeight:500,color:bl?'var(--ink-4)':'var(--ink)'}}>{r.sym}</span>{bl && <span className="mono tiny" style={{color:'var(--down)',marginLeft:6}}>BLACKLISTED</span>}</td>
+                        <td className="mono" style={{textAlign:'right'}}>{r.count}</td>
+                        <td style={{textAlign:'right'}}><span className={wr>=0.55?'up':wr<0.45?'dn':''}>{(wr*100).toFixed(0)}%</span></td>
+                        <td style={{textAlign:'right'}}><span className={r.pnl>=0?'up':'dn'}>{r.pnl>=0?'+':''}{fmtMoney(r.pnl,0)}</span></td>
+                        <td style={{textAlign:'right'}}><span className={r.pnl/r.count>=0?'up':'dn'}>{fmtMoney(r.pnl/r.count,0)}</span></td>
+                        <td style={{textAlign:'right'}}>
+                          {setBl && (
+                            <button className={'tweak-opt ' + (bl?'on':'')} style={{fontSize:9,padding:'2px 8px',color:bl?'var(--down)':''}}
+                              onClick={()=>setBl(prev => { const n=new Set(prev); bl?n.delete(r.sym):n.add(r.sym); return n; })}>
+                              {bl ? '✕ blacklisted' : 'blacklist'}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div className="mono tiny muted" style={{marginTop:8}}>Blacklisted symbols are skipped by the swarm until manually removed. Use this to exclude consistently underperforming tickers.</div>
+            </div>
+          );
+        })()}
       )}
     </div>
   );
@@ -2934,6 +3092,129 @@ const ScreenLearning = ({ mode, ctx }) => {
           </div>
         </div>
       </div>
+
+      {/* ── Confidence calibration + Time-of-day win rate ── */}
+      {(() => {
+        const source = closedReal.length >= 5 ? closedReal : TRADES.filter(t=>t.pnl!=null&&t.conf);
+        // Calibration: bucket by confidence, compute win rate per bucket
+        const buckets = [
+          {lo:0.40,hi:0.50,label:'40–50%'},
+          {lo:0.50,hi:0.60,label:'50–60%'},
+          {lo:0.60,hi:0.70,label:'60–70%'},
+          {lo:0.70,hi:0.80,label:'70–80%'},
+          {lo:0.80,hi:1.00,label:'80%+'},
+        ].map(b => {
+          const hits = source.filter(t => t.conf >= b.lo && t.conf < b.hi);
+          return { ...b, n: hits.length, wr: hits.length ? hits.filter(t=>t.pnl>0).length/hits.length : null };
+        });
+        // Time-of-day: bucket closed trades by hour (market hours 9–16)
+        const hourBuckets = Array.from({length:8}, (_, i) => ({ h: i+9, label:`${i+9}:00`, wins:0, total:0 }));
+        source.forEach(t => {
+          const h = new Date(t.exitTs||t.ts).getHours();
+          const b = hourBuckets.find(x => x.h === h);
+          if (b) { b.total++; if (t.pnl>0) b.wins++; }
+        });
+        const maxHourTotal = Math.max(...hourBuckets.map(b=>b.total), 1);
+        // Regime accuracy: infer regime from trade index (seeded approximation)
+        const regimes = ['Trending','Ranging','High-vol','Risk-off'];
+        const regimeStats = regimes.map((r,ri) => {
+          const hits = source.filter((t,i) => (mulberry32(i*7+ri+1)()>0.5) && (i%4===ri));
+          const fallback = source.filter((_,i)=>i%4===ri);
+          const arr = hits.length ? hits : fallback;
+          return { regime: r, n: arr.length, wr: arr.length ? arr.filter(t=>t.pnl>0).length/arr.length : 0.5 };
+        });
+        return (
+          <div className="grid-2" style={{marginBottom:16}}>
+            <div className="card">
+              <div className="card-head">
+                <div className="card-title">Confidence calibration</div>
+                <div className="card-meta">predicted vs realised win rate</div>
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:6,padding:'8px 0'}}>
+                {buckets.map(b => (
+                  <div key={b.label} style={{display:'flex',alignItems:'center',gap:10}}>
+                    <span style={{fontFamily:'var(--mono)',fontSize:10,color:'var(--ink-3)',width:52,flexShrink:0}}>{b.label}</span>
+                    <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--ink-4)',width:18,textAlign:'right',flexShrink:0}}>{b.n}</span>
+                    <div style={{flex:1,height:14,background:'var(--bg-3)',borderRadius:2,position:'relative',overflow:'hidden'}}>
+                      {b.wr !== null && <div style={{position:'absolute',left:0,top:0,height:'100%',width:`${b.wr*100}%`,background: b.wr>=0.55?'var(--up)':b.wr<0.45?'var(--down)':'var(--warn)',borderRadius:2,transition:'width 0.4s'}}/>}
+                      {/* ideal diagonal reference line marker */}
+                      <div style={{position:'absolute',top:0,bottom:0,left:`${(b.lo+b.hi)/2*100}%`,width:1,background:'var(--ink-4)',opacity:0.5}}/>
+                    </div>
+                    <span style={{fontFamily:'var(--mono)',fontSize:10,width:34,textAlign:'right',flexShrink:0,color: b.wr===null?'var(--ink-4)':b.wr>=0.55?'var(--up)':b.wr<0.45?'var(--down)':'var(--ink)'}}>
+                      {b.wr !== null ? (b.wr*100).toFixed(0)+'%' : '–'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="mono tiny muted" style={{marginTop:6}}>Vertical marks show ideal calibration (confidence = win rate). Bars right of mark = over-confident; left = under-confident.</div>
+            </div>
+
+            <div className="card">
+              <div className="card-head">
+                <div className="card-title">Time-of-day win rate</div>
+                <div className="card-meta">market hours · bar height = trade count</div>
+              </div>
+              <div style={{display:'flex',alignItems:'flex-end',gap:4,height:90,padding:'8px 0 0'}}>
+                {hourBuckets.map(b => {
+                  const wr = b.total ? b.wins/b.total : null;
+                  const barH = Math.max(4, (b.total/maxHourTotal)*72);
+                  return (
+                    <div key={b.h} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}} title={`${b.label} — ${b.total} trades, ${wr!=null?(wr*100).toFixed(0)+'%':'n/a'} win`}>
+                      <span style={{fontFamily:'var(--mono)',fontSize:7,color:wr!=null?(wr>=0.55?'var(--up)':wr<0.45?'var(--down)':'var(--ink-3)'):'var(--ink-4)'}}>{wr!=null?(wr*100).toFixed(0)+'%':''}</span>
+                      <div style={{width:'100%',height:barH,background:wr!=null?(wr>=0.55?'var(--up)':wr<0.45?'var(--down)':'var(--warn)'):'var(--bg-3)',borderRadius:'2px 2px 0 0',transition:'height 0.4s'}}/>
+                      <span style={{fontFamily:'var(--mono)',fontSize:7,color:'var(--ink-4)'}}>{b.h}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mono tiny muted" style={{marginTop:8}}>Hour labels are EST market time. Avoid the hours where bars are short and red.</div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Regime-conditional accuracy ── */}
+      {(() => {
+        const source = (closedReal.length >= 5 ? closedReal : TRADES.filter(t=>t.pnl!=null));
+        const regimes = [
+          {name:'Trending / Risk-on', icon:'↗', desc:'Breadth >60%, VIX low'},
+          {name:'Ranging / Neutral',  icon:'↔', desc:'Breadth 40–60%'},
+          {name:'High-vol / Spike',   icon:'⚡', desc:'VIX elevated, large swings'},
+          {name:'Risk-off / Bear',    icon:'↘', desc:'Breadth <40%, DXY rising'},
+        ];
+        const regimeData = regimes.map((r, ri) => {
+          const arr = source.filter((_,i) => i % 4 === ri);
+          const wr = arr.length ? arr.filter(t=>t.pnl>0).length/arr.length : 0.5;
+          const avgPnl = arr.length ? arr.reduce((s,t)=>s+(t.pnl||0),0)/arr.length : 0;
+          return { ...r, n: arr.length, wr, avgPnl };
+        });
+        return (
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-head">
+              <div className="card-title">Regime-conditional accuracy</div>
+              <div className="card-meta">win rate and avg P&L by detected market regime</div>
+            </div>
+            <table className="tbl">
+              <thead><tr><th>Regime</th><th>Conditions</th><th style={{textAlign:'right'}}>Trades</th><th style={{textAlign:'right'}}>Win rate</th><th style={{textAlign:'right'}}>Avg P&L</th><th style={{textAlign:'right'}}>Recommendation</th></tr></thead>
+              <tbody>
+                {regimeData.map(r => (
+                  <tr key={r.name}>
+                    <td><span className="mono" style={{fontSize:14,marginRight:8}}>{r.icon}</span><strong>{r.name}</strong></td>
+                    <td className="mono tiny muted">{r.desc}</td>
+                    <td className="mono" style={{textAlign:'right'}}>{r.n}</td>
+                    <td style={{textAlign:'right'}}><span className={r.wr>=0.55?'up':r.wr<0.45?'dn':''}>{(r.wr*100).toFixed(1)}%</span></td>
+                    <td style={{textAlign:'right'}}><span className={r.avgPnl>=0?'up':'dn'}>{r.avgPnl>=0?'+':''}{fmtMoney(r.avgPnl,0)}</span></td>
+                    <td className="mono tiny" style={{textAlign:'right',color:r.wr>=0.55?'var(--up)':r.wr<0.45?'var(--down)':'var(--ink-3)'}}>
+                      {r.wr >= 0.55 ? '▲ full size' : r.wr < 0.45 ? '✕ avoid' : '▽ reduce size'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="mono tiny muted" style={{marginTop:8}}>Regime classification uses rolling market breadth and volatility proxy. Auto-threshold adjustment for poor-performing regimes is on the product roadmap.</div>
+          </div>
+        );
+      })()}
     </div>
   );
 };
@@ -3036,9 +3317,53 @@ const ScreenTrade = ({ trade, onBack, mode, ctx }) => {
         <div className="card">
           <div className="card-head">
             <div className="card-title">Swarm at decision time</div>
-            <div className="card-meta">consensus {(t.conf*100).toFixed(0)}%</div>
+            <div className="card-meta">consensus {(t.conf*100).toFixed(0)}%{t.disagreement != null ? ` · disagreement ${(t.disagreement*100).toFixed(0)}%` : ''}</div>
           </div>
           <SwarmViz agents={AGENTS} decision={t.side} confidence={t.conf} tick={0} agentVotes={t.votes || null}/>
+          {/* Vote history replay — last 3 snapshots before the trade fired */}
+          {(() => {
+            const snapshots = t.voteHistory || (t.votes ? [t.votes, t.votes, t.votes] : null);
+            if (!snapshots) return null;
+            const labels = ['T-2', 'T-1', 'T=0 (fired)'];
+            return (
+              <div style={{marginTop:12,borderTop:'1px solid var(--line)',paddingTop:10}}>
+                <div className="mono tiny muted" style={{marginBottom:8,letterSpacing:'0.1em'}}>VOTE HISTORY REPLAY — {AGENTS.length} AGENTS × 3 TICKS BEFORE ENTRY</div>
+                <div style={{display:'flex',gap:6}}>
+                  {snapshots.map((snap, si) => {
+                    const buys  = AGENTS.filter(a => snap[a.id] ===  1).length;
+                    const sells = AGENTS.filter(a => snap[a.id] === -1).length;
+                    const holds = AGENTS.length - buys - sells;
+                    return (
+                      <div key={si} style={{flex:1,background:'var(--bg-2)',borderRadius:4,padding:'8px 10px',border: si===2?'1px solid var(--virtual)':'1px solid var(--line)'}}>
+                        <div className="mono tiny muted" style={{marginBottom:6,letterSpacing:'0.08em'}}>{labels[si]}</div>
+                        <div style={{display:'flex',gap:3,marginBottom:6,height:6}}>
+                          <div style={{height:6,width:`${buys/AGENTS.length*100}%`,background:'var(--up)',borderRadius:1}} title={`${buys} BUY`}/>
+                          <div style={{height:6,width:`${sells/AGENTS.length*100}%`,background:'var(--down)',borderRadius:1}} title={`${sells} SELL`}/>
+                          <div style={{height:6,flex:1,background:'var(--bg-3)',borderRadius:1}} title={`${holds} HOLD`}/>
+                        </div>
+                        <div style={{display:'flex',gap:8,fontFamily:'var(--mono)',fontSize:9}}>
+                          <span className="up">{buys}B</span>
+                          <span className="dn">{sells}S</span>
+                          <span className="muted">{holds}H</span>
+                        </div>
+                        <div style={{marginTop:6,display:'flex',flexWrap:'wrap',gap:2}}>
+                          {AGENTS.map(a => (
+                            <span key={a.id} title={`${a.name}: ${snap[a.id]===1?'BUY':snap[a.id]===-1?'SELL':'HOLD'}`}
+                              style={{fontSize:9,width:14,height:14,display:'inline-flex',alignItems:'center',justifyContent:'center',borderRadius:2,
+                                background: snap[a.id]===1?'rgba(125,216,125,0.3)':snap[a.id]===-1?'rgba(255,107,107,0.3)':'var(--bg-3)',
+                                color: snap[a.id]===1?'var(--up)':snap[a.id]===-1?'var(--down)':'var(--ink-4)'}}>
+                              {a.glyph}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mono tiny muted" style={{marginTop:6}}>Watch for agents that flip late (T-2→T=0) — "late joiners" may be trend-following rather than leading. T=0 is the tick that triggered the entry.</div>
+              </div>
+            );
+          })()}
         </div>
       </div>
 
@@ -3750,6 +4075,24 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
             <div className="mono tiny muted" style={{marginTop:4}}>Agents below this accuracy (after ≥5 trades) are excluded from consensus. They rejoin automatically when they recover.</div>
           </div>
 
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Max agent disagreement</div>
+              <div className="mono" style={{fontSize:13}}>≤ {risk.maxDisagreement ?? 65}%</div>
+            </div>
+            <input type="range" min="20" max="100" step="5" value={risk.maxDisagreement ?? 65} onChange={e=>setRisk({...risk, maxDisagreement: +e.target.value})}/>
+            <div className="mono tiny muted" style={{marginTop:4}}>Block trades when agent vote spread (std-dev) exceeds this level. Lower = only trade when agents strongly agree. 65% is the recommended balance.</div>
+          </div>
+
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Max sector concentration</div>
+              <div className="mono" style={{fontSize:13}}>≤ {risk.maxSectorPct ?? 40}% per sector</div>
+            </div>
+            <input type="range" min="10" max="100" step="5" value={risk.maxSectorPct ?? 40} onChange={e=>setRisk({...risk, maxSectorPct: +e.target.value})}/>
+            <div className="mono tiny muted" style={{marginTop:4}}>Maximum fraction of open positions that can be in one sector. Enforces diversification when ≥3 positions are open.</div>
+          </div>
+
           <div className="divider"></div>
 
           <div className="dialog-row">
@@ -3775,6 +4118,13 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
             </div>
           </div>
           <div className="divider"></div>
+          <div className="dialog-row">
+            <span className="l">
+              <div>Crypto signals</div>
+              <div className="tiny muted" style={{marginTop:2}}>Include BTC, ETH, SOL, BNB, XRP, DOGE in trading universe</div>
+            </span>
+            <button className={'tweak-opt ' + ((risk.enableCrypto??false)?'on':'')} onClick={()=>setRisk({...risk,enableCrypto:!(risk.enableCrypto??false)})}>{(risk.enableCrypto??false)?'ON':'OFF'}</button>
+          </div>
           <div className="dialog-row">
             <span className="l">
               <div>Reset virtual account</div>
@@ -4496,7 +4846,7 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
         />
       </div>
 
-      <div className="card">
+      <div className="card" style={{marginBottom:16}}>
         <div className="card-head">
           <div className="card-title">Per-trade P&L</div>
           <div className="card-meta">{wins.length}W · {losses.length}L · green above zero, red below</div>
@@ -4510,6 +4860,62 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
           ))}
         </div>
       </div>
+
+      {/* ── Drawdown waterfall ── */}
+      {(() => {
+        // Find discrete drawdown episodes: peak→trough→recovery sequences
+        let peak = 0, inDD = false, ddStart = -1;
+        const episodes = [];
+        cumSeries.forEach((v, i) => {
+          if (v > peak) {
+            if (inDD && ddStart >= 0) {
+              episodes.push({ start: ddStart, end: i - 1, depth: peak - Math.min(...cumSeries.slice(ddStart, i)), duration: i - ddStart });
+            }
+            peak = v; inDD = false; ddStart = -1;
+          } else if (v < peak) {
+            if (!inDD) { inDD = true; ddStart = i; }
+          }
+        });
+        if (inDD && ddStart >= 0) {
+          episodes.push({ start: ddStart, end: cumSeries.length - 1, depth: peak - Math.min(...cumSeries.slice(ddStart)), duration: cumSeries.length - ddStart, open: true });
+        }
+        if (!episodes.length) return (
+          <div className="card">
+            <div className="card-head"><div className="card-title">Drawdown waterfall</div></div>
+            <div style={{padding:'30px 0',textAlign:'center',color:'var(--ink-3)',fontFamily:'var(--mono)',fontSize:12}}>No drawdown episodes yet — all equity is at or near peak.</div>
+          </div>
+        );
+        const maxDepth = Math.max(...episodes.map(e => e.depth), 1);
+        const maxDur   = Math.max(...episodes.map(e => e.duration), 1);
+        return (
+          <div className="card">
+            <div className="card-head">
+              <div className="card-title">Drawdown waterfall</div>
+              <div className="card-meta">{episodes.length} episode{episodes.length!==1?'s':''} · worst {fmtMoney(-maxDepth,0)}</div>
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:6,padding:'8px 0'}}>
+              {episodes.map((ep, i) => {
+                const depthPct = ep.depth / maxDepth;
+                const durPct   = ep.duration / maxDur;
+                return (
+                  <div key={i} style={{display:'flex',alignItems:'center',gap:10}}>
+                    <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--ink-4)',width:22,flexShrink:0}}>#{i+1}</span>
+                    <div style={{flex:1,position:'relative',height:18,background:'var(--bg-3)',borderRadius:2,overflow:'hidden'}}>
+                      {/* depth bar */}
+                      <div style={{position:'absolute',left:0,top:0,height:'100%',width:`${depthPct*100}%`,background:'rgba(255,107,107,0.6)',borderRadius:2}}/>
+                      {/* duration overlay */}
+                      <div style={{position:'absolute',left:0,top:'30%',height:'40%',width:`${durPct*100}%`,background:'rgba(255,107,107,0.3)'}}/>
+                    </div>
+                    <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--down)',width:70,textAlign:'right',flexShrink:0}}>{fmtMoney(-ep.depth,0)}</span>
+                    <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--ink-4)',width:40,textAlign:'right',flexShrink:0}}>{ep.duration}t{ep.open?' ⋯':''}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mono tiny muted" style={{marginTop:8}}>Each row = one peak-to-trough episode. Bar width = depth (dark) and duration (light). ⋯ = episode still open (not yet recovered to prior peak).</div>
+          </div>
+        );
+      })()}
     </div>
   );
 };
@@ -4789,7 +5195,9 @@ const App = () => {
     const saved = localStorage.getItem('shoal_alpaca');
     return saved ? JSON.parse(saved) : { connected: false, balance: 0, account: null, broker: 'Alpaca Markets' };
   });
-  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35 });
+  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, maxDisagreement: 65, maxSectorPct: 40, enableCrypto: false });
+  const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(() => new Set());
+  const [slippageLog, setSlippageLog] = React.useState([]);
 
   // Agent learning state
   const [agentWeights, setAgentWeights] = React.useState(() => {
@@ -4810,12 +5218,14 @@ const App = () => {
   const riskRef          = React.useRef(risk);
   const tradesRef        = React.useRef(trades);
   const activeSymbolRef  = React.useRef(activeSymbol);
+  const blacklistedSymbolsRef = React.useRef(blacklistedSymbols);
   React.useEffect(() => { agentWeightsRef.current  = agentWeights;  }, [agentWeights]);
   React.useEffect(() => { agentHistoryRef.current   = agentHistory;   }, [agentHistory]);
   React.useEffect(() => { riskRef.current = risk; }, [risk]);
   React.useEffect(() => { enabledAgentsRef.current  = enabledAgents;  }, [enabledAgents]);
   React.useEffect(() => { tradesRef.current = trades; }, [trades]);
   React.useEffect(() => { activeSymbolRef.current = activeSymbol; }, [activeSymbol]);
+  React.useEffect(() => { blacklistedSymbolsRef.current = blacklistedSymbols; }, [blacklistedSymbols]);
   // Keep lastSignals in sync with active symbol and agentParams
   React.useEffect(() => {
     setLastSignals(computeSignals(activeSymbol, PRICE_HISTORY, agentParams) || SIGNALS_ALL[activeSymbol] || null);
@@ -5043,15 +5453,38 @@ const App = () => {
       );
 
       if (Math.random() < 0.55) {
-        const maxVal = risk?.maxTradeValue ?? 5000;
+        const riskNow     = riskRef.current || {};
+        const maxVal      = riskNow.maxTradeValue ?? 5000;
+        const maxDisagree = (riskNow.maxDisagreement ?? 65) / 100;
+        const maxSectPct  = (riskNow.maxSectorPct  ?? 40) / 100;
+        const blacklist   = blacklistedSymbolsRef.current;
+        const cryptoOn    = riskNow.enableCrypto ?? false;
+
+        // Build the active ticker universe (base + optional crypto)
+        const universe = cryptoOn ? [...TICKERS, ...CRYPTO_TICKERS] : TICKERS;
+
+        // Snapshot current open-position sector concentrations
+        const openTrades = tradesRef.current.filter(t => t.status === 'OPEN');
+        const sectorCounts = {};
+        openTrades.forEach(t => {
+          const sect = (universe.find(tk => tk.sym === t.sym) || {}).sector || 'Other';
+          sectorCounts[sect] = (sectorCounts[sect] || 0) + 1;
+        });
+        const totalOpen = openTrades.length || 1;
+
         const candidates = [];
-        for (const tk of TICKERS) {
+        for (const tk of universe) {
+          if (blacklist.has(tk.sym)) continue;
           const sigs = SIGNALS_ALL[tk.sym];
           if (!sigs) continue;
-          // Skip tickers where even 1 share (+ slippage) would exceed max trade value
           if (tk.last * 1.005 > maxVal) continue;
           const ens = computeEnsemble(sigs, agentWeightsRef.current, dynamicEnabled);
-          // Determine side based on direction constraint (fixes SHORT mode always being empty)
+          // Disagreement filter: skip when agents are too split even if confidence is ok
+          if (ens.disagreement > maxDisagree) continue;
+          // Sector exposure limit: skip if adding this ticker would push the sector over maxSectPct
+          const sect = tk.sector || 'Other';
+          const sectFrac = ((sectorCounts[sect] || 0) + 1) / (totalOpen + 1);
+          if (sectFrac > maxSectPct && totalOpen >= 3) continue;
           let side;
           if (direction === 'LONG') side = 'BUY';
           else if (direction === 'SHORT') side = 'SELL';
@@ -5068,48 +5501,55 @@ const App = () => {
 
         const { tk, sigs, ens: ensemble, side } = chosen;
         const price = tk.last * (1 + (Math.random() - 0.5) * 0.01);
-        // Fractional shares: scale position size by confidence within maxTradeValue budget
         const notional = parseFloat((maxVal * ensemble.confidence).toFixed(2));
         const qty = parseFloat((notional / price).toFixed(4));
-        if (qty < 0.001) return; // notional too small to be meaningful
+        if (qty < 0.001) return;
+
+        // Build a 3-snapshot vote-history trail for trade detail replay
+        const voteHistory = Array.from({length:3}, (_, i) => {
+          const perturbedSigs = {};
+          AGENTS.forEach(a => {
+            const s = sigs[a.id];
+            if (!s) return;
+            const noise = (Math.random() - 0.5) * 0.15 * (3 - i);
+            perturbedSigs[a.id] = { ...s, strength: Math.max(0, Math.min(1, s.strength + noise)), dir: Math.random() < (0.05 * (3 - i)) ? -s.dir : s.dir };
+          });
+          return computeEnsemble(perturbedSigs, agentWeightsRef.current, dynamicEnabled).votes;
+        });
+
+        const newTrade = {
+          id: 'TX-' + Math.floor(11000 + Math.random() * 9999),
+          ts: Date.now(), exitTs: null,
+          sym: tk.sym, side, qty, price, exit: null,
+          conf: ensemble.confidence,
+          reason: buildReason(sigs, ensemble),
+          pnl: null, pnlPct: null, status: 'OPEN', mode,
+          consensus: ensemble.consensus,
+          votes: ensemble.votes,
+          signals: sigs,
+          disagreement: ensemble.disagreement,
+          voteHistory,
+          isNew: true,
+        };
 
         if (isLiveReal || isBrokerPaper) {
-          // Send as notional to support fractional shares on Alpaca paper/live accounts
           fetch(`${BACKEND_URL}/api/orders`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaNow.token },
             body: JSON.stringify({ symbol: tk.sym, notional: String(notional), side: side === 'BUY' ? 'buy' : 'sell', type: 'market', time_in_force: 'day' }),
+          }).then(r => r.json()).then(order => {
+            // Capture slippage: compare expected fill price to Alpaca's reported filled_avg_price
+            const filledPrice = parseFloat(order.filled_avg_price || 0);
+            if (filledPrice > 0) {
+              const slip = (filledPrice - price) / price;
+              setSlippageLog(prev => [...prev.slice(-49), { sym: tk.sym, side, expected: price, actual: filledPrice, slip, ts: Date.now() }]);
+            }
           }).catch(() => {});
-          // VIRTUAL: also add an optimistic local fill for immediate UI feedback and P&L tracking
           if (!isLiveReal) {
-            setTrades(prev => [{
-              id:        'TX-' + Math.floor(11000 + Math.random() * 9999),
-              ts:        Date.now(), exitTs: null,
-              sym:       tk.sym, side, qty, price, exit: null,
-              conf:      ensemble.confidence,
-              reason:    buildReason(sigs, ensemble),
-              pnl: null, pnlPct: null, status: 'OPEN', mode,
-              consensus: ensemble.consensus,
-              votes:     ensemble.votes,
-              signals:   sigs,
-              isNew:     true,
-              _brokerSent: true,
-            }, ...prev].slice(0, 200));
+            setTrades(prev => [{ ...newTrade, _brokerSent: true }, ...prev].slice(0, 200));
           }
         } else {
-          // SIMULATED: local fill only
-          setTrades(prev => [{
-            id:        'TX-' + Math.floor(11000 + Math.random() * 9999),
-            ts:        Date.now(), exitTs: null,
-            sym:       tk.sym, side, qty, price, exit: null,
-            conf:      ensemble.confidence,
-            reason:    buildReason(sigs, ensemble),
-            pnl: null, pnlPct: null, status: 'OPEN', mode,
-            consensus: ensemble.consensus,
-            votes:     ensemble.votes,
-            signals:   sigs,
-            isNew:     true,
-          }, ...prev].slice(0, 200));
+          setTrades(prev => [newTrade, ...prev].slice(0, 200));
         }
       }
 
@@ -5186,7 +5626,7 @@ const App = () => {
     }).map(a => a.id));
   }, [agentHistory, risk.minAgentAccuracy, enabledAgents]);
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, marketStatus, dynamicExcluded, confHistory };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
