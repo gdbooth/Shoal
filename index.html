@@ -2883,9 +2883,10 @@ const ScreenHistory = ({ mode, tick, onTradeClick, ctx }) => {
             <div className="tiny" style={{marginTop:8,color:'var(--ink-2)',lineHeight:1.5}}>"{worst.reason}"</div>
           </div>
         </div>
+      )}
 
-        {/* ── Per-symbol performance ledger ── */}
-        {(() => {
+      {/* ── Per-symbol performance ledger ── */}
+      {(() => {
           const blacklist = ctx?.blacklistedSymbols || new Set();
           const setBl = ctx?.setBlacklistedSymbols;
           const symMap = {};
@@ -2941,8 +2942,7 @@ const ScreenHistory = ({ mode, tick, onTradeClick, ctx }) => {
               <div className="mono tiny muted" style={{marginTop:8}}>Blacklisted symbols are skipped by the swarm until manually removed. Use this to exclude consistently underperforming tickers.</div>
             </div>
           );
-        })()}
-      )}
+      })()}
     </div>
   );
 };
