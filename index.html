@@ -18,6 +18,7 @@
   --ink-2: #b8b3a8;
   --ink-3: #6f6b62;
   --ink-4: #4a4740;
+  --teal: #2dd4bf;
   --virtual: #7dd87d;
   --virtual-dim: #4a8a4a;
   --live: #ff8a3d;
@@ -2391,13 +2392,13 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
               <>
                 <LineChart
                   series={[inSample, oos, bench]}
-                  colors={['var(--virtual)','var(--up)','var(--ink-3)']}
+                  colors={['var(--teal)','var(--up)','var(--ink-3)']}
                   labels={['In-sample','Out-of-sample (30d)','S&P 500']}
                   yFmt={v => '$' + Math.round(v/1000) + 'k'}
                   solidLines={false}
                 />
                 <div style={{marginTop:6,display:'flex',gap:14,fontFamily:'var(--mono)',fontSize:10}}>
-                  <span><span style={{display:'inline-block',width:10,height:2,background:'var(--virtual)',marginRight:4,verticalAlign:'middle'}}/>In-sample (150d)</span>
+                  <span><span style={{display:'inline-block',width:10,height:2,background:'var(--teal)',marginRight:4,verticalAlign:'middle'}}/>In-sample (150d)</span>
                   <span><span style={{display:'inline-block',width:10,height:2,background:'var(--up)',marginRight:4,verticalAlign:'middle'}}/>Out-of-sample (30d held-out)</span>
                   <span><span style={{display:'inline-block',width:10,height:2,background:'var(--ink-3)',marginRight:4,verticalAlign:'middle'}}/>S&P 500</span>
                 </div>
@@ -2405,7 +2406,7 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
             );
           })()}
           <div style={{marginTop:8,padding:'8px 12px',background:'var(--bg-2)',borderRadius:4,fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)',lineHeight:1.5}}>
-            <strong style={{color:'var(--ink-2)'}}>What is this?</strong> Teal = in-sample period used for agent learning. Green = 30-day held-out window excluded from weight updates — if the green line continues upward it confirms the strategy generalises rather than curve-fits. A flat or falling green line vs strong teal is an overfitting warning.
+            <strong style={{color:'var(--ink-2)'}}>What is this?</strong> <span style={{color:'var(--teal)'}}>Teal</span> = in-sample period used for agent learning. <span style={{color:'var(--up)'}}>Green</span> = 30-day held-out window excluded from weight updates — if the green line continues upward it confirms the strategy generalises rather than curve-fits. A flat or falling green line vs strong teal is an overfitting warning.
           </div>
         </div>
 
