@@ -1659,18 +1659,6 @@ const CRYPTO_TICKERS = [
   { sym: 'XRP-USD', name: 'XRP',       sector: 'Crypto', last: 0.56,   chg: -1.24, weight: 0.01 },
   { sym: 'DOGE-USD',name: 'Dogecoin',  sector: 'Crypto', last: 0.142,  chg:  4.20, weight: 0.005},
 ];
-// Generate synthetic price history for crypto tickers so agents can compute signals
-(function() {
-  const seeds = { 'BTC-USD': 9001, 'ETH-USD': 9002, 'SOL-USD': 9003, 'BNB-USD': 9004, 'XRP-USD': 9005, 'DOGE-USD': 9006 };
-  const bases = { 'BTC-USD': 42000, 'ETH-USD': 2200, 'SOL-USD': 95, 'BNB-USD': 380, 'XRP-USD': 0.48, 'DOGE-USD': 0.08 };
-  CRYPTO_TICKERS.forEach(tk => {
-    const rng = mulberry32(seeds[tk.sym]);
-    const prices = [bases[tk.sym]];
-    for (let i = 1; i < 252; i++) prices.push(Math.max(prices[i-1]*0.6, prices[i-1]*(1+(rng()-0.485)*0.055)));
-    PRICE_HISTORY[tk.sym] = prices;
-    SIGNALS_ALL[tk.sym] = computeSignals(tk.sym, PRICE_HISTORY) || {};
-  });
-})();
 
 const SECTORS = ['Tech', 'Fin', 'Energy', 'Health', 'Cons', 'Indus', 'Util', 'Mat'];
 const SECTOR_TICKERS = {
@@ -1845,6 +1833,19 @@ window.genPredVsActual = genPredVsActual;
 const SIGNALS_ALL = Object.fromEntries(
   TICKERS.map(tk => [tk.sym, computeSignals(tk.sym, PRICE_HISTORY)]).filter(([, v]) => v)
 );
+
+// Generate synthetic price history + signals for crypto tickers (must run after PRICE_HISTORY and SIGNALS_ALL are defined)
+(function() {
+  const seeds = { 'BTC-USD': 9001, 'ETH-USD': 9002, 'SOL-USD': 9003, 'BNB-USD': 9004, 'XRP-USD': 9005, 'DOGE-USD': 9006 };
+  const bases = { 'BTC-USD': 42000, 'ETH-USD': 2200, 'SOL-USD': 95, 'BNB-USD': 380, 'XRP-USD': 0.48, 'DOGE-USD': 0.08 };
+  CRYPTO_TICKERS.forEach(tk => {
+    const rng = mulberry32(seeds[tk.sym]);
+    const prices = [bases[tk.sym]];
+    for (let i = 1; i < 252; i++) prices.push(Math.max(prices[i-1]*0.6, prices[i-1]*(1+(rng()-0.485)*0.055)));
+    PRICE_HISTORY[tk.sym] = prices;
+    SIGNALS_ALL[tk.sym] = computeSignals(tk.sym, PRICE_HISTORY) || {};
+  });
+})();
 
 // param tuning timeline events
 const PARAM_EVENTS = [
