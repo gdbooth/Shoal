@@ -1904,18 +1904,26 @@ Object.assign(window, { Icon, Sparkline, ModeBadge, TickerStrip });
 // Charts — all hand-rolled SVG. Equity, stacked area weights, scatter pred-vs-actual,
 // price chart, swarm visualization, heatmap, donut, etc.
 
-const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--ink-3)'], labels = [], yFmt = v => v.toFixed(0), fillFirst = true, solidLines = false, xLabels = null }) => {
+const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--ink-3)'], labels = [], yFmt = v => v.toFixed(0), fillFirst = true, solidLines = false, xLabels = null, zeroCrossColors = null }) => {
   const [hover, setHover] = React.useState(null);
   const W = 700, H = height, pad = { l: 50, r: 12, t: 14, b: 22 };
   const innerW = W - pad.l - pad.r, innerH = H - pad.t - pad.b;
   const all = series.flat().filter(Number.isFinite);
   if (!all.length) return null;
-  const min = Math.min(...all) * 0.985;
-  const max = Math.max(...all) * 1.005;
+  const rawMin = Math.min(...all);
+  const rawMax = Math.max(...all);
+  const min = rawMin * (rawMin < 0 ? 1.015 : 0.985);
+  const max = rawMax * (rawMax > 0 ? 1.005 : 0.985);
   const range = max - min || 1;
   const len = Math.max(...series.map(s => s.length));
   const x = i => pad.l + (i / Math.max(1, len - 1)) * innerW;
   const y = v => pad.t + innerH - ((v - min) / range) * innerH;
+
+  // Zero-crossing gradient: green above y=0, red below
+  const useZeroCross = zeroCrossColors && series.length >= 1;
+  const zeroY = y(0);
+  const zeroFrac = Math.max(0.001, Math.min(0.999, (zeroY - pad.t) / innerH));
+  const [posCol, negCol] = zeroCrossColors || ['var(--up)', 'var(--down)'];
 
   const onMove = (e) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -1939,21 +1947,49 @@ const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--in
       )}
       <svg viewBox={`0 0 ${W} ${H}`} className="chart" preserveAspectRatio="none" style={{height: H, cursor:'crosshair'}}
         onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+        {useZeroCross && (
+          <defs>
+            <linearGradient id="lc-zcg-line" x1="0" x2="0" y1={pad.t} y2={pad.t + innerH} gradientUnits="userSpaceOnUse">
+              <stop offset={`${zeroFrac * 100}%`} stopColor={posCol}/>
+              <stop offset={`${zeroFrac * 100}%`} stopColor={negCol}/>
+            </linearGradient>
+            <linearGradient id="lc-zcg-fill" x1="0" x2="0" y1={pad.t} y2={pad.t + innerH} gradientUnits="userSpaceOnUse">
+              <stop offset={`${zeroFrac * 100}%`} stopColor={posCol} stopOpacity="0.12"/>
+              <stop offset={`${zeroFrac * 100}%`} stopColor={negCol} stopOpacity="0.12"/>
+              <stop offset="100%" stopColor={negCol} stopOpacity="0"/>
+            </linearGradient>
+          </defs>
+        )}
         {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
           <g key={i}>
             <line x1={pad.l} x2={W - pad.r} y1={pad.t + innerH * t} y2={pad.t + innerH * t} className="gridline"/>
             <text x={pad.l - 6} y={pad.t + innerH * t + 3} textAnchor="end" className="axis-text">{yFmt(max - range * t)}</text>
           </g>
         ))}
+        {/* Zero baseline when chart spans positive and negative */}
+        {useZeroCross && rawMin < 0 && rawMax > 0 && (
+          <line x1={pad.l} x2={W - pad.r} y1={zeroY} y2={zeroY} stroke="var(--ink-2)" strokeWidth="0.6" opacity="0.4"/>
+        )}
         {series.map((s, idx) => {
-          const pts = s.map((v, i) => `${x(i)},${y(v)}`).join(' L');
+          // Build path with M (moveto) gaps where values are null
+          let pts = '';
+          s.forEach((v, i) => {
+            if (v == null) return;
+            pts += (i === 0 || s[i - 1] == null) ? `M${x(i)},${y(v)}` : ` L${x(i)},${y(v)}`;
+          });
           const dim = hover !== null;
+          const lineColor = (useZeroCross && idx === 0) ? 'url(#lc-zcg-line)' : (colors[idx] || 'var(--ink)');
+          const fillColor = (useZeroCross && idx === 0) ? 'url(#lc-zcg-fill)' : colors[idx];
           return (
             <g key={idx}>
-              {idx === 0 && fillFirst && (
-                <path d={`M${x(0)},${y(min)} L${pts} L${x(s.length-1)},${y(min)} Z`} fill={colors[idx]} opacity={dim ? 0.04 : 0.08}/>
-              )}
-              <path d={`M${pts}`} fill="none" stroke={colors[idx]} strokeWidth={idx === 0 ? 1.8 : 1.3}
+              {idx === 0 && fillFirst && (() => {
+                const base = (useZeroCross && rawMin <= 0 && rawMax >= 0) ? y(0) : pad.t + innerH;
+                const validPts = s.map((v, i) => v != null ? `${x(i)},${y(v)}` : null).filter(Boolean);
+                if (!validPts.length) return null;
+                const fi = s.findIndex(v => v != null), li = s.length - 1 - [...s].reverse().findIndex(v => v != null);
+                return <path d={`M${x(fi)},${base} L${validPts.join(' L')} L${x(li)},${base} Z`} fill={fillColor} opacity={dim ? 0.5 : 1}/>;
+              })()}
+              <path d={`M${pts}`} fill="none" stroke={lineColor} strokeWidth={idx === 0 ? 1.8 : 1.3}
                 strokeDasharray={(!solidLines && idx > 0) ? '4 3' : ''}
                 opacity={dim ? 0.35 : 1} style={{transition:'opacity 0.1s'}}/>
             </g>
@@ -4028,14 +4064,28 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
   const agentAccuracySeries = ctx?.agentAccuracySeries || {};
   const agentHistory        = ctx?.agentHistory        || {};
   const agentWeights        = ctx?.agentWeights        || {};
+  const minAccThreshold     = (ctx?.risk?.minAgentAccuracy ?? 35) / 100;
   const maxLen = AGENTS.reduce((m, a) => Math.max(m, (agentAccuracySeries[a.id] || []).length), 0);
+
+  // Determine which agents are currently excluded (≥5 history trades, accuracy < threshold)
+  const isExcluded = (a) => {
+    const hist = agentHistory[a.id] || [];
+    if (hist.length < 5) return false;
+    return hist.filter(Boolean).length / hist.length < minAccThreshold;
+  };
+
+  // Build series: append null for excluded agents at the current end to show a gap
+  const agentSeries = AGENTS.map(a => {
+    const s = agentAccuracySeries[a.id] || [a.accuracy];
+    return isExcluded(a) ? [...s, null] : s;
+  });
 
   return (
     <div className="page" data-screen-label="08 Agent Performance">
       <div className="page-head">
         <div className="page-eyebrow">Agent intelligence · win/loss accuracy over time</div>
         <h1 className="page-title">Which agents are <em>earning their weight</em>?</h1>
-        <p className="page-sub">Rolling accuracy is computed from each agent's last 30 closed calls. Weights shift via reinforcement after every close — strong agents grow, weak agents shrink.</p>
+        <p className="page-sub">Rolling accuracy is computed from each agent's last 30 closed calls. Weights shift via reinforcement after every close — strong agents grow, weak agents shrink. Agents below the {(minAccThreshold*100).toFixed(0)}% threshold are excluded from consensus until they recover.</p>
       </div>
 
       <div className="card" style={{marginBottom:16}}>
@@ -4049,8 +4099,8 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
             </div>
           : <>
               <LineChart
-                series={AGENTS.map(a => agentAccuracySeries[a.id] || [a.accuracy])}
-                colors={AGENTS.map(a => a.color)}
+                series={agentSeries}
+                colors={AGENTS.map(a => isExcluded(a) ? 'var(--ink-3)' : a.color)}
                 labels={AGENTS.map(a => a.name.split(' ')[0])}
                 height={280}
                 yFmt={v => (v * 100).toFixed(0) + '%'}
@@ -4061,10 +4111,14 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
                 {AGENTS.map(a => {
                   const hist = agentHistory[a.id] || [];
                   const acc  = hist.length >= 2 ? hist.filter(Boolean).length / hist.length : a.accuracy;
+                  const excl = isExcluded(a);
                   return (
-                    <span key={a.id} style={{display:'flex',alignItems:'center',gap:4,fontSize:11}}>
-                      <span style={{width:12,height:2,background:a.color,display:'inline-block',borderRadius:1}}></span>
-                      <span style={{color:acc >= 0.6 ? 'var(--up)' : acc < 0.5 ? 'var(--down)' : 'var(--ink-2)'}}>{a.name.split(' ')[0]}</span>
+                    <span key={a.id} style={{display:'flex',alignItems:'center',gap:4,fontSize:11,opacity: excl ? 0.45 : 1}}>
+                      <span style={{width:12,height:2,background: excl ? 'var(--ink-3)' : a.color,display:'inline-block',borderRadius:1}}></span>
+                      <span style={{color:excl ? 'var(--ink-3)' : acc >= 0.6 ? 'var(--up)' : acc < 0.5 ? 'var(--down)' : 'var(--ink-2)',textDecoration: excl ? 'line-through' : 'none'}}>
+                        {a.name.split(' ')[0]}
+                      </span>
+                      {excl && <span style={{color:'var(--down)',fontSize:9,letterSpacing:'0.05em'}}>EXCL</span>}
                     </span>
                   );
                 })}
@@ -4086,6 +4140,7 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
               <th style={{textAlign:'right'}}>Calls</th>
               <th style={{textAlign:'right'}}>Accuracy</th>
               <th style={{textAlign:'right'}}>Weight</th>
+              <th style={{textAlign:'right'}}>Status</th>
             </tr>
           </thead>
           <tbody>
@@ -4094,12 +4149,13 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
                 const hist = agentHistory[a.id] || [];
                 const acc  = hist.length >= 3 ? hist.filter(Boolean).length / hist.length : null;
                 const w    = agentWeights[a.id] ?? a.weight;
-                return { ...a, hist, acc, w };
+                const excl = isExcluded(a);
+                return { ...a, hist, acc, w, excl };
               })
               .sort((a, b) => (b.acc ?? b.accuracy) - (a.acc ?? a.accuracy))
               .map(a => (
-                <tr key={a.id}>
-                  <td><span style={{color:a.color,marginRight:8}}>{a.glyph}</span>{a.name}</td>
+                <tr key={a.id} style={{opacity: a.excl ? 0.5 : 1}}>
+                  <td><span style={{color: a.excl ? 'var(--ink-3)' : a.color,marginRight:8}}>{a.glyph}</span>{a.name}</td>
                   <td className="mono tiny muted">{a.family}</td>
                   <td className="mono" style={{textAlign:'right'}}>{a.hist.length}</td>
                   <td style={{textAlign:'right'}}>
@@ -4108,6 +4164,11 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
                       : <span className="muted">–</span>}
                   </td>
                   <td className="mono" style={{textAlign:'right'}}>{(a.w * 100).toFixed(1)}%</td>
+                  <td style={{textAlign:'right'}}>
+                    {a.excl
+                      ? <span className="dn" style={{fontSize:10,letterSpacing:'0.06em'}}>EXCLUDED</span>
+                      : <span className="up" style={{fontSize:10,letterSpacing:'0.06em'}}>ACTIVE</span>}
+                  </td>
                 </tr>
               ))}
           </tbody>
@@ -4187,7 +4248,7 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
         </div>
         <LineChart
           series={[cumSeries]}
-          colors={[totalPnl >= 0 ? 'var(--up)' : 'var(--down)']}
+          zeroCrossColors={['var(--up)', 'var(--down)']}
           labels={['Cumulative P&L']}
           height={240}
           yFmt={v => fmtMoney(v, 0)}
@@ -4413,10 +4474,12 @@ const App = () => {
   const agentHistoryRef  = React.useRef(agentHistory);
   const enabledAgentsRef = React.useRef(enabledAgents);
   const riskRef          = React.useRef(risk);
+  const tradesRef        = React.useRef(trades);
   React.useEffect(() => { agentWeightsRef.current  = agentWeights;  }, [agentWeights]);
   React.useEffect(() => { agentHistoryRef.current   = agentHistory;   }, [agentHistory]);
   React.useEffect(() => { riskRef.current = risk; }, [risk]);
   React.useEffect(() => { enabledAgentsRef.current  = enabledAgents;  }, [enabledAgents]);
+  React.useEffect(() => { tradesRef.current = trades; }, [trades]);
   // Keep lastSignals in sync with active symbol and agentParams
   React.useEffect(() => {
     setLastSignals(computeSignals(activeSymbol, PRICE_HISTORY, agentParams) || SIGNALS_ALL[activeSymbol] || null);
@@ -4607,25 +4670,27 @@ const App = () => {
       // 1) close some open positions stochastically (turn into WIN/LOSS)
       //    Skip _real positions — those are managed by the broker; SSE will update them.
       //    For _brokerSent trades, also dispatch a close order to the paper account.
-      const closeOrders = []; // collected outside setTrades to avoid side-effects in pure updater
+      // Collect symbols of broker-sent trades being closed so we can flatten the Alpaca position.
+      // Using DELETE /positions/:sym rather than a qty-based sell avoids mismatch when multiple
+      // local fills exist for the same symbol.
+      const closedSyms = new Set();
       setTrades(prev => {
         return prev.map(t => {
           if (t.status !== 'OPEN' || t._real) return t;
           if (Math.random() < 0.25) {
             const pnlAmt = (Math.random() - 0.42) * t.qty * t.price * 0.022;
             const exit   = t.price + (pnlAmt / t.qty) * (t.side === 'BUY' ? 1 : -1);
-            if (t._brokerSent) closeOrders.push({ sym: t.sym, qty: t.qty, side: t.side });
+            if (t._brokerSent) closedSyms.add(t.sym);
             return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false };
           }
           return t;
         });
       });
-      if (isBrokerPaper && alpacaNow?.token && closeOrders.length) {
-        closeOrders.forEach(o => {
-          fetch(`${BACKEND_URL}/api/orders`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaNow.token },
-            body: JSON.stringify({ symbol: o.sym, qty: String(o.qty), side: o.side === 'BUY' ? 'sell' : 'buy', type: 'market', time_in_force: 'day' }),
+      if ((isLiveReal || isBrokerPaper) && alpacaNow?.token && closedSyms.size) {
+        closedSyms.forEach(sym => {
+          fetch(`${BACKEND_URL}/api/positions/${sym}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': 'Bearer ' + alpacaNow.token },
           }).catch(() => {});
         });
       }
@@ -4764,7 +4829,7 @@ const App = () => {
     return <ScreenOnboarding onDone={() => { localStorage.setItem('shoal_onboarded', '1'); setShowOnboarding(false); }}/>;
   }
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk };
   const screens = {
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
     activity:    <ScreenActivity mode={mode} tick={tick} onTradeClick={handleTradeClick} running={running} ctx={ctx}/>,

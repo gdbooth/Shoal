@@ -140,6 +140,21 @@ app.post('/api/orders', auth, async (req, res) => {
   }
 });
 
+// ── Positions: close (flatten) a symbol position ────────────────────────────
+app.delete('/api/positions/:symbol', auth, async (req, res) => {
+  try {
+    const r = await fetch(`${BASE[req.session.env]}/v2/positions/${req.params.symbol}`, {
+      method:  'DELETE',
+      headers: alpacaHeaders(req.session),
+    });
+    if (r.status === 204) return res.json({ ok: true });
+    if (r.status === 404) return res.json({ ok: true, notFound: true }); // no position, that's fine
+    res.status(r.status).json(await r.json());
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
 // ── Orders: cancel ───────────────────────────────────────────────────────────
 app.delete('/api/orders/:id', auth, async (req, res) => {
   try {
