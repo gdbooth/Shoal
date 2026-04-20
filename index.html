@@ -1470,61 +1470,87 @@ const AGENT_PARAMS_DEFAULT = {
 
 const AGENT_PARAM_DEFS = {
   momo: [
-    { key: 'fast',   label: 'Fast MA',   min: 2,     max: 10,   step: 1,     fmt: v => `${v}d` },
-    { key: 'slow',   label: 'Slow MA',   min: 10,    max: 50,   step: 5,     fmt: v => `${v}d` },
-    { key: 'thresh', label: 'Threshold', min: 0.001, max: 0.02, step: 0.001, fmt: v => `${(v*100).toFixed(1)}%` },
+    { key: 'fast',   label: 'Fast MA',   min: 2,     max: 10,   step: 1,     fmt: v => `${v}d`,
+      hint: 'Short moving-average window used to detect recent price direction. Smaller = reacts faster to price changes but more noise. Default 5d sits in the middle of the range.' },
+    { key: 'slow',   label: 'Slow MA',   min: 10,    max: 50,   step: 5,     fmt: v => `${v}d`,
+      hint: 'Longer moving average that acts as the baseline trend. A crossover of fast above slow triggers a BUY. Default 20d is the classic swing-trading period — optimise to find best fit for current volatility.' },
+    { key: 'thresh', label: 'Threshold', min: 0.001, max: 0.02, step: 0.001, fmt: v => `${(v*100).toFixed(1)}%`,
+      hint: 'Minimum % gap between fast and slow MA required before firing. Higher = fewer but cleaner signals. Default 0.5% filters micro-crossovers. Raise in choppy markets.' },
   ],
   mean: [
-    { key: 'period', label: 'RSI period',  min: 7,  max: 21, step: 1, fmt: v => `${v}d` },
-    { key: 'lo',     label: 'Oversold',    min: 20, max: 40, step: 1, fmt: v => String(v) },
-    { key: 'hi',     label: 'Overbought',  min: 60, max: 80, step: 1, fmt: v => String(v) },
+    { key: 'period', label: 'RSI period',  min: 7,  max: 21, step: 1, fmt: v => `${v}d`,
+      hint: 'Number of days used to compute RSI. Shorter = more sensitive and generates more signals; longer = smoother but slower to respond. Default 14d is the industry-standard RSI period.' },
+    { key: 'lo',     label: 'Oversold',    min: 20, max: 40, step: 1, fmt: v => String(v),
+      hint: 'RSI level below which the stock is considered oversold (BUY signal). Classic level is 30; default 35 triggers slightly earlier for faster entries. Lower = requires stronger dip before acting.' },
+    { key: 'hi',     label: 'Overbought',  min: 60, max: 80, step: 1, fmt: v => String(v),
+      hint: 'RSI level above which the stock is considered overbought (SELL/avoid signal). Classic level is 70; default 65 triggers slightly earlier. Higher = only acts on extreme overbought readings.' },
   ],
   brkt: [
-    { key: 'period', label: 'Channel',     min: 10, max: 40, step: 2, fmt: v => `${v}d` },
+    { key: 'period', label: 'Channel',     min: 10, max: 40, step: 2, fmt: v => `${v}d`,
+      hint: 'Lookback window for the price channel (highest high / lowest low). A close beyond the channel triggers a breakout signal. Default 20d (Donchian channel) balances sensitivity and reliability. Longer = only major breakouts signal.' },
   ],
   vwap: [
-    { key: 'period', label: 'EMA period',  min: 5,     max: 20,   step: 1,     fmt: v => `${v}d` },
-    { key: 'thresh', label: 'Gap trigger', min: 0.005, max: 0.03, step: 0.002, fmt: v => `${(v*100).toFixed(1)}%` },
+    { key: 'period', label: 'EMA period',  min: 5,     max: 20,   step: 1,     fmt: v => `${v}d`,
+      hint: 'EMA length used as a VWAP proxy. Shorter = responds faster to intraday VWAP drifts. Default 10d is a balanced medium-term anchor. Lower values suit more active strategies.' },
+    { key: 'thresh', label: 'Gap trigger', min: 0.005, max: 0.03, step: 0.002, fmt: v => `${(v*100).toFixed(1)}%`,
+      hint: 'Minimum % deviation from the VWAP EMA needed to fire a signal. Default 1.2% filters noise. Raise to 2–3% in trending markets where VWAP deviations are larger and more meaningful.' },
   ],
   vol: [
-    { key: 'thr',    label: 'Vol trigger', min: 0.15, max: 0.50, step: 0.02, fmt: v => `${(v*100).toFixed(0)}%` },
+    { key: 'thr',    label: 'Vol trigger', min: 0.15, max: 0.50, step: 0.02, fmt: v => `${(v*100).toFixed(0)}%`,
+      hint: 'Annualised volatility threshold separating low-vol from high-vol regimes. Below this level the agent biases toward mean-reversion; above it toward trend-following. Default 28% is typical equity volatility — raise during calm markets, lower during turbulent periods.' },
   ],
   skew: [
-    { key: 'thr',    label: 'Change thr',  min: 0.05, max: 0.50, step: 0.05, fmt: v => `${(v*100).toFixed(0)}%` },
+    { key: 'thr',    label: 'Change thr',  min: 0.05, max: 0.50, step: 0.05, fmt: v => `${(v*100).toFixed(0)}%`,
+      hint: 'Minimum change in rolling return skewness required to generate a signal. Low values trigger on subtle distribution shifts; high values only act on extreme skew reversals. Default 20% is mid-range — lower it to pick up early skew changes.' },
   ],
   patt: [
-    { key: 'len',    label: 'Pattern len', min: 5,  max: 30, step: 5, fmt: v => `${v}d` },
+    { key: 'len',    label: 'Pattern len', min: 5,  max: 30, step: 5, fmt: v => `${v}d`,
+      hint: 'Number of candles analysed for candlestick and chart pattern recognition (e.g. hammers, engulfing, channels). Shorter windows catch short-term patterns; longer windows identify broader formations. Default 20d balances both.' },
   ],
   earn: [
-    { key: 'fast',   label: 'Fast MA',     min: 10,    max: 40,   step: 5,     fmt: v => `${v}d` },
-    { key: 'thresh', label: 'Drift thr',   min: 0.005, max: 0.03, step: 0.005, fmt: v => `${(v*100).toFixed(1)}%` },
+    { key: 'fast',   label: 'Fast MA',     min: 10,    max: 40,   step: 5,     fmt: v => `${v}d`,
+      hint: 'Lookback for detecting post-earnings price drift. Shorter windows capture the immediate reaction; longer periods track sustained PEAD (Post-Earnings Announcement Drift). Default 30d targets medium-term drift.' },
+    { key: 'thresh', label: 'Drift thr',   min: 0.005, max: 0.03, step: 0.005, fmt: v => `${(v*100).toFixed(1)}%`,
+      hint: 'Minimum post-earnings cumulative drift required before signalling. Filters genuine earnings momentum from normal day-to-day noise. Default 1.5% is a moderate bar — lower for more signals, raise to only trade strong earnings moves.' },
   ],
   fund: [
-    { key: 'thr',    label: 'Sharpe thr',  min: 0.2, max: 1.0, step: 0.1, fmt: v => v.toFixed(1) },
+    { key: 'thr',    label: 'Sharpe thr',  min: 0.2, max: 1.0, step: 0.1, fmt: v => v.toFixed(1),
+      hint: 'Minimum rolling Sharpe ratio for the stock to pass the fundamentals filter. Sharpe < threshold = agent votes neutral/skip. Default 0.5 is a reasonable quality screen. Raise to 0.7–0.8 to only trade the highest-quality risk-adjusted movers.' },
   ],
   corr: [
-    { key: 'breadthHi', label: 'Bull breadth', min: 0.50, max: 0.80, step: 0.05, fmt: v => `${(v*100).toFixed(0)}%` },
-    { key: 'breadthLo', label: 'Bear breadth', min: 0.20, max: 0.50, step: 0.05, fmt: v => `${(v*100).toFixed(0)}%` },
+    { key: 'breadthHi', label: 'Bull breadth', min: 0.50, max: 0.80, step: 0.05, fmt: v => `${(v*100).toFixed(0)}%`,
+      hint: '% of tracked stocks that must be advancing for the agent to call a bull market regime and bias toward BUY signals. Default 60% — lower it to signal bullish bias more readily; raise it to require broader participation.' },
+    { key: 'breadthLo', label: 'Bear breadth', min: 0.20, max: 0.50, step: 0.05, fmt: v => `${(v*100).toFixed(0)}%`,
+      hint: '% of stocks advancing below which the agent calls a bear regime and biases toward SELL. Default 40% — raise toward 50% to become more defensively biased; lower to only flag genuine breadth collapses.' },
   ],
   pair: [
-    { key: 'thr',    label: 'Z-score thr', min: 0.5, max: 3.0, step: 0.25, fmt: v => v.toFixed(2) },
+    { key: 'thr',    label: 'Z-score thr', min: 0.5, max: 3.0, step: 0.25, fmt: v => v.toFixed(2),
+      hint: 'Standard deviations from the mean spread at which the pairs trade fires. Lower Z = more frequent signals but noisier; higher Z = only trades clear statistical mispricings. Default 1.5 is a moderate entry. Classic stat-arb uses 2.0.' },
   ],
   flow: [],
   mm: [
-    { key: 'period', label: 'Range period', min: 3,    max: 10,   step: 1,     fmt: v => `${v}d` },
-    { key: 'hiThr',  label: 'High-vol thr', min: 0.01, max: 0.04, step: 0.002, fmt: v => `${(v*100).toFixed(1)}%` },
+    { key: 'period', label: 'Range period', min: 3,    max: 10,   step: 1,     fmt: v => `${v}d`,
+      hint: 'Rolling window for measuring intraday price-range patterns used as a microstructure proxy. Shorter = picks up very short-term liquidity shifts; longer = smoother regime signal. Default 5d is responsive but stable.' },
+    { key: 'hiThr',  label: 'High-vol thr', min: 0.01, max: 0.04, step: 0.002, fmt: v => `${(v*100).toFixed(1)}%`,
+      hint: 'Daily range size (as % of price) above which the agent flags a high-volatility microstructure regime and adjusts signal direction. Default 2.2% is typical for large-caps. Raise for more volatile small-caps.' },
   ],
   macr: [
-    { key: 'period', label: 'Macro window', min: 5,    max: 20,   step: 5,     fmt: v => `${v}d` },
-    { key: 'thr',    label: 'Threshold',    min: 0.003, max: 0.02, step: 0.002, fmt: v => `${(v*100).toFixed(1)}%` },
+    { key: 'period', label: 'Macro window', min: 5,    max: 20,   step: 5,     fmt: v => `${v}d`,
+      hint: 'Lookback used to detect macro trend changes (proxied via yield-curve and dollar-index dynamics). Longer = smoother, misses rapid regime shifts. Shorter = more reactive to macro news. Default 10d is a balance point.' },
+    { key: 'thr',    label: 'Threshold',    min: 0.003, max: 0.02, step: 0.002, fmt: v => `${(v*100).toFixed(1)}%`,
+      hint: 'Minimum macro indicator shift required to register a new regime. Low = triggers on small macro moves; high = only acts on significant regime changes. Default 1.0% filters day-to-day noise while still catching meaningful macro turns.' },
   ],
   news: [
-    { key: 'fast',   label: 'Fast window',  min: 1,    max: 7,    step: 1,     fmt: v => `${v}d` },
-    { key: 'thresh', label: 'Threshold',    min: 0.003, max: 0.03, step: 0.002, fmt: v => `${(v*100).toFixed(1)}%` },
+    { key: 'fast',   label: 'Fast window',  min: 1,    max: 7,    step: 1,     fmt: v => `${v}d`,
+      hint: 'Short lookback (in days) for detecting recent news-driven price acceleration. 1–2d catches breaking news immediately; 5–7d smooths over short-lived spikes. Default 3d is responsive without being overly reactive.' },
+    { key: 'thresh', label: 'Threshold',    min: 0.003, max: 0.03, step: 0.002, fmt: v => `${(v*100).toFixed(1)}%`,
+      hint: 'Minimum sentiment-proxy change needed to generate a signal. Raise to filter minor news ripples and only act on headline-moving events. Default 1.0% is a moderate filter — lower for more active news trading.' },
   ],
   soc: [
-    { key: 'period', label: 'Momentum win', min: 1,    max: 7,    step: 1,     fmt: v => `${v}d` },
-    { key: 'thresh', label: 'Threshold',    min: 0.002, max: 0.015, step: 0.001, fmt: v => `${(v*100).toFixed(1)}%` },
+    { key: 'period', label: 'Momentum win', min: 1,    max: 7,    step: 1,     fmt: v => `${v}d`,
+      hint: 'Rolling window for measuring social/retail sentiment momentum. Very short (1–2d) reacts to viral events in real time; longer windows reduce false positives from brief spikes. Default 3d balances speed and reliability.' },
+    { key: 'thresh', label: 'Threshold',    min: 0.002, max: 0.015, step: 0.001, fmt: v => `${(v*100).toFixed(1)}%`,
+      hint: 'Minimum sentiment-proxy shift to generate a signal. Lower = more active trading on social trends; higher = only acts on strong crowd momentum. Default 0.6% is intentionally conservative given how noisy social signals can be.' },
   ],
 };
 
@@ -4565,15 +4591,32 @@ const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnab
                           {defs.map(def => {
                             const val = gp(agent.id, def.key);
                             const v = val !== undefined ? val : (AGENT_PARAMS_DEFAULT[agent.id]?.[def.key] ?? def.min);
+                            const defVal = AGENT_PARAMS_DEFAULT[agent.id]?.[def.key] ?? def.min;
+                            const defPct = ((defVal - def.min) / (def.max - def.min)) * 100;
+                            const isModified = Math.abs(v - defVal) > def.step * 0.5;
                             return (
                               <div key={def.key}>
-                                <div style={{display:'flex',justifyContent:'space-between',marginBottom:3}}>
-                                  <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--ink-3)'}}>{def.label}</span>
-                                  <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--ink-2)'}}>{def.fmt(v)}</span>
+                                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:3}}>
+                                  <div style={{display:'flex',alignItems:'center',gap:4}}>
+                                    <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--ink-3)'}}>{def.label}</span>
+                                    {def.hint && (
+                                      <span title={def.hint} style={{cursor:'help',fontFamily:'var(--mono)',fontSize:8,color:'var(--ink-4)',lineHeight:1,borderRadius:'50%',border:'1px solid var(--line-2)',width:13,height:13,display:'inline-flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>?</span>
+                                    )}
+                                  </div>
+                                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                                    {isModified && <span style={{fontFamily:'var(--mono)',fontSize:8,color:'var(--warn)',letterSpacing:'0.04em'}}>modified</span>}
+                                    <span style={{fontFamily:'var(--mono)',fontSize:9,color: isModified ? 'var(--ink)' : 'var(--ink-2)'}}>{def.fmt(v)}</span>
+                                  </div>
                                 </div>
-                                <input type="range" min={def.min} max={def.max} step={def.step} value={v}
-                                  onChange={e => sp(agent.id, def.key, parseFloat(e.target.value))}
-                                  style={{width:'100%',accentColor:agent.color}}/>
+                                <div style={{position:'relative'}}>
+                                  <input type="range" min={def.min} max={def.max} step={def.step} value={v}
+                                    onChange={e => sp(agent.id, def.key, parseFloat(e.target.value))}
+                                    style={{width:'100%',accentColor:agent.color}}/>
+                                  {/* default-value tick mark */}
+                                  <div style={{position:'absolute',bottom:-6,left:`calc(${defPct}% - 1px)`,width:2,height:5,background:'var(--ink-4)',borderRadius:1}} title={`Default: ${def.fmt(defVal)}`}/>
+                                  <div style={{position:'absolute',bottom:-14,left:`calc(${defPct}% - 12px)`,width:26,textAlign:'center',fontFamily:'var(--mono)',fontSize:7,color:'var(--ink-4)',whiteSpace:'nowrap',pointerEvents:'none'}}>↑ def</div>
+                                </div>
+                                <div style={{height:14}}/>
                               </div>
                             );
                           })}
