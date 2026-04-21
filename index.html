@@ -2593,7 +2593,8 @@ const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
   const filtered = filter === 'ALL' ? feed : feed.filter(t => t.side === filter || t.status === filter);
 
   const marketStatus = ctx?.marketStatus;
-  const mktClosed = marketStatus && !marketStatus.isOpen;
+  // Only show market-closed banner for LIVE mode — simulated and paper modes trade regardless of market hours
+  const mktClosed = mode === 'LIVE' && marketStatus && !marketStatus.isOpen;
 
   return (
     <div className="page" data-screen-label="02 Activity">
@@ -2601,9 +2602,9 @@ const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
         <div style={{display:'flex',alignItems:'center',gap:12,background:'rgba(255,171,0,0.08)',border:'1px solid rgba(255,171,0,0.3)',borderRadius:6,padding:'10px 16px',marginBottom:16,fontFamily:'var(--mono)',fontSize:12}}>
           <span style={{fontSize:16}}>🔕</span>
           <div>
-            <span style={{color:'var(--warn)',fontWeight:600,letterSpacing:'0.08em'}}>MARKET CLOSED — NO TRADES BEING EXECUTED</span>
+            <span style={{color:'var(--warn)',fontWeight:600,letterSpacing:'0.08em'}}>MARKET CLOSED — LIVE ORDERS PAUSED</span>
             <span style={{color:'var(--ink-3)',marginLeft:12}}>
-              {mode === 'SIMULATED' ? 'Swarm continues simulating for analysis only.' : 'Broker orders paused until market reopens.'}
+              Broker orders paused until market reopens.
               {marketStatus.nextOpen && <span> Opens {marketStatus.nextOpen.toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}.</span>}
             </span>
           </div>
@@ -2737,7 +2738,7 @@ const ScreenHistory = ({ mode, tick, onTradeClick, ctx }) => {
     URL.revokeObjectURL(url);
   };
 
-  const mktClosed = ctx?.marketStatus && !ctx.marketStatus.isOpen;
+  const mktClosed = mode === 'LIVE' && ctx?.marketStatus && !ctx.marketStatus.isOpen;
 
   return (
     <div className="page" data-screen-label="03 Trade history">
@@ -5488,7 +5489,7 @@ const App = () => {
           const sect = (universe.find(tk => tk.sym === t.sym) || {}).sector || 'Other';
           sectorCounts[sect] = (sectorCounts[sect] || 0) + 1;
         });
-        const totalOpen = openTrades.length || 1;
+        const totalOpen = openTrades.length; // actual count — do NOT coerce to 1
 
         const candidates = [];
         for (const tk of universe) {
@@ -5501,10 +5502,12 @@ const App = () => {
           const ens = computeEnsemble(sigs, agentWeightsRef.current, dynamicEnabled);
           // Disagreement filter: skip when agents are too split even if confidence is ok
           if (ens.disagreement > maxDisagree) continue;
-          // Sector exposure limit: enforce from first open trade to ensure diversity
+          // Sector exposure limit: only enforce once there are enough positions to measure concentration
           const sect = tk.sector || 'Other';
-          const sectFrac = ((sectorCounts[sect] || 0) + 1) / (totalOpen + 1);
-          if (sectFrac > maxSectPct && totalOpen >= 1) continue;
+          if (totalOpen >= 3) {
+            const sectFrac = ((sectorCounts[sect] || 0) + 1) / (totalOpen + 1);
+            if (sectFrac > maxSectPct) continue;
+          }
           let side;
           if (direction === 'LONG') side = 'BUY';
           else if (direction === 'SHORT') side = 'SELL';
