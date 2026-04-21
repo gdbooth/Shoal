@@ -2710,16 +2710,6 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
 
   const confThreshold = (ctx?.risk?.confidence ?? 55) / 100;
 
-  // Drawdown circuit breaker status
-  const drawdownStatus = React.useMemo(() => {
-    const midnight = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
-    const todayLoss = visibleTrades
-      .filter(t => t.pnl != null && t.pnl < 0 && (t.exitTs||0) >= midnight)
-      .reduce((s, t) => s + t.pnl, 0);
-    const limit = -(ctx?.risk?.dailyLoss ?? 3) / 100 * (ctx?.balance || 10000);
-    const pct = limit !== 0 ? Math.min(1, Math.abs(todayLoss) / Math.abs(limit)) : 0;
-    return { todayLoss, limit, pct, halted: todayLoss < limit };
-  }, [visibleTrades, ctx?.risk?.dailyLoss, ctx?.balance]);
 
   return (
     <div className="page" data-screen-label="01 Dashboard">
@@ -2736,24 +2726,6 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
         </div>
       </div>
 
-      {/* [1] Daily drawdown circuit breaker banner */}
-      {drawdownStatus.pct >= 0.6 && (
-        <div style={{padding:'10px 14px',marginBottom:12,borderRadius:5,display:'flex',justifyContent:'space-between',alignItems:'center',
-          background: drawdownStatus.halted ? 'rgba(255,107,107,0.12)' : 'rgba(240,198,116,0.10)',
-          border: '1px solid ' + (drawdownStatus.halted ? 'var(--down)' : 'var(--warn)')}}>
-          <div>
-            <span style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.14em',color: drawdownStatus.halted ? 'var(--down)' : 'var(--warn)'}}>
-              {drawdownStatus.halted ? '⊘ DRAWDOWN LIMIT HIT — NEW ENTRIES HALTED' : '⚠ DRAWDOWN WARNING'}
-            </span>
-            <span style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-2)',marginLeft:14}}>
-              Today: {fmtMoney(drawdownStatus.todayLoss)} · Limit: {fmtMoney(drawdownStatus.limit)} ({(drawdownStatus.pct*100).toFixed(0)}% used)
-            </span>
-          </div>
-          <div style={{width:120,height:4,background:'var(--bg-3)',borderRadius:2,overflow:'hidden'}}>
-            <div style={{height:'100%',width:(drawdownStatus.pct*100)+'%',background: drawdownStatus.halted ? 'var(--down)' : 'var(--warn)',borderRadius:2,transition:'width 0.5s'}}/>
-          </div>
-        </div>
-      )}
 
       {/* Progress tracker */}
       <div className="progress-track">
@@ -3317,9 +3289,11 @@ const ScreenHistory = ({ mode, tick, onTradeClick, ctx }) => {
               const pnl = t.pnl ?? t._upnl;
               const pnlPct = t.pnlPct ?? t._upnlPct;
               const exit = t.exit ?? t._mark;
-              const hold = isOpen
-                ? Math.round((Date.now() - t.ts) / 60000) + 'm'
-                : t.exitTs ? Math.round((t.exitTs - t.ts) / 60000) + 'm' : '—';
+              const holdMs = isOpen ? (Date.now() - t.ts) : (t.exitTs ? t.exitTs - t.ts : null);
+              const hold = holdMs == null ? '—'
+                : holdMs < 60000 ? Math.round(holdMs / 1000) + 's'
+                : holdMs < 3600000 ? Math.round(holdMs / 60000) + 'm'
+                : Math.floor(holdMs / 3600000) + 'h ' + Math.round((holdMs % 3600000) / 60000) + 'm';
               return (
                 <tr key={t.id} onClick={()=>onTradeClick(t)} style={{cursor:'pointer'}}>
                   <td className="mono tiny">{new Date(t.ts).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
@@ -5738,7 +5712,7 @@ const App = () => {
     const saved = localStorage.getItem('shoal_alpaca');
     return saved ? JSON.parse(saved) : { connected: false, balance: 0, account: null, broker: 'Alpaca Markets' };
   });
-  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 7, maxHoldHours: 48 });
+  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48 });
   const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(() => new Set());
   const [slippageLog, setSlippageLog] = React.useState([]);
 
@@ -5982,7 +5956,8 @@ const App = () => {
           // Simulate a mark price: symbol-seeded drift + time-varying noise
           const symSeed = t.sym.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
           const drift = Math.sin(symSeed * 0.07 + elapsedMs * 0.000002) * 0.03;
-          const noise = Math.sin(Date.now() * 0.000_4 + symSeed) * 0.012;
+          const elapsedH = elapsedMs / 3600000;
+          const noise = Math.sin(elapsedH * 1.7 + symSeed * 0.031) * 0.012;
           const markPct = drift + noise; // simulated % move from entry
           const upnlPct = markPct * (t.side === 'BUY' ? 1 : -1); // from trade's perspective
 
@@ -6038,14 +6013,6 @@ const App = () => {
         })
       );
 
-      // [1] Daily drawdown circuit breaker — halt new entries if today's realized loss exceeds limit
-      const todayMidnight = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
-      const todayLoss = tradesRef.current
-        .filter(t => t.pnl != null && t.pnl < 0 && (t.exitTs || 0) >= todayMidnight)
-        .reduce((s, t) => s + t.pnl, 0);
-      const dailyLossLimit = -(riskNow.dailyLoss ?? 3) / 100 * (balanceRef.current || 10000);
-      const drawdownHalted = todayLoss < dailyLossLimit;
-
       // [10] Build per-ticker recent win rate from closed trades (last 10 per ticker)
       const allClosed = tradesRef.current.filter(t => t.pnl != null);
       const tickerEdge = {};
@@ -6056,12 +6023,12 @@ const App = () => {
         }
       });
 
-      if (!drawdownHalted && Math.random() < 0.55) {
+      if (Math.random() < 0.55) {
         const maxVal      = riskNow.maxTradeValue ?? 5000;
         const maxDisagree = (riskNow.maxDisagreement ?? 65) / 100;
         const maxSectPct  = (riskNow.maxSectorPct  ?? 40) / 100;
         const minConf     = (riskNow.confidence    ?? 55) / 100;
-        const minCons     = riskNow.minConsensus   ?? 7;
+        const minCons     = riskNow.minConsensus   ?? 5;
         const blacklist   = blacklistedSymbolsRef.current;
 
         // [8] Kelly fraction from average agent decay-weighted accuracy
@@ -6093,6 +6060,7 @@ const App = () => {
           if (ens.confidence < minConf) continue;
           // [2] Minimum consensus gate (N agents must agree on direction)
           if (ens.consensus < minCons) continue;
+          if (ens.dir === 'SELL' && !(riskNow.shorts ?? true)) continue;
           if (ens.disagreement > maxDisagree) continue;
           // [7] Volatility regime filter — skip if annualized vol is >2× typical equity vol (>70%)
           const tkVol = rollingVol(PRICE_HISTORY[tk.sym]);
