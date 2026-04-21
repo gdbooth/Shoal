@@ -5675,9 +5675,8 @@ const NAV = [
 const App = () => {
   const [mode, setMode] = React.useState(() => {
     const saved = localStorage.getItem('shoal_mode');
-    // Migrate old 'VIRTUAL' (no broker) to 'SIMULATED'
-    if (saved === 'VIRTUAL') return 'SIMULATED';
-    return saved || 'SIMULATED';
+    const valid = ['SIMULATED', 'VIRTUAL', 'LIVE'];
+    return valid.includes(saved) ? saved : 'SIMULATED';
   });
   const [route, setRoute] = React.useState(() => localStorage.getItem('shoal_route') || 'dashboard');
   const [showOnboarding, setShowOnboarding] = React.useState(() => !localStorage.getItem('shoal_onboarded'));
@@ -5937,6 +5936,7 @@ const App = () => {
       const alpacaNow    = alpacaRef.current;
       const isLiveReal   = mode === 'LIVE'    && !!alpacaNow?.token && alpacaNow?.env === 'live';
       const isBrokerPaper= mode === 'VIRTUAL' && !!alpacaNow?.token && alpacaNow?.env === 'paper';
+      if (isBrokerPaper) console.debug('[Shoal] tick: broker-paper mode active, token OK');
 
       const riskNow = riskRef.current || {};
 
@@ -6142,13 +6142,15 @@ const App = () => {
                 const lx = side === 'BUY' ? (price * 1.005).toFixed(2) : (price * 0.995).toFixed(2);
                 orderBody = { symbol: tk.sym, qty: String(intQty), side: alpacaSide, type: 'limit', limit_price: lx, time_in_force: 'gtc' };
               }
+              console.log('[Shoal] → Alpaca order', orderBody);
               fetch(`${BACKEND_URL}/api/orders`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaNow.token },
                 body: JSON.stringify(orderBody),
               }).then(async r => {
                 const body = await r.json();
-                if (!r.ok) { console.warn('[Shoal] Alpaca order rejected', tk.sym, body.message || r.status); return; }
+                if (!r.ok) { console.warn('[Shoal] Alpaca order rejected', tk.sym, body.message || r.status, body); return; }
+                console.log('[Shoal] ✓ Order confirmed', body.id, body.status, body.symbol);
                 const filledPrice = parseFloat(body.filled_avg_price || 0);
                 if (filledPrice > 0) {
                   const slip = (filledPrice - price) / price;
