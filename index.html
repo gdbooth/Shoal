@@ -1667,16 +1667,6 @@ const TICKERS = [
   { sym: 'FCX',  name: 'Freeport-McMoRan',sector: 'Mat',    last:  44.63, chg:  1.14, weight: 0.01 },
 ];
 
-// Crypto universe — added to TICKERS when enableCrypto is true in risk settings
-const CRYPTO_TICKERS = [
-  { sym: 'BTC-USD', name: 'Bitcoin',   sector: 'Crypto', last: 68420,  chg:  2.41, weight: 0.04 },
-  { sym: 'ETH-USD', name: 'Ethereum',  sector: 'Crypto', last: 3280,   chg:  1.83, weight: 0.03 },
-  { sym: 'SOL-USD', name: 'Solana',    sector: 'Crypto', last: 178,    chg:  3.14, weight: 0.02 },
-  { sym: 'BNB-USD', name: 'BNB',       sector: 'Crypto', last: 612,    chg:  0.92, weight: 0.01 },
-  { sym: 'XRP-USD', name: 'XRP',       sector: 'Crypto', last: 0.56,   chg: -1.24, weight: 0.01 },
-  { sym: 'DOGE-USD',name: 'Dogecoin',  sector: 'Crypto', last: 0.142,  chg:  4.20, weight: 0.005},
-];
-
 const SECTORS = ['Tech', 'Fin', 'Energy', 'Health', 'Cons', 'Indus', 'Util', 'Mat'];
 const SECTOR_TICKERS = {
   Tech: ['NVDA','AAPL','MSFT','META','GOOG','AMD','AVGO','ORCL'],
@@ -1851,19 +1841,6 @@ const SIGNALS_ALL = Object.fromEntries(
   TICKERS.map(tk => [tk.sym, computeSignals(tk.sym, PRICE_HISTORY)]).filter(([, v]) => v)
 );
 
-// Generate synthetic price history + signals for crypto tickers (must run after PRICE_HISTORY and SIGNALS_ALL are defined)
-(function() {
-  const seeds = { 'BTC-USD': 9001, 'ETH-USD': 9002, 'SOL-USD': 9003, 'BNB-USD': 9004, 'XRP-USD': 9005, 'DOGE-USD': 9006 };
-  const bases = { 'BTC-USD': 42000, 'ETH-USD': 2200, 'SOL-USD': 95, 'BNB-USD': 380, 'XRP-USD': 0.48, 'DOGE-USD': 0.08 };
-  CRYPTO_TICKERS.forEach(tk => {
-    const rng = mulberry32(seeds[tk.sym]);
-    const prices = [bases[tk.sym]];
-    for (let i = 1; i < 252; i++) prices.push(Math.max(prices[i-1]*0.6, prices[i-1]*(1+(rng()-0.485)*0.055)));
-    PRICE_HISTORY[tk.sym] = prices;
-    SIGNALS_ALL[tk.sym] = computeSignals(tk.sym, PRICE_HISTORY) || {};
-  });
-})();
-
 // param tuning timeline events
 const PARAM_EVENTS = [
   { day: 6, label: 'Risk per trade ↓ 1.4% → 1.1%', kind: 'risk' },
@@ -1901,7 +1878,7 @@ function fmtTime(ts) {
 }
 
 Object.assign(window, {
-  AGENTS, TICKERS, CRYPTO_TICKERS, SECTORS, SECTOR_TICKERS, PRICE_HISTORY, SIGNALS_ALL,
+  AGENTS, TICKERS, SECTORS, SECTOR_TICKERS, PRICE_HISTORY, SIGNALS_ALL,
   EQUITY, WEIGHT_HISTORY, CONFIDENCE_HISTORY, TRADES, HEATMAP, PRED_ACTUAL,
   REGIMES, OUTCOMES, PARAM_EVENTS,
   fmtMoney, fmtPct, fmtNum, fmtTime, mulberry32,
@@ -2327,9 +2304,6 @@ Object.assign(window, { LineChart, StackedArea, PredVsActual, SwarmViz, Heatmap,
 const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
   const activeSymbol  = ctx?.activeSymbol || 'NVDA';
   const direction     = ctx?.direction || 'BOTH';
-  const universeMode  = ctx?.universeMode || 'EQUITIES';
-  const setUniverse   = ctx?.setUniverseMode;
-  const isCrypto      = universeMode === 'CRYPTO';
   const equityNow     = ctx?.balance ?? EQUITY.bot[EQUITY.bot.length - 1];
   const equityStart   = EQUITY.bot[0];
   const totalRet      = (equityNow - equityStart) / equityStart;
@@ -2354,41 +2328,7 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
           <div className="page-eyebrow">Dashboard · {mode === 'LIVE' ? 'Live trading' : mode === 'VIRTUAL' ? 'Broker paper · virtual' : 'Fully simulated'}</div>
           <h1 className="page-title">A swarm of {AGENTS.length} agents <em>currently disagreeing about the next 12 hours.</em></h1>
         </div>
-        <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:8}}>
-          <div className="mono tiny muted">SHOAL ENGINE v0.4.2 · Last sync 3s ago</div>
-          {/* Universe toggle — switches the swarm between equities and crypto exclusively */}
-          <div style={{display:'flex',alignItems:'center',gap:10}}>
-            <span className="mono tiny muted" style={{letterSpacing:'0.1em'}}>UNIVERSE</span>
-            <div style={{display:'flex',borderRadius:4,overflow:'hidden',border:'1px solid var(--line-2)'}}>
-              {[
-                { id: 'EQUITIES', label: '📈 Equities', sub: `${TICKERS.length} stocks` },
-                { id: 'CRYPTO',   label: '₿ Crypto',   sub: `${CRYPTO_TICKERS.length} coins · 24/7` },
-              ].map(u => (
-                <button key={u.id}
-                  onClick={() => setUniverse && setUniverse(u.id)}
-                  style={{
-                    padding: '5px 14px',
-                    border: 'none',
-                    cursor: 'pointer',
-                    fontFamily: 'var(--mono)',
-                    fontSize: 11,
-                    letterSpacing: '0.06em',
-                    fontWeight: universeMode === u.id ? 600 : 400,
-                    background: universeMode === u.id
-                      ? (u.id === 'CRYPTO' ? 'rgba(255,198,64,0.18)' : 'rgba(125,216,125,0.18)')
-                      : 'var(--bg-2)',
-                    color: universeMode === u.id
-                      ? (u.id === 'CRYPTO' ? 'var(--warn)' : 'var(--virtual)')
-                      : 'var(--ink-3)',
-                    transition: 'background 0.15s, color 0.15s',
-                  }}>
-                  {u.label}
-                  <span style={{display:'block',fontSize:9,fontWeight:400,opacity:0.7,letterSpacing:'0.04em',marginTop:1}}>{u.sub}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+        <div className="mono tiny muted">SHOAL ENGINE v0.4.2 · {TICKERS.length} stocks · Last sync 3s ago</div>
       </div>
 
       <div className="kpi-grid" style={{marginBottom:16}}>
@@ -2630,8 +2570,8 @@ const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
   const filtered = filter === 'ALL' ? feed : feed.filter(t => t.side === filter || t.status === filter);
 
   const marketStatus = ctx?.marketStatus;
-  // Only show market-closed banner for LIVE equities mode — crypto is 24/7, simulated/paper trade regardless
-  const mktClosed = mode === 'LIVE' && ctx?.universeMode !== 'CRYPTO' && marketStatus && !marketStatus.isOpen;
+  // Only show market-closed banner for LIVE mode — simulated and paper modes trade regardless of market hours
+  const mktClosed = mode === 'LIVE' && marketStatus && !marketStatus.isOpen;
 
   return (
     <div className="page" data-screen-label="02 Activity">
@@ -2775,7 +2715,7 @@ const ScreenHistory = ({ mode, tick, onTradeClick, ctx }) => {
     URL.revokeObjectURL(url);
   };
 
-  const mktClosed = mode === 'LIVE' && ctx?.universeMode !== 'CRYPTO' && ctx?.marketStatus && !ctx.marketStatus.isOpen;
+  const mktClosed = mode === 'LIVE' && ctx?.marketStatus && !ctx.marketStatus.isOpen;
 
   return (
     <div className="page" data-screen-label="03 Trade history">
@@ -5267,8 +5207,6 @@ const App = () => {
   const tradesRef        = React.useRef(trades);
   const activeSymbolRef  = React.useRef(activeSymbol);
   const blacklistedSymbolsRef = React.useRef(blacklistedSymbols);
-  const [universeMode, setUniverseMode] = React.useState(() => localStorage.getItem('shoal_universe') || 'EQUITIES');
-  const universeModeRef = React.useRef(universeMode);
   React.useEffect(() => { agentWeightsRef.current  = agentWeights;  }, [agentWeights]);
   React.useEffect(() => { agentHistoryRef.current   = agentHistory;   }, [agentHistory]);
   React.useEffect(() => { riskRef.current = risk; }, [risk]);
@@ -5276,7 +5214,6 @@ const App = () => {
   React.useEffect(() => { tradesRef.current = trades; }, [trades]);
   React.useEffect(() => { activeSymbolRef.current = activeSymbol; }, [activeSymbol]);
   React.useEffect(() => { blacklistedSymbolsRef.current = blacklistedSymbols; }, [blacklistedSymbols]);
-  React.useEffect(() => { universeModeRef.current = universeMode; localStorage.setItem('shoal_universe', universeMode); }, [universeMode]);
   // Keep lastSignals in sync with active symbol and agentParams
   React.useEffect(() => {
     setLastSignals(computeSignals(activeSymbol, PRICE_HISTORY, agentParams) || SIGNALS_ALL[activeSymbol] || null);
@@ -5509,36 +5446,25 @@ const App = () => {
         const maxDisagree = (riskNow.maxDisagreement ?? 65) / 100;
         const maxSectPct  = (riskNow.maxSectorPct  ?? 40) / 100;
         const blacklist   = blacklistedSymbolsRef.current;
-        const isCryptoMode = universeModeRef.current === 'CRYPTO';
 
-        // Exclusive universe: EQUITIES or CRYPTO — never mixed
-        const universe = isCryptoMode ? CRYPTO_TICKERS : TICKERS;
-
-        // Snapshot current open-position sector concentrations (equities only — crypto skips sector cap)
+        // Snapshot current open-position sector concentrations
         const openTrades = tradesRef.current.filter(t => t.status === 'OPEN');
         const sectorCounts = {};
-        if (!isCryptoMode) {
-          openTrades.forEach(t => {
-            const sect = (universe.find(tk => tk.sym === t.sym) || {}).sector || 'Other';
-            sectorCounts[sect] = (sectorCounts[sect] || 0) + 1;
-          });
-        }
+        openTrades.forEach(t => {
+          const sect = (TICKERS.find(tk => tk.sym === t.sym) || {}).sector || 'Other';
+          sectorCounts[sect] = (sectorCounts[sect] || 0) + 1;
+        });
         const totalOpen = openTrades.length;
 
         const candidates = [];
-        for (const tk of universe) {
+        for (const tk of TICKERS) {
           if (blacklist.has(tk.sym)) continue;
-          // Re-compute signals for crypto on-the-fly to ensure freshness; fall back to precomputed
-          const sigs = SIGNALS_ALL[tk.sym] && Object.keys(SIGNALS_ALL[tk.sym]).length
-            ? SIGNALS_ALL[tk.sym]
-            : (isCryptoMode ? computeSignals(tk.sym, PRICE_HISTORY) : null);
-          if (!sigs || !Object.keys(sigs).length) continue;
-          // Price-per-unit guard for non-crypto only (crypto trades by notional / fractional)
-          if (!isCryptoMode && tk.last * 1.005 > maxVal) continue;
+          const sigs = SIGNALS_ALL[tk.sym];
+          if (!sigs) continue;
+          if (tk.last * 1.005 > maxVal) continue;
           const ens = computeEnsemble(sigs, agentWeightsRef.current, dynamicEnabled);
           if (ens.disagreement > maxDisagree) continue;
-          // Sector concentration: equities only — all crypto is one sector by design
-          if (!isCryptoMode && totalOpen >= 3) {
+          if (totalOpen >= 3) {
             const sect = tk.sector || 'Other';
             const sectFrac = ((sectorCounts[sect] || 0) + 1) / (totalOpen + 1);
             if (sectFrac > maxSectPct) continue;
@@ -5614,7 +5540,7 @@ const App = () => {
       // Compute rolling average confidence across the full universe so the chart shows real variation
       // (single-symbol confidence barely changes since signals are static; cross-universe average varies each tick)
       {
-        const univ2 = universeModeRef.current === 'CRYPTO' ? CRYPTO_TICKERS : TICKERS;
+        const univ2 = TICKERS;
         // Shuffle the universe each tick using a lightweight random pick so we get different subsets
         const shuffled = univ2.slice().sort(() => Math.random() - 0.5);
         const sample = shuffled.slice(0, Math.min(12, shuffled.length));
@@ -5697,7 +5623,7 @@ const App = () => {
     }).map(a => a.id));
   }, [agentHistory, risk.minAgentAccuracy, enabledAgents]);
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, universeMode, setUniverseMode };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
@@ -5773,10 +5699,7 @@ const App = () => {
           <div className="crumb">SHOAL / <b>{navItemLabel}</b></div>
           <button className="btn" style={{marginLeft:8,padding:'6px 12px',display:'flex',alignItems:'center',gap:10}} onClick={()=>setSymbolPicker(true)} title="Switch symbol ( / )">
             <span className="mono" style={{color:'var(--ink)',fontWeight:500,letterSpacing:'0.02em'}}>◎ {activeSymbol}</span>
-            {universeMode === 'CRYPTO'
-              ? <span style={{fontSize:9,letterSpacing:'0.12em',padding:'2px 6px',borderRadius:3,background:'rgba(255,198,64,0.12)',color:'var(--warn)',fontFamily:'var(--mono)',fontWeight:500}}>₿ 24/7</span>
-              : !marketStatus.isOpen && <span style={{fontSize:9,letterSpacing:'0.12em',padding:'2px 6px',borderRadius:3,background:'var(--line-2)',color:'var(--warn)',fontFamily:'var(--mono)',fontWeight:500}}>CLOSED</span>
-            }
+            {!marketStatus.isOpen && <span style={{fontSize:9,letterSpacing:'0.12em',padding:'2px 6px',borderRadius:3,background:'var(--line-2)',color:'var(--warn)',fontFamily:'var(--mono)',fontWeight:500}}>CLOSED</span>}
             <span className="mono tiny muted" style={{letterSpacing:'0.1em'}}>⌘/</span>
           </button>
           <div className="tweak-opts" style={{marginLeft:6}}>
