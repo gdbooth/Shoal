@@ -4173,14 +4173,6 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
               ))}
             </div>
           </div>
-          <div className="divider"></div>
-          <div className="dialog-row">
-            <span className="l">
-              <div>Crypto signals</div>
-              <div className="tiny muted" style={{marginTop:2}}>Include BTC, ETH, SOL, BNB, XRP, DOGE in trading universe</div>
-            </span>
-            <button className={'tweak-opt ' + ((risk.enableCrypto??false)?'on':'')} onClick={()=>setRisk({...risk,enableCrypto:!(risk.enableCrypto??false)})}>{(risk.enableCrypto??false)?'ON':'OFF'}</button>
-          </div>
           <div className="dialog-row">
             <span className="l">
               <div>Reset virtual account</div>
@@ -5251,7 +5243,7 @@ const App = () => {
     const saved = localStorage.getItem('shoal_alpaca');
     return saved ? JSON.parse(saved) : { connected: false, balance: 0, account: null, broker: 'Alpaca Markets' };
   });
-  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, maxDisagreement: 65, maxSectorPct: 40, enableCrypto: false });
+  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, maxDisagreement: 65, maxSectorPct: 40 });
   const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(() => new Set());
   const [slippageLog, setSlippageLog] = React.useState([]);
 
@@ -5517,33 +5509,37 @@ const App = () => {
         const maxDisagree = (riskNow.maxDisagreement ?? 65) / 100;
         const maxSectPct  = (riskNow.maxSectorPct  ?? 40) / 100;
         const blacklist   = blacklistedSymbolsRef.current;
+        const isCryptoMode = universeModeRef.current === 'CRYPTO';
 
         // Exclusive universe: EQUITIES or CRYPTO — never mixed
-        const universe = universeModeRef.current === 'CRYPTO' ? CRYPTO_TICKERS : TICKERS;
+        const universe = isCryptoMode ? CRYPTO_TICKERS : TICKERS;
 
-        // Snapshot current open-position sector concentrations
+        // Snapshot current open-position sector concentrations (equities only — crypto skips sector cap)
         const openTrades = tradesRef.current.filter(t => t.status === 'OPEN');
         const sectorCounts = {};
-        openTrades.forEach(t => {
-          const sect = (universe.find(tk => tk.sym === t.sym) || {}).sector || 'Other';
-          sectorCounts[sect] = (sectorCounts[sect] || 0) + 1;
-        });
-        const totalOpen = openTrades.length; // actual count — do NOT coerce to 1
+        if (!isCryptoMode) {
+          openTrades.forEach(t => {
+            const sect = (universe.find(tk => tk.sym === t.sym) || {}).sector || 'Other';
+            sectorCounts[sect] = (sectorCounts[sect] || 0) + 1;
+          });
+        }
+        const totalOpen = openTrades.length;
 
         const candidates = [];
         for (const tk of universe) {
           if (blacklist.has(tk.sym)) continue;
-          const sigs = SIGNALS_ALL[tk.sym];
+          // Re-compute signals for crypto on-the-fly to ensure freshness; fall back to precomputed
+          const sigs = SIGNALS_ALL[tk.sym] && Object.keys(SIGNALS_ALL[tk.sym]).length
+            ? SIGNALS_ALL[tk.sym]
+            : (isCryptoMode ? computeSignals(tk.sym, PRICE_HISTORY) : null);
           if (!sigs || !Object.keys(sigs).length) continue;
-          // Price-per-unit guard only for non-fractional: crypto always trades by notional
-          const isCrypto = tk.sym.includes('-USD');
-          if (!isCrypto && tk.last * 1.005 > maxVal) continue;
+          // Price-per-unit guard for non-crypto only (crypto trades by notional / fractional)
+          if (!isCryptoMode && tk.last * 1.005 > maxVal) continue;
           const ens = computeEnsemble(sigs, agentWeightsRef.current, dynamicEnabled);
-          // Disagreement filter: skip when agents are too split even if confidence is ok
           if (ens.disagreement > maxDisagree) continue;
-          // Sector exposure limit: only enforce once there are enough positions to measure concentration
-          const sect = tk.sector || 'Other';
-          if (totalOpen >= 3) {
+          // Sector concentration: equities only — all crypto is one sector by design
+          if (!isCryptoMode && totalOpen >= 3) {
+            const sect = tk.sector || 'Other';
             const sectFrac = ((sectorCounts[sect] || 0) + 1) / (totalOpen + 1);
             if (sectFrac > maxSectPct) continue;
           }
@@ -5553,65 +5549,65 @@ const App = () => {
           else { if (!ens.dir) continue; side = ens.dir; }
           candidates.push({ tk, sigs, ens, side });
         }
-        if (!candidates.length) return;
 
-        // Weighted random selection — higher confidence² is more likely but not guaranteed
-        const totalScore = candidates.reduce((s, c) => s + c.ens.confidence ** 2, 0);
-        let rand = Math.random() * totalScore;
-        let chosen = candidates[0];
-        for (const c of candidates) { rand -= c.ens.confidence ** 2; if (rand <= 0) { chosen = c; break; } }
+        if (candidates.length > 0) {
+          // Weighted random selection — higher confidence² is more likely but not guaranteed
+          const totalScore = candidates.reduce((s, c) => s + c.ens.confidence ** 2, 0);
+          let rand = Math.random() * totalScore;
+          let chosen = candidates[0];
+          for (const c of candidates) { rand -= c.ens.confidence ** 2; if (rand <= 0) { chosen = c; break; } }
 
-        const { tk, sigs, ens: ensemble, side } = chosen;
-        const price = tk.last * (1 + (Math.random() - 0.5) * 0.01);
-        const notional = parseFloat((maxVal * ensemble.confidence).toFixed(2));
-        const qty = parseFloat((notional / price).toFixed(4));
-        if (qty < 0.001) return;
+          const { tk, sigs, ens: ensemble, side } = chosen;
+          const price = tk.last * (1 + (Math.random() - 0.5) * 0.01);
+          const notional = parseFloat((maxVal * ensemble.confidence).toFixed(2));
+          const qty = parseFloat((notional / price).toFixed(4));
 
-        // Build a 3-snapshot vote-history trail for trade detail replay
-        const voteHistory = Array.from({length:3}, (_, i) => {
-          const perturbedSigs = {};
-          AGENTS.forEach(a => {
-            const s = sigs[a.id];
-            if (!s) return;
-            const noise = (Math.random() - 0.5) * 0.15 * (3 - i);
-            perturbedSigs[a.id] = { ...s, strength: Math.max(0, Math.min(1, s.strength + noise)), dir: Math.random() < (0.05 * (3 - i)) ? -s.dir : s.dir };
-          });
-          return computeEnsemble(perturbedSigs, agentWeightsRef.current, dynamicEnabled).votes;
-        });
+          if (qty >= 0.001) {
+            const voteHistory = Array.from({length:3}, (_, i) => {
+              const perturbedSigs = {};
+              AGENTS.forEach(a => {
+                const s = sigs[a.id];
+                if (!s) return;
+                const noise = (Math.random() - 0.5) * 0.15 * (3 - i);
+                perturbedSigs[a.id] = { ...s, strength: Math.max(0, Math.min(1, s.strength + noise)), dir: Math.random() < (0.05 * (3 - i)) ? -s.dir : s.dir };
+              });
+              return computeEnsemble(perturbedSigs, agentWeightsRef.current, dynamicEnabled).votes;
+            });
 
-        const newTrade = {
-          id: 'TX-' + Math.floor(11000 + Math.random() * 9999),
-          ts: Date.now(), exitTs: null,
-          sym: tk.sym, side, qty, price, exit: null,
-          conf: ensemble.confidence,
-          reason: buildReason(sigs, ensemble),
-          pnl: null, pnlPct: null, status: 'OPEN', mode,
-          consensus: ensemble.consensus,
-          votes: ensemble.votes,
-          signals: sigs,
-          disagreement: ensemble.disagreement,
-          voteHistory,
-          isNew: true,
-        };
+            const newTrade = {
+              id: 'TX-' + Math.floor(11000 + Math.random() * 9999),
+              ts: Date.now(), exitTs: null,
+              sym: tk.sym, side, qty, price, exit: null,
+              conf: ensemble.confidence,
+              reason: buildReason(sigs, ensemble),
+              pnl: null, pnlPct: null, status: 'OPEN', mode,
+              consensus: ensemble.consensus,
+              votes: ensemble.votes,
+              signals: sigs,
+              disagreement: ensemble.disagreement,
+              voteHistory,
+              isNew: true,
+            };
 
-        if (isLiveReal || isBrokerPaper) {
-          fetch(`${BACKEND_URL}/api/orders`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaNow.token },
-            body: JSON.stringify({ symbol: tk.sym, notional: String(notional), side: side === 'BUY' ? 'buy' : 'sell', type: 'market', time_in_force: 'day' }),
-          }).then(r => r.json()).then(order => {
-            // Capture slippage: compare expected fill price to Alpaca's reported filled_avg_price
-            const filledPrice = parseFloat(order.filled_avg_price || 0);
-            if (filledPrice > 0) {
-              const slip = (filledPrice - price) / price;
-              setSlippageLog(prev => [...prev.slice(-49), { sym: tk.sym, side, expected: price, actual: filledPrice, slip, ts: Date.now() }]);
+            if (isLiveReal || isBrokerPaper) {
+              fetch(`${BACKEND_URL}/api/orders`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaNow.token },
+                body: JSON.stringify({ symbol: tk.sym, notional: String(notional), side: side === 'BUY' ? 'buy' : 'sell', type: 'market', time_in_force: 'day' }),
+              }).then(r => r.json()).then(order => {
+                const filledPrice = parseFloat(order.filled_avg_price || 0);
+                if (filledPrice > 0) {
+                  const slip = (filledPrice - price) / price;
+                  setSlippageLog(prev => [...prev.slice(-49), { sym: tk.sym, side, expected: price, actual: filledPrice, slip, ts: Date.now() }]);
+                }
+              }).catch(() => {});
+              if (!isLiveReal) {
+                setTrades(prev => [{ ...newTrade, _brokerSent: true }, ...prev].slice(0, 200));
+              }
+            } else {
+              setTrades(prev => [newTrade, ...prev].slice(0, 200));
             }
-          }).catch(() => {});
-          if (!isLiveReal) {
-            setTrades(prev => [{ ...newTrade, _brokerSent: true }, ...prev].slice(0, 200));
           }
-        } else {
-          setTrades(prev => [newTrade, ...prev].slice(0, 200));
         }
       }
 
