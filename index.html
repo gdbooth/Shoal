@@ -1174,6 +1174,282 @@ input[type=range]::-webkit-slider-thumb {
   color: var(--ink-3);
 }
 .toggle-pill.on { background: var(--bg-3); color: var(--ink); border-color: var(--ink-4); }
+
+/* ------- toast notifications ------- */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 500;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 12px 16px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  min-width: 200px;
+  max-width: 300px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  animation: toastIn 280ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.toast.buy { border-left: 3px solid var(--up); }
+.toast.sell { border-left: 3px solid var(--down); }
+.toast.close-win { border-left: 3px solid var(--up); }
+.toast.close-loss { border-left: 3px solid var(--down); }
+@keyframes toastIn {
+  from { transform: translateX(40px); opacity: 0; }
+}
+
+/* ------- streak badge ------- */
+.streak-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid currentColor;
+  margin-left: 8px;
+}
+
+/* ------- sortable table headers ------- */
+.tbl th.sortable { cursor: pointer; user-select: none; }
+.tbl th.sortable:hover { color: var(--ink-2); }
+.sort-arrow { margin-left: 4px; font-size: 8px; opacity: 0.4; }
+.sort-arrow.active { opacity: 1; }
+
+/* ------- why-trade modal ------- */
+.why-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  gap: 10px;
+}
+.why-row:last-child { border-bottom: none; }
+.why-sym { font-family: var(--mono); font-weight: 500; color: var(--ink); min-width: 52px; }
+.why-reason { color: var(--ink-2); font-size: 11px; font-style: italic; flex: 1; }
+.why-filter {
+  font-family: var(--mono);
+  font-size: 9px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: var(--bg-3);
+  color: var(--warn);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.why-pass {
+  font-family: var(--mono);
+  font-size: 9px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: var(--bg-3);
+  color: var(--up);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* ------- collapsible sidebar ------- */
+.nav-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 22px 6px;
+  cursor: pointer;
+}
+.nav-group-header:hover .nav-label { color: var(--ink-2); }
+.nav-group-header .nav-label { margin: 0; padding: 0; }
+.nav-chevron {
+  font-size: 9px;
+  color: var(--ink-4);
+  transition: transform 200ms;
+  display: inline-block;
+}
+.nav-chevron.open { transform: rotate(90deg); }
+
+/* ------- theme toggle ------- */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 22px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.1em;
+  border-top: 1px solid var(--line);
+  margin-top: 8px;
+}
+.theme-toggle:hover { color: var(--ink-2); }
+.theme-pill {
+  width: 30px; height: 14px;
+  border-radius: 7px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  position: relative;
+  transition: background 200ms;
+  flex-shrink: 0;
+}
+.theme-pill::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--ink-3);
+  transition: transform 200ms, background 200ms;
+}
+html.light .theme-pill { background: rgba(30, 138, 62, 0.3); border-color: var(--virtual-dim); }
+html.light .theme-pill::after { transform: translateX(16px); background: var(--virtual); }
+
+/* ------- mobile hamburger ------- */
+.hamburger {
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 4px;
+  background: none;
+  border: none;
+}
+.hamburger span {
+  display: block;
+  width: 18px; height: 1.5px;
+  background: var(--ink-2);
+  border-radius: 1px;
+  transition: all 150ms;
+}
+.hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(4px, 4px); }
+.hamburger.open span:nth-child(2) { opacity: 0; }
+.hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(4px, -4px); }
+
+/* ------- progress tracker ------- */
+.progress-track {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.progress-cell {
+  background: var(--bg-1);
+  padding: 14px 18px;
+}
+.progress-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.progress-val {
+  font-family: var(--serif);
+  font-size: 24px;
+  font-weight: 300;
+  color: var(--ink);
+  line-height: 1;
+}
+.progress-sub {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  margin-top: 4px;
+}
+
+/* ------- session P&L topbar badge ------- */
+.session-pnl {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 5px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+/* ------- sidebar backdrop ------- */
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 299;
+}
+
+/* ------- light theme ------- */
+html.light {
+  --bg: #f4f3ef;
+  --bg-1: #ffffff;
+  --bg-2: #eceae5;
+  --bg-3: #e0ded9;
+  --line: #d4d1cb;
+  --line-2: #c5c2bc;
+  --ink: #1a1916;
+  --ink-2: #4a4740;
+  --ink-3: #8c8880;
+  --ink-4: #b0ada8;
+  --teal: #0fa191;
+  --virtual: #1e7f3a;
+  --virtual-dim: #156030;
+  --live: #c05a10;
+  --live-dim: #8a3b05;
+  --up: #1e7f3a;
+  --down: #c92a2a;
+  --warn: #9a6a00;
+  --info: #2a7eb8;
+}
+
+/* ------- mobile responsive ------- */
+@media (max-width: 768px) {
+  .hamburger { display: flex; }
+  .shell { grid-template-columns: 1fr; }
+  .sidebar {
+    position: fixed;
+    left: 0; top: 0; bottom: 0;
+    width: 260px;
+    z-index: 300;
+    transform: translateX(-100%);
+    transition: transform 280ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    box-shadow: 4px 0 32px rgba(0, 0, 0, 0.5);
+  }
+  .sidebar.mob-open { transform: translateX(0); }
+  .sidebar-backdrop { display: block; }
+  .topbar { padding: 12px 16px; gap: 10px; }
+  .tick-strip { display: none; }
+  .page { padding: 16px 14px 48px; }
+  .kpi-grid { grid-template-columns: 1fr 1fr; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .grid-2-1 { grid-template-columns: 1fr; }
+  .grid-1-2 { grid-template-columns: 1fr; }
+  .grid-3 { grid-template-columns: 1fr; }
+  .progress-track { grid-template-columns: 1fr 1fr; }
+  .session-pnl { display: none; }
+}
 </style>
 </head>
 <body>
@@ -1954,7 +2230,7 @@ Object.assign(window, { Icon, Sparkline, ModeBadge, TickerStrip });
 // Charts — all hand-rolled SVG. Equity, stacked area weights, scatter pred-vs-actual,
 // price chart, swarm visualization, heatmap, donut, etc.
 
-const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--ink-3)'], labels = [], yFmt = v => v.toFixed(0), fillFirst = true, solidLines = false, xLabels = null, zeroCrossColors = null, endLabels = null }) => {
+const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--ink-3)'], labels = [], yFmt = v => v.toFixed(0), fillFirst = true, solidLines = false, xLabels = null, zeroCrossColors = null, endLabels = null, hLines = null }) => {
   const [hover, setHover] = React.useState(null);
   const hasEnd = endLabels && endLabels.some(Boolean);
   const W = 700, H = height, pad = { l: 50, r: hasEnd ? 68 : 12, t: 14, b: 22 };
@@ -2021,6 +2297,17 @@ const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--in
         {useZeroCross && rawMin < 0 && rawMax > 0 && (
           <line x1={pad.l} x2={W - pad.r} y1={zeroY} y2={zeroY} stroke="var(--ink-2)" strokeWidth="0.6" opacity="0.4"/>
         )}
+        {/* Horizontal reference lines (e.g. confidence threshold) */}
+        {hLines && hLines.map((hl, hli) => {
+          if (hl.value < min || hl.value > max) return null;
+          const hy = y(hl.value);
+          return (
+            <g key={hli}>
+              <line x1={pad.l} x2={W - pad.r} y1={hy} y2={hy} stroke={hl.color || 'var(--warn)'} strokeWidth="1" strokeDasharray="5 4" opacity="0.75"/>
+              {hl.label && <text x={W - pad.r + 3} y={hy + 3} fontSize="8" fill={hl.color || 'var(--warn)'} style={{fontFamily:'var(--mono)',opacity:0.8}}>{hl.label}</text>}
+            </g>
+          );
+        })}
         {series.map((s, idx) => {
           // Build path with M (moveto) gaps where values are null
           let pts = '';
@@ -2299,6 +2586,23 @@ Object.assign(window, { LineChart, StackedArea, PredVsActual, SwarmViz, Heatmap,
 
 </script>
 <script type="text/babel" data-presets="react">
+// Toast overlay — corner pop-ups for new/closed trades
+const ToastOverlay = ({ toasts, onRemove }) => (
+  <div className="toast-container">
+    {toasts.map(t => (
+      <div key={t.id} className={'toast ' + t.type} onClick={() => onRemove(t.id)}>
+        <span style={{fontSize:16,lineHeight:1}}>
+          {t.type === 'buy' ? '↑' : t.type === 'sell' ? '↓' : t.type === 'close-win' ? '✓' : '✗'}
+        </span>
+        <div>
+          <div style={{color:'var(--ink)',marginBottom:2,fontWeight:500}}>{t.sym}</div>
+          <div style={{color:'var(--ink-3)',fontSize:10}}>{t.text}</div>
+        </div>
+      </div>
+    ))}
+  </div>
+);
+
 // Dashboard screen — portfolio overview, swarm, KPIs, recent trades
 
 const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
@@ -2321,6 +2625,69 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
   const winRate = wins / (wins + losses);
   const openP = visibleTrades.filter(t => t.status === 'OPEN');
 
+  // Win/loss streak
+  const streak = React.useMemo(() => {
+    const closed = visibleTrades
+      .filter(t => t.status === 'WIN' || t.status === 'LOSS')
+      .sort((a, b) => (b.exitTs || b.ts) - (a.exitTs || a.ts));
+    if (!closed.length) return { count: 0, type: null };
+    const type = closed[0].status;
+    let count = 0;
+    for (const t of closed) { if (t.status === type) count++; else break; }
+    return { count, type };
+  }, [visibleTrades]);
+
+  // Progress tracker stats
+  const progressStats = React.useMemo(() => {
+    const allTrades = visibleTrades;
+    const firstTs = allTrades.length ? Math.min(...allTrades.map(t => t.ts)) : Date.now();
+    const daysRunning = Math.max(1, Math.round((Date.now() - firstTs) / 86400000));
+    const closed = allTrades.filter(t => t.status === 'WIN' || t.status === 'LOSS');
+    const accuracy = closed.length ? closed.filter(t => t.status === 'WIN').length / closed.length : null;
+    // Weight drift: mean absolute deviation from uniform 1/N
+    const uniform = 1 / AGENTS.length;
+    const wts = ctx?.agentWeights || {};
+    const drift = AGENTS.reduce((s, a) => s + Math.abs((wts[a.id] ?? uniform) - uniform), 0) / AGENTS.length;
+    return { daysRunning, totalTrades: allTrades.length, accuracy, drift };
+  }, [visibleTrades, ctx?.agentWeights]);
+
+  // "Why didn't I trade?" modal
+  const [showWhyModal, setShowWhyModal] = React.useState(false);
+  const whyReasons = React.useMemo(() => {
+    const riskNow = ctx?.risk || {};
+    const maxVal = riskNow.maxTradeValue ?? 5000;
+    const maxDisagree = (riskNow.maxDisagreement ?? 65) / 100;
+    const maxSectPct = (riskNow.maxSectorPct ?? 40) / 100;
+    const blacklist = ctx?.blacklistedSymbols || new Set();
+    const openTrades = (ctx?.trades || []).filter(t => t.status === 'OPEN');
+    const sectorCounts = {};
+    openTrades.forEach(t => {
+      const sect = (TICKERS.find(tk => tk.sym === t.sym) || {}).sector || 'Other';
+      sectorCounts[sect] = (sectorCounts[sect] || 0) + 1;
+    });
+    const totalOpen = openTrades.length;
+    const wts = ctx?.agentWeights || {};
+    const excl = ctx?.dynamicExcluded || new Set();
+    const enabledSet = new Set(AGENTS.map(a => a.id).filter(id => !excl.has(id)));
+    return TICKERS.map(tk => {
+      if (blacklist.has(tk.sym)) return { sym: tk.sym, filter: 'BLACKLISTED', sector: tk.sector };
+      const sigs = SIGNALS_ALL[tk.sym];
+      if (!sigs) return { sym: tk.sym, filter: 'NO SIGNALS', sector: tk.sector };
+      if (tk.last * 1.005 > maxVal) return { sym: tk.sym, filter: 'PRICE LIMIT', sector: tk.sector };
+      const ens = computeEnsemble(sigs, wts, enabledSet);
+      if (ens.disagreement > maxDisagree) return { sym: tk.sym, filter: 'HIGH DISAGREE', sector: tk.sector };
+      if (totalOpen >= 3) {
+        const sect = tk.sector || 'Other';
+        const sectFrac = ((sectorCounts[sect] || 0) + 1) / (totalOpen + 1);
+        if (sectFrac > maxSectPct) return { sym: tk.sym, filter: 'SECTOR LIMIT', sector: tk.sector };
+      }
+      if (!ens.dir && direction === 'BOTH') return { sym: tk.sym, filter: 'NO CLEAR DIR', sector: tk.sector };
+      return { sym: tk.sym, filter: null, sector: tk.sector, conf: ens.confidence };
+    });
+  }, [ctx, direction]);
+
+  const confThreshold = (ctx?.risk?.confidence ?? 55) / 100;
+
   return (
     <div className="page" data-screen-label="01 Dashboard">
       <div className="page-head" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
@@ -2328,7 +2695,36 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
           <div className="page-eyebrow">Dashboard · {mode === 'LIVE' ? 'Live trading' : mode === 'VIRTUAL' ? 'Broker paper · virtual' : 'Fully simulated'}</div>
           <h1 className="page-title">A swarm of {AGENTS.length} agents <em>currently disagreeing about the next 12 hours.</em></h1>
         </div>
-        <div className="mono tiny muted">SHOAL ENGINE v0.4.2 · {TICKERS.length} stocks · Last sync 3s ago</div>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <button className="btn ghost" style={{fontSize:10,padding:'5px 10px',letterSpacing:'0.08em'}} onClick={()=>setShowWhyModal(true)}>
+            Why no trade?
+          </button>
+          <div className="mono tiny muted">SHOAL ENGINE v0.4.2 · {TICKERS.length} stocks · Last sync 3s ago</div>
+        </div>
+      </div>
+
+      {/* Progress tracker */}
+      <div className="progress-track">
+        <div className="progress-cell">
+          <div className="progress-label">Session age</div>
+          <div className="progress-val">{progressStats.daysRunning}<span style={{fontSize:14,fontFamily:'var(--mono)',marginLeft:4}}>d</span></div>
+          <div className="progress-sub">since first trade</div>
+        </div>
+        <div className="progress-cell">
+          <div className="progress-label">Trades placed</div>
+          <div className="progress-val">{progressStats.totalTrades}</div>
+          <div className="progress-sub">{openP.length} open now</div>
+        </div>
+        <div className="progress-cell">
+          <div className="progress-label">Win accuracy</div>
+          <div className="progress-val">{progressStats.accuracy !== null ? (progressStats.accuracy*100).toFixed(0) : '–'}<span style={{fontSize:14,fontFamily:'var(--mono)',marginLeft:2}}>%</span></div>
+          <div className="progress-sub">{wins}W / {losses}L closed</div>
+        </div>
+        <div className="progress-cell">
+          <div className="progress-label">Weight drift</div>
+          <div className="progress-val">{(progressStats.drift*100).toFixed(1)}<span style={{fontSize:14,fontFamily:'var(--mono)',marginLeft:2}}>%</span></div>
+          <div className="progress-sub">avg shift from uniform</div>
+        </div>
       </div>
 
       <div className="kpi-grid" style={{marginBottom:16}}>
@@ -2353,7 +2749,14 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
         </div>
         <div className="kpi">
           <div className="kpi-label">Win rate · 30d</div>
-          <div className="kpi-value mono">{(winRate * 100).toFixed(1)}%</div>
+          <div className="kpi-value mono">
+            {(winRate * 100).toFixed(1)}%
+            {streak.count >= 2 && (
+              <span className={'streak-badge ' + (streak.type === 'WIN' ? 'up' : 'dn')}>
+                {streak.type === 'WIN' ? '↑' : '↓'} {streak.count} streak
+              </span>
+            )}
+          </div>
           <div className="kpi-delta up">{wins}W / {losses}L</div>
         </div>
         <div className="kpi">
@@ -2362,6 +2765,34 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
           <div className="kpi-delta up">+0.21 vs last cycle</div>
         </div>
       </div>
+
+      {/* Why didn't I trade? modal */}
+      {showWhyModal && (
+        <div className="modal-backdrop" onClick={()=>setShowWhyModal(false)}>
+          <div className="modal wide" onClick={e=>e.stopPropagation()}>
+            <div className="modal-head">
+              <div className="modal-title">Why didn't I trade?</div>
+              <button style={{color:'var(--ink-3)',fontSize:18}} onClick={()=>setShowWhyModal(false)}>×</button>
+            </div>
+            <div className="modal-body" style={{padding:'0 0 8px',maxHeight:'60vh',overflowY:'auto'}}>
+              <div style={{padding:'12px 24px 8px',fontFamily:'var(--mono)',fontSize:10,color:'var(--ink-3)',letterSpacing:'0.1em'}}>
+                FILTER ANALYSIS · {TICKERS.length} tickers · {whyReasons.filter(r=>!r.filter).length} candidates passing all filters
+              </div>
+              {whyReasons.map(r => (
+                <div key={r.sym} className="why-row">
+                  <span className="why-sym">{r.sym}</span>
+                  <span className="why-reason" style={{color:'var(--ink-3)',fontSize:10}}>{r.sector}</span>
+                  {r.filter
+                    ? <span className="why-filter">{r.filter}</span>
+                    : <span className="why-pass">PASS · {r.conf !== undefined ? (r.conf*100).toFixed(0)+'%' : ''}</span>
+                  }
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
 
       <div className="grid-2-1" style={{marginBottom:16}}>
         <div className="card">
@@ -2460,7 +2891,8 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
             <div className="card-title">Confidence over time</div>
             <div className="card-meta">90-day rolling</div>
           </div>
-          <LineChart series={[ctx?.confHistory || CONFIDENCE_HISTORY]} colors={['var(--virtual)']} labels={['Confidence']} yFmt={v=>(v*100).toFixed(0)+'%'}/>
+          <LineChart series={[ctx?.confHistory || CONFIDENCE_HISTORY]} colors={['var(--virtual)']} labels={['Confidence']} yFmt={v=>(v*100).toFixed(0)+'%'}
+            hLines={[{value: confThreshold, color:'var(--warn)', label: Math.round(confThreshold*100)+'%'}]}/>
           <div style={{marginTop:8}} className="mono tiny muted">
             {(() => {
               const ch = ctx?.confHistory || CONFIDENCE_HISTORY;
@@ -4637,6 +5069,21 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
   const minAccThreshold     = (ctx?.risk?.minAgentAccuracy ?? 35) / 100;
   const maxLen = AGENTS.reduce((m, a) => Math.max(m, (agentAccuracySeries[a.id] || []).length), 0);
 
+  const [sortKey, setSortKey] = React.useState('acc');
+  const [sortDir, setSortDir] = React.useState(-1); // -1 = desc, 1 = asc
+
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir(d => d * -1);
+    else { setSortKey(key); setSortDir(-1); }
+  };
+
+  const SortTh = ({ col, label, align = 'right' }) => (
+    <th className="sortable" style={{textAlign: align}} onClick={() => toggleSort(col)}>
+      {label}
+      <span className={'sort-arrow' + (sortKey === col ? ' active' : '')}>{sortKey === col ? (sortDir === -1 ? ' ↓' : ' ↑') : ' ↕'}</span>
+    </th>
+  );
+
   // Determine which agents are currently excluded (≥5 history trades, accuracy < threshold)
   const isExcluded = (a) => {
     const hist = agentHistory[a.id] || [];
@@ -4649,6 +5096,27 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
     const s = agentAccuracySeries[a.id] || [a.accuracy];
     return isExcluded(a) ? [...s, null] : s;
   });
+
+  const sortedAgents = React.useMemo(() => {
+    return AGENTS
+      .map(a => {
+        const hist = agentHistory[a.id] || [];
+        const acc  = hist.length >= 3 ? hist.filter(Boolean).length / hist.length : null;
+        const w    = agentWeights[a.id] ?? a.weight;
+        const excl = isExcluded(a);
+        return { ...a, hist, acc, w, excl };
+      })
+      .sort((a, b) => {
+        let va, vb;
+        if (sortKey === 'acc')    { va = a.acc ?? a.accuracy; vb = b.acc ?? b.accuracy; }
+        else if (sortKey === 'w') { va = a.w; vb = b.w; }
+        else if (sortKey === 'calls') { va = a.hist.length; vb = b.hist.length; }
+        else if (sortKey === 'name') { return sortDir * a.name.localeCompare(b.name); }
+        else if (sortKey === 'family') { return sortDir * a.family.localeCompare(b.family); }
+        else { va = a.acc ?? a.accuracy; vb = b.acc ?? b.accuracy; }
+        return sortDir * ((vb ?? 0) - (va ?? 0));
+      });
+  }, [agentHistory, agentWeights, sortKey, sortDir]);
 
   return (
     <div className="page" data-screen-label="08 Agent Performance">
@@ -4681,6 +5149,7 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
                 yFmt={v => (v * 100).toFixed(0) + '%'}
                 fillFirst={false}
                 solidLines={true}
+                hLines={[{value: minAccThreshold, color:'var(--down)', label: Math.round(minAccThreshold*100)+'% min'}]}
               />
               <div className="legend" style={{marginTop:10,display:'flex',flexWrap:'wrap',gap:'4px 14px'}}>
                 {AGENTS.map(a => {
@@ -4705,49 +5174,40 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
       <div className="card">
         <div className="card-head">
           <div className="card-title">Current standing</div>
-          <div className="card-meta">sorted by rolling accuracy · — = insufficient data</div>
+          <div className="card-meta">click column headers to sort</div>
         </div>
         <table className="tbl">
           <thead>
             <tr>
-              <th>Agent</th>
-              <th>Family</th>
-              <th style={{textAlign:'right'}}>Calls</th>
-              <th style={{textAlign:'right'}}>Accuracy</th>
-              <th style={{textAlign:'right'}}>Weight</th>
+              <SortTh col="name" label="Agent" align="left"/>
+              <SortTh col="family" label="Family" align="left"/>
+              <SortTh col="calls" label="Calls"/>
+              <SortTh col="acc" label="Accuracy"/>
+              <SortTh col="w" label="Weight"/>
               <th style={{textAlign:'right'}}>Status</th>
             </tr>
           </thead>
           <tbody>
-            {AGENTS
-              .map(a => {
-                const hist = agentHistory[a.id] || [];
-                const acc  = hist.length >= 3 ? hist.filter(Boolean).length / hist.length : null;
-                const w    = agentWeights[a.id] ?? a.weight;
-                const excl = isExcluded(a);
-                return { ...a, hist, acc, w, excl };
-              })
-              .sort((a, b) => (b.acc ?? b.accuracy) - (a.acc ?? a.accuracy))
-              .map(a => (
-                <tr key={a.id} style={{opacity: a.excl ? 0.5 : 1}}>
-                  <td><span style={{color: a.excl ? 'var(--ink-3)' : a.color,marginRight:8}}>{a.glyph}</span>{a.name}</td>
-                  <td className="mono tiny muted">{a.family}</td>
-                  <td className="mono" style={{textAlign:'right'}}>{a.hist.length}</td>
-                  <td style={{textAlign:'right'}}>
-                    {a.acc !== null
-                      ? <span className={a.acc >= 0.6 ? 'up' : a.acc < 0.5 ? 'dn' : ''}>{(a.acc * 100).toFixed(1)}%</span>
-                      : <span className="muted">–</span>}
-                  </td>
-                  <td className="mono" style={{textAlign:'right'}}>{(a.w * 100).toFixed(1)}%</td>
-                  <td style={{textAlign:'right'}}>
-                    {a.excl
-                      ? <span className="dn" style={{fontSize:10,letterSpacing:'0.06em'}} title={`${a.acc !== null ? (a.acc*100).toFixed(1)+'%' : '?'} accuracy across ${a.hist.length} trades — below ${(minAccThreshold*100).toFixed(0)}% threshold. Auto-reinstated when accuracy recovers.`}>
-                          EXCLUDED · {a.acc !== null ? (a.acc*100).toFixed(0)+'%' : '?'} &lt; {(minAccThreshold*100).toFixed(0)}%
-                        </span>
-                      : <span className="up" style={{fontSize:10,letterSpacing:'0.06em'}}>ACTIVE</span>}
-                  </td>
-                </tr>
-              ))}
+            {sortedAgents.map(a => (
+              <tr key={a.id} style={{opacity: a.excl ? 0.5 : 1}}>
+                <td><span style={{color: a.excl ? 'var(--ink-3)' : a.color,marginRight:8}}>{a.glyph}</span>{a.name}</td>
+                <td className="mono tiny muted">{a.family}</td>
+                <td className="mono" style={{textAlign:'right'}}>{a.hist.length}</td>
+                <td style={{textAlign:'right'}}>
+                  {a.acc !== null
+                    ? <span className={a.acc >= 0.6 ? 'up' : a.acc < 0.5 ? 'dn' : ''}>{(a.acc * 100).toFixed(1)}%</span>
+                    : <span className="muted">–</span>}
+                </td>
+                <td className="mono" style={{textAlign:'right'}}>{(a.w * 100).toFixed(1)}%</td>
+                <td style={{textAlign:'right'}}>
+                  {a.excl
+                    ? <span className="dn" style={{fontSize:10,letterSpacing:'0.06em'}} title={`${a.acc !== null ? (a.acc*100).toFixed(1)+'%' : '?'} accuracy across ${a.hist.length} trades — below ${(minAccThreshold*100).toFixed(0)}% threshold. Auto-reinstated when accuracy recovers.`}>
+                        EXCLUDED · {a.acc !== null ? (a.acc*100).toFixed(0)+'%' : '?'} &lt; {(minAccThreshold*100).toFixed(0)}%
+                      </span>
+                    : <span className="up" style={{fontSize:10,letterSpacing:'0.06em'}}>ACTIVE</span>}
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -5187,6 +5647,12 @@ const App = () => {
   const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(() => new Set());
   const [slippageLog, setSlippageLog] = React.useState([]);
 
+  // UI state: toasts, theme, sidebar, nav group collapse
+  const [toasts, setToasts] = React.useState([]);
+  const [themeMode, setThemeMode] = React.useState(() => localStorage.getItem('shoal_theme') || 'dark');
+  const [sidebarOpen, setSidebarOpen] = React.useState(false);
+  const [navGroups, setNavGroups] = React.useState({ workspace: true, system: true });
+
   // Agent learning state
   const [agentWeights, setAgentWeights] = React.useState(() => {
     const total = AGENTS.reduce((s, a) => s + a.weight, 0);
@@ -5577,6 +6043,38 @@ const App = () => {
     return () => clearInterval(ivl);
   }, [running, direction]);
 
+  // Theme: apply/remove .light class on <html>
+  React.useEffect(() => {
+    if (themeMode === 'light') document.documentElement.classList.add('light');
+    else document.documentElement.classList.remove('light');
+    localStorage.setItem('shoal_theme', themeMode);
+  }, [themeMode]);
+
+  // Toast detection: fire on newly opened or newly closed trades
+  const prevToastTradesRef = React.useRef([]);
+  React.useEffect(() => {
+    const prev = prevToastTradesRef.current;
+    const prevMap = new Map(prev.map(t => [t.id, t]));
+    const newToasts = [];
+    trades.forEach(t => {
+      if (!prevMap.has(t.id)) {
+        newToasts.push({ id: t.id + '-o', type: t.side === 'BUY' ? 'buy' : 'sell', sym: t.sym, text: t.side + ' ' + t.qty + ' @ ' + fmtNum(t.price) });
+      } else {
+        const p = prevMap.get(t.id);
+        if (p.status === 'OPEN' && (t.status === 'WIN' || t.status === 'LOSS')) {
+          newToasts.push({ id: t.id + '-c', type: t.status === 'WIN' ? 'close-win' : 'close-loss', sym: t.sym, text: t.status + ' ' + (t.pnl >= 0 ? '+' : '') + fmtMoney(t.pnl) });
+        }
+      }
+    });
+    if (newToasts.length > 0) {
+      setToasts(prev => [...prev, ...newToasts].slice(-5));
+      newToasts.forEach(toast => {
+        setTimeout(() => setToasts(prev => prev.filter(t => t.id !== toast.id)), 3200);
+      });
+    }
+    prevToastTradesRef.current = trades;
+  }, [trades]);
+
   React.useEffect(() => { localStorage.setItem('shoal_mode', mode); }, [mode]);
   React.useEffect(() => { localStorage.setItem('shoal_route', route); }, [route]);
   React.useEffect(() => { localStorage.setItem('shoal_alpaca', JSON.stringify(alpaca)); }, [alpaca]);
@@ -5623,6 +6121,12 @@ const App = () => {
     }).map(a => a.id));
   }, [agentHistory, risk.minAgentAccuracy, enabledAgents]);
 
+  // Session P&L: realized closed trades since midnight local time
+  const sessionPnl = React.useMemo(() => {
+    const midnight = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+    return trades.filter(t => t.pnl != null && (t.exitTs || 0) >= midnight).reduce((s, t) => s + t.pnl, 0);
+  }, [trades]);
+
   const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog };
   const screens = {
     guide:       <ScreenGuide/>,
@@ -5642,9 +6146,14 @@ const App = () => {
   const navItem = NAV.find(n => n.id === route);
   const navItemLabel = navItem ? navItem.label : 'Dashboard';
 
+  const closeNavOnMobile = () => setSidebarOpen(false);
+
   return (
     <div className={'shell ' + (mode === 'LIVE' ? 'live' : '')}>
-      <aside className="sidebar">
+      {/* Mobile sidebar backdrop */}
+      {sidebarOpen && <div className="sidebar-backdrop" onClick={()=>setSidebarOpen(false)}/>}
+
+      <aside className={'sidebar ' + (sidebarOpen ? 'mob-open' : '')}>
         <div className="brand">
           <div className="brand-row">
             <span className="brand-mark"></span>
@@ -5653,7 +6162,7 @@ const App = () => {
           <div className="brand-sub">Adaptive · v0.4.2</div>
         </div>
 
-        <div className="mode-pill" onClick={()=>requestMode(mode==='SIMULATED'?'VIRTUAL':mode==='VIRTUAL'?'LIVE':'SIMULATED')}>
+        <div className="mode-pill" onClick={()=>{ requestMode(mode==='SIMULATED'?'VIRTUAL':mode==='VIRTUAL'?'LIVE':'SIMULATED'); closeNavOnMobile(); }}>
           <div className="mode-pill-row">
             <span className="mode-pill-label">Trading mode</span>
             <span className="mono tiny muted">↻ cycle</span>
@@ -5664,20 +6173,28 @@ const App = () => {
           </div>
         </div>
 
+        {/* Collapsible workspace group */}
         <div className="nav-section">
-          <div className="nav-label">Workspace</div>
-          {NAV.slice(0, 7).map(n => (
-            <div key={n.id} className={'nav-item ' + (route===n.id?'active':'')} onClick={()=>setRoute(n.id)}>
+          <div className="nav-group-header" onClick={()=>setNavGroups(g=>({...g, workspace: !g.workspace}))}>
+            <div className="nav-label" style={{paddingLeft:0,paddingTop:0,paddingBottom:0}}>Workspace</div>
+            <span className={'nav-chevron ' + (navGroups.workspace ? 'open' : '')}>▶</span>
+          </div>
+          {navGroups.workspace && NAV.slice(0, 7).map(n => (
+            <div key={n.id} className={'nav-item ' + (route===n.id?'active':'')} onClick={()=>{ setRoute(n.id); closeNavOnMobile(); }}>
               <span className="nav-icon"><Icon name={n.icon}/></span>
               <span>{n.label}</span>
             </div>
           ))}
         </div>
 
+        {/* Collapsible system group */}
         <div className="nav-section">
-          <div className="nav-label">System</div>
-          {NAV.slice(7).map(n => (
-            <div key={n.id} className={'nav-item ' + (route===n.id?'active':'')} onClick={()=>setRoute(n.id)}>
+          <div className="nav-group-header" onClick={()=>setNavGroups(g=>({...g, system: !g.system}))}>
+            <div className="nav-label" style={{paddingLeft:0,paddingTop:0,paddingBottom:0}}>System</div>
+            <span className={'nav-chevron ' + (navGroups.system ? 'open' : '')}>▶</span>
+          </div>
+          {navGroups.system && NAV.slice(7).map(n => (
+            <div key={n.id} className={'nav-item ' + (route===n.id?'active':'')} onClick={()=>{ setRoute(n.id); closeNavOnMobile(); }}>
               <span className="nav-icon"><Icon name={n.icon}/></span>
               <span>{n.label}</span>
               {n.id === 'settings' && !alpaca.connected && <span className="nav-num warn" style={{color:'var(--warn)'}}>!</span>}
@@ -5691,11 +6208,19 @@ const App = () => {
           <div className="row"><span>Broker</span><span className={alpaca.connected ? 'ok' : ''}>{alpaca.connected ? '● Alpaca' + (alpaca.token ? ' ⟳' : '') : '○ none'}</span></div>
           <div className="row"><span>Market</span><span className={marketStatus.isOpen ? 'ok' : ''} style={!marketStatus.isOpen ? {color:'var(--warn)'} : {}}>{marketStatus.isOpen ? '● open' : '○ closed'}</span></div>
           <div className="row"><span>Latency</span><span>{42 + (tick % 8)}ms</span></div>
+          <div className="theme-toggle" onClick={()=>setThemeMode(m=>m==='dark'?'light':'dark')}>
+            <span>{themeMode === 'light' ? '◑ Light mode' : '◐ Dark mode'}</span>
+            <div className="theme-pill"/>
+          </div>
         </div>
       </aside>
 
       <main className="main">
         <div className="topbar">
+          {/* Hamburger — visible only on mobile via CSS */}
+          <button className={'hamburger ' + (sidebarOpen ? 'open' : '')} onClick={()=>setSidebarOpen(o=>!o)} aria-label="Toggle menu">
+            <span/><span/><span/>
+          </button>
           <div className="crumb">SHOAL / <b>{navItemLabel}</b></div>
           <button className="btn" style={{marginLeft:8,padding:'6px 12px',display:'flex',alignItems:'center',gap:10}} onClick={()=>setSymbolPicker(true)} title="Switch symbol ( / )">
             <span className="mono" style={{color:'var(--ink)',fontWeight:500,letterSpacing:'0.02em'}}>◎ {activeSymbol}</span>
@@ -5711,6 +6236,10 @@ const App = () => {
             ))}
           </div>
           <div className="topbar-spacer"></div>
+          {/* Session P&L badge */}
+          <div className={'session-pnl ' + (sessionPnl >= 0 ? 'up' : 'dn')}>
+            Session {sessionPnl >= 0 ? '+' : ''}{fmtMoney(sessionPnl)}
+          </div>
           {tweaks.animated && <TickerStrip tickers={TICKERS} tick={tick}/>}
           <div className={'bot-status ' + (running ? '' : 'paused')}>
             <span className="led"></span>
@@ -5729,6 +6258,7 @@ const App = () => {
         setTweaks(nt);
         window.parent.postMessage({type:'__edit_mode_set_keys', edits: nt}, '*');
       }}/>}
+      <ToastOverlay toasts={toasts} onRemove={id=>setToasts(prev=>prev.filter(t=>t.id!==id))}/>
     </div>
   );
 };
