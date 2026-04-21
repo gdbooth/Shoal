@@ -1720,6 +1720,28 @@ function updateAgentHistory(history, trade) {
   return next;
 }
 
+// Exponentially weighted accuracy — recent trades count more (decay factor 1.1x per step)
+function decayAccuracy(hist) {
+  if (!hist || hist.length < 2) return null;
+  let wSum = 0, wCorr = 0;
+  for (let i = 0; i < hist.length; i++) {
+    const w = Math.pow(1.12, i); // older entries have lower weight; most recent has highest
+    wSum += w;
+    if (hist[i]) wCorr += w;
+  }
+  return wCorr / wSum;
+}
+
+// Compute rolling 5-day annualized volatility from price series (returns 0 if insufficient data)
+function rollingVol(prices, window = 10) {
+  if (!prices || prices.length < window + 1) return 0;
+  const slice = prices.slice(-(window + 1));
+  const returns = slice.slice(1).map((p, i) => Math.log(p / slice[i]));
+  const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
+  const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length;
+  return Math.sqrt(variance * 252); // annualized
+}
+
 // Narrative reason from top-3 agents supporting the ensemble direction
 function buildReason(signals, ensemble) {
   if (!ensemble.dir || !signals) return '–';
@@ -2688,6 +2710,17 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
 
   const confThreshold = (ctx?.risk?.confidence ?? 55) / 100;
 
+  // Drawdown circuit breaker status
+  const drawdownStatus = React.useMemo(() => {
+    const midnight = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+    const todayLoss = visibleTrades
+      .filter(t => t.pnl != null && t.pnl < 0 && (t.exitTs||0) >= midnight)
+      .reduce((s, t) => s + t.pnl, 0);
+    const limit = -(ctx?.risk?.dailyLoss ?? 3) / 100 * (ctx?.balance || 10000);
+    const pct = limit !== 0 ? Math.min(1, Math.abs(todayLoss) / Math.abs(limit)) : 0;
+    return { todayLoss, limit, pct, halted: todayLoss < limit };
+  }, [visibleTrades, ctx?.risk?.dailyLoss, ctx?.balance]);
+
   return (
     <div className="page" data-screen-label="01 Dashboard">
       <div className="page-head" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
@@ -2702,6 +2735,25 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
           <div className="mono tiny muted">SHOAL ENGINE v0.4.2 · {TICKERS.length} stocks · Last sync 3s ago</div>
         </div>
       </div>
+
+      {/* [1] Daily drawdown circuit breaker banner */}
+      {drawdownStatus.pct >= 0.6 && (
+        <div style={{padding:'10px 14px',marginBottom:12,borderRadius:5,display:'flex',justifyContent:'space-between',alignItems:'center',
+          background: drawdownStatus.halted ? 'rgba(255,107,107,0.12)' : 'rgba(240,198,116,0.10)',
+          border: '1px solid ' + (drawdownStatus.halted ? 'var(--down)' : 'var(--warn)')}}>
+          <div>
+            <span style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.14em',color: drawdownStatus.halted ? 'var(--down)' : 'var(--warn)'}}>
+              {drawdownStatus.halted ? '⊘ DRAWDOWN LIMIT HIT — NEW ENTRIES HALTED' : '⚠ DRAWDOWN WARNING'}
+            </span>
+            <span style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-2)',marginLeft:14}}>
+              Today: {fmtMoney(drawdownStatus.todayLoss)} · Limit: {fmtMoney(drawdownStatus.limit)} ({(drawdownStatus.pct*100).toFixed(0)}% used)
+            </span>
+          </div>
+          <div style={{width:120,height:4,background:'var(--bg-3)',borderRadius:2,overflow:'hidden'}}>
+            <div style={{height:'100%',width:(drawdownStatus.pct*100)+'%',background: drawdownStatus.halted ? 'var(--down)' : 'var(--warn)',borderRadius:2,transition:'width 0.5s'}}/>
+          </div>
+        </div>
+      )}
 
       {/* Progress tracker */}
       <div className="progress-track">
@@ -2972,7 +3024,14 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
               <div className="feed-time">{fmtTime(t.ts)}</div>
               <div className="feed-sym">{t.sym}</div>
               <div><span className={'pill ' + (t.side==='BUY'?'buy':'sell')}>{t.side}</span></div>
-              <div className="feed-reason">{t.reason}</div>
+              <div className="feed-reason">
+                {t.closeReason
+                  ? <span style={{fontFamily:'var(--mono)',fontSize:9,padding:'1px 5px',borderRadius:2,letterSpacing:'0.06em',
+                      background: t.closeReason==='STOP-LOSS'?'rgba(255,107,107,0.15)':t.closeReason==='TAKE-PROFIT'?'rgba(109,212,126,0.15)':'var(--bg-3)',
+                      color: t.closeReason==='STOP-LOSS'?'var(--down)':t.closeReason==='TAKE-PROFIT'?'var(--up)':'var(--ink-3)',marginRight:6}}>{t.closeReason}</span>
+                  : null}
+                {t.reason}
+              </div>
               <div className="mono tiny muted">conf {(t.conf*100).toFixed(0)}%</div>
               <div className={'feed-pnl ' + (t.pnl > 0 ? 'up' : t.pnl < 0 ? 'dn' : 'muted')}>{t.pnl !== null ? fmtMoney(t.pnl) : '— open —'}</div>
             </div>
@@ -4521,6 +4580,42 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
             <div className="mono tiny muted" style={{marginTop:4}}>Maximum fraction of open positions that can be in one sector. Enforces diversification when ≥3 positions are open.</div>
           </div>
 
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Stop-loss per trade</div>
+              <div className="mono" style={{fontSize:13}}>{(risk.stopLoss ?? 2.5).toFixed(1)}%</div>
+            </div>
+            <input type="range" min="0.5" max="10" step="0.5" value={risk.stopLoss ?? 2.5} onChange={e=>setRisk({...risk, stopLoss: +e.target.value})}/>
+            <div className="mono tiny muted" style={{marginTop:4}}>Force-close a position if the simulated mark falls this far against the entry. Tighter = more cuts, lower losses per trade.</div>
+          </div>
+
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Take-profit target</div>
+              <div className="mono" style={{fontSize:13}}>{(risk.takeProfit ?? 5).toFixed(1)}%</div>
+            </div>
+            <input type="range" min="1" max="20" step="0.5" value={risk.takeProfit ?? 5} onChange={e=>setRisk({...risk, takeProfit: +e.target.value})}/>
+            <div className="mono tiny muted" style={{marginTop:4}}>Lock in gains when the position reaches this return. Higher = let winners run longer before taking profit.</div>
+          </div>
+
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Min agent consensus</div>
+              <div className="mono" style={{fontSize:13}}>≥ {risk.minConsensus ?? 7} agents</div>
+            </div>
+            <input type="range" min="4" max="16" step="1" value={risk.minConsensus ?? 7} onChange={e=>setRisk({...risk, minConsensus: +e.target.value})}/>
+            <div className="mono tiny muted" style={{marginTop:4}}>Only enter a trade when at least N of 16 agents vote in the same direction. Higher = more selective, fewer trades.</div>
+          </div>
+
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Max holding period</div>
+              <div className="mono" style={{fontSize:13}}>{risk.maxHoldHours ?? 48}h</div>
+            </div>
+            <input type="range" min="4" max="168" step="4" value={risk.maxHoldHours ?? 48} onChange={e=>setRisk({...risk, maxHoldHours: +e.target.value})}/>
+            <div className="mono tiny muted" style={{marginTop:4}}>Time-stop: force-close positions that have been open longer than this. Prevents stale capital sitting in sideways trades.</div>
+          </div>
+
           <div className="divider"></div>
 
           <div className="dialog-row">
@@ -5643,7 +5738,7 @@ const App = () => {
     const saved = localStorage.getItem('shoal_alpaca');
     return saved ? JSON.parse(saved) : { connected: false, balance: 0, account: null, broker: 'Alpaca Markets' };
   });
-  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, maxDisagreement: 65, maxSectorPct: 40 });
+  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 7, maxHoldHours: 48 });
   const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(() => new Set());
   const [slippageLog, setSlippageLog] = React.useState([]);
 
@@ -5673,6 +5768,7 @@ const App = () => {
   const tradesRef        = React.useRef(trades);
   const activeSymbolRef  = React.useRef(activeSymbol);
   const blacklistedSymbolsRef = React.useRef(blacklistedSymbols);
+  const balanceRef       = React.useRef(balance);
   React.useEffect(() => { agentWeightsRef.current  = agentWeights;  }, [agentWeights]);
   React.useEffect(() => { agentHistoryRef.current   = agentHistory;   }, [agentHistory]);
   React.useEffect(() => { riskRef.current = risk; }, [risk]);
@@ -5680,6 +5776,7 @@ const App = () => {
   React.useEffect(() => { tradesRef.current = trades; }, [trades]);
   React.useEffect(() => { activeSymbolRef.current = activeSymbol; }, [activeSymbol]);
   React.useEffect(() => { blacklistedSymbolsRef.current = blacklistedSymbols; }, [blacklistedSymbols]);
+  React.useEffect(() => { balanceRef.current = balance; }, [balance]);
   // Keep lastSignals in sync with active symbol and agentParams
   React.useEffect(() => {
     setLastSignals(computeSignals(activeSymbol, PRICE_HISTORY, agentParams) || SIGNALS_ALL[activeSymbol] || null);
@@ -5867,18 +5964,52 @@ const App = () => {
       const isLiveReal   = mode === 'LIVE'    && !!alpacaNow?.token && alpacaNow?.env === 'live';
       const isBrokerPaper= mode === 'VIRTUAL' && !!alpacaNow?.token && alpacaNow?.env === 'paper';
 
-      // 1) close some open positions stochastically (turn into WIN/LOSS)
-      //    Skip _real positions — those are managed by the broker; SSE will update them.
-      //    For _brokerSent trades, also dispatch a close order to the paper account.
-      // Collect symbols of broker-sent trades being closed so we can flatten the Alpaca position.
-      // Using DELETE /positions/:sym rather than a qty-based sell avoids mismatch when multiple
-      // local fills exist for the same symbol.
+      const riskNow = riskRef.current || {};
+
+      // [4] Stop-loss, take-profit, and time-stop — close non-real positions that hit exit conditions.
+      // Uses a deterministic simulated mark derived from each trade's entry price and time elapsed,
+      // so the same tick always evaluates to the same mark for the same trade.
+      const stopLossPct   = (riskNow.stopLoss   ?? 2.5) / 100;
+      const takeProfitPct = (riskNow.takeProfit  ?? 5.0) / 100;
+      const maxHoldMs     = (riskNow.maxHoldHours ?? 48) * 3600_000;
+
       const closedSyms = new Set();
       setTrades(prev => {
         return prev.map(t => {
           if (t.status !== 'OPEN' || t._real) return t;
-          if (Math.random() < 0.25) {
-            const pnlAmt = (Math.random() - 0.42) * t.qty * t.price * 0.022;
+
+          const elapsedMs = Date.now() - t.ts;
+          // Simulate a mark price: symbol-seeded drift + time-varying noise
+          const symSeed = t.sym.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
+          const drift = Math.sin(symSeed * 0.07 + elapsedMs * 0.000002) * 0.03;
+          const noise = Math.sin(Date.now() * 0.000_4 + symSeed) * 0.012;
+          const markPct = drift + noise; // simulated % move from entry
+          const upnlPct = markPct * (t.side === 'BUY' ? 1 : -1); // from trade's perspective
+
+          // [6] Max holding period: time-stop — close at near-breakeven after maxHoldHours
+          if (elapsedMs > maxHoldMs) {
+            const pnlAmt = (upnlPct * 0.3) * t.qty * t.price; // slight haircut at time-stop
+            const exit = t.price * (1 + markPct * 0.3 * (t.side === 'BUY' ? 1 : -1));
+            if (t._brokerSent) closedSyms.add(t.sym);
+            return { ...t, status: pnlAmt >= 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false, closeReason: 'TIME-STOP' };
+          }
+          // [3] Stop-loss: force close if down more than stopLoss%
+          if (upnlPct <= -stopLossPct) {
+            const pnlAmt = -stopLossPct * t.qty * t.price;
+            const exit = t.price * (1 - stopLossPct * (t.side === 'BUY' ? 1 : -1));
+            if (t._brokerSent) closedSyms.add(t.sym);
+            return { ...t, status: 'LOSS', pnl: pnlAmt, pnlPct: -stopLossPct, exit, exitTs: Date.now(), isNew: false, closeReason: 'STOP-LOSS' };
+          }
+          // [5] Take-profit: lock in gain if up more than takeProfit%
+          if (upnlPct >= takeProfitPct) {
+            const pnlAmt = takeProfitPct * t.qty * t.price;
+            const exit = t.price * (1 + takeProfitPct * (t.side === 'BUY' ? 1 : -1));
+            if (t._brokerSent) closedSyms.add(t.sym);
+            return { ...t, status: 'WIN', pnl: pnlAmt, pnlPct: takeProfitPct, exit, exitTs: Date.now(), isNew: false, closeReason: 'TAKE-PROFIT' };
+          }
+          // Stochastic close (remaining probability)
+          if (Math.random() < 0.22) {
+            const pnlAmt = (Math.random() - 0.42) * t.qty * t.price * 0.02;
             const exit   = t.price + (pnlAmt / t.qty) * (t.side === 'BUY' ? 1 : -1);
             if (t._brokerSent) closedSyms.add(t.sym);
             return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false };
@@ -5895,23 +6026,52 @@ const App = () => {
         });
       }
 
-      // Compute dynamic enabled set: exclude agents with ≥5 trades and accuracy below threshold; re-include when recovered
-      const minAcc = (riskRef.current?.minAgentAccuracy ?? 35) / 100;
+      // [8] Dynamic enabled set using exponentially-weighted (decay) accuracy — recent calls count more
+      const minAcc = (riskNow.minAgentAccuracy ?? 35) / 100;
       const hist = agentHistoryRef.current;
       const dynamicEnabled = new Set(
         [...enabledAgentsRef.current].filter(id => {
           const h = hist[id];
-          if (!h || h.length < 5) return true; // not enough data, keep included
-          return h.filter(Boolean).length / h.length >= minAcc;
+          if (!h || h.length < 5) return true;
+          const acc = decayAccuracy(h);
+          return acc === null || acc >= minAcc;
         })
       );
 
-      if (Math.random() < 0.55) {
-        const riskNow     = riskRef.current || {};
+      // [1] Daily drawdown circuit breaker — halt new entries if today's realized loss exceeds limit
+      const todayMidnight = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
+      const todayLoss = tradesRef.current
+        .filter(t => t.pnl != null && t.pnl < 0 && (t.exitTs || 0) >= todayMidnight)
+        .reduce((s, t) => s + t.pnl, 0);
+      const dailyLossLimit = -(riskNow.dailyLoss ?? 3) / 100 * (balanceRef.current || 10000);
+      const drawdownHalted = todayLoss < dailyLossLimit;
+
+      // [10] Build per-ticker recent win rate from closed trades (last 10 per ticker)
+      const allClosed = tradesRef.current.filter(t => t.pnl != null);
+      const tickerEdge = {};
+      TICKERS.forEach(tk => {
+        const recent = allClosed.filter(t => t.sym === tk.sym).slice(-10);
+        if (recent.length >= 3) {
+          tickerEdge[tk.sym] = recent.filter(t => t.pnl > 0).length / recent.length;
+        }
+      });
+
+      if (!drawdownHalted && Math.random() < 0.55) {
         const maxVal      = riskNow.maxTradeValue ?? 5000;
         const maxDisagree = (riskNow.maxDisagreement ?? 65) / 100;
         const maxSectPct  = (riskNow.maxSectorPct  ?? 40) / 100;
+        const minConf     = (riskNow.confidence    ?? 55) / 100;
+        const minCons     = riskNow.minConsensus   ?? 7;
         const blacklist   = blacklistedSymbolsRef.current;
+
+        // [8] Kelly fraction from average agent decay-weighted accuracy
+        const agentAccs = AGENTS.map(a => {
+          const h = hist[a.id];
+          return decayAccuracy(h) ?? a.accuracy;
+        });
+        const avgWinRate = agentAccs.reduce((s, a) => s + a, 0) / agentAccs.length;
+        // Half-Kelly sizing: f = max(0.15, 2*(avgWinRate-0.5)), capped at 0.5
+        const kellyFrac = Math.max(0.15, Math.min(0.5, 2 * (avgWinRate - 0.5)));
 
         // Snapshot current open-position sector concentrations
         const openTrades = tradesRef.current.filter(t => t.status === 'OPEN');
@@ -5929,7 +6089,14 @@ const App = () => {
           if (!sigs) continue;
           if (tk.last * 1.005 > maxVal) continue;
           const ens = computeEnsemble(sigs, agentWeightsRef.current, dynamicEnabled);
+          // [1] Confidence gate
+          if (ens.confidence < minConf) continue;
+          // [2] Minimum consensus gate (N agents must agree on direction)
+          if (ens.consensus < minCons) continue;
           if (ens.disagreement > maxDisagree) continue;
+          // [7] Volatility regime filter — skip if annualized vol is >2× typical equity vol (>70%)
+          const tkVol = rollingVol(PRICE_HISTORY[tk.sym]);
+          if (tkVol > 0.70) continue;
           if (totalOpen >= 3) {
             const sect = tk.sector || 'Other';
             const sectFrac = ((sectorCounts[sect] || 0) + 1) / (totalOpen + 1);
@@ -5943,15 +6110,23 @@ const App = () => {
         }
 
         if (candidates.length > 0) {
-          // Weighted random selection — higher confidence² is more likely but not guaranteed
-          const totalScore = candidates.reduce((s, c) => s + c.ens.confidence ** 2, 0);
+          // [10] Weighted selection: confidence² × ticker edge factor
+          const totalScore = candidates.reduce((s, c) => {
+            const edge = tickerEdge[c.tk.sym] ?? 0.5;
+            return s + c.ens.confidence ** 2 * (0.6 + edge * 0.8);
+          }, 0);
           let rand = Math.random() * totalScore;
           let chosen = candidates[0];
-          for (const c of candidates) { rand -= c.ens.confidence ** 2; if (rand <= 0) { chosen = c; break; } }
+          for (const c of candidates) {
+            const edge = tickerEdge[c.tk.sym] ?? 0.5;
+            rand -= c.ens.confidence ** 2 * (0.6 + edge * 0.8);
+            if (rand <= 0) { chosen = c; break; }
+          }
 
           const { tk, sigs, ens: ensemble, side } = chosen;
           const price = tk.last * (1 + (Math.random() - 0.5) * 0.01);
-          const notional = parseFloat((maxVal * ensemble.confidence).toFixed(2));
+          // [8] Kelly-adjusted notional — scales with historical win rate
+          const notional = parseFloat((maxVal * ensemble.confidence * (0.5 + kellyFrac)).toFixed(2));
           const qty = parseFloat((notional / price).toFixed(4));
 
           if (qty >= 0.001) {
@@ -6112,12 +6287,15 @@ const App = () => {
   }
 
   // Agents excluded from consensus this tick (below accuracy threshold)
+  // [8] Dynamic exclusion uses exponentially-weighted accuracy so recent mistakes matter more
   const dynamicExcluded = React.useMemo(() => {
     const minAcc = (risk.minAgentAccuracy ?? 35) / 100;
     return new Set(AGENTS.filter(a => {
       if (!enabledAgents.has(a.id)) return true;
       const h = agentHistory[a.id] || [];
-      return h.length >= 5 && h.filter(Boolean).length / h.length < minAcc;
+      if (h.length < 5) return false;
+      const acc = decayAccuracy(h);
+      return acc !== null && acc < minAcc;
     }).map(a => a.id));
   }, [agentHistory, risk.minAgentAccuracy, enabledAgents]);
 
