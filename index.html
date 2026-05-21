@@ -6242,7 +6242,7 @@ const App = () => {
         const sample = shuffled.slice(0, Math.min(12, shuffled.length));
         let confSum = 0, confCnt = 0;
         for (const tk2 of sample) {
-          const s2 = signalSource[tk2.sym];
+          const s2 = (liveSignalsRef.current || SIGNALS_ALL)[tk2.sym];
           if (!s2 || !Object.keys(s2).length) continue;
           confSum += computeEnsemble(s2, agentWeightsRef.current, dynamicEnabled).confidence;
           confCnt++;
