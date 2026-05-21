@@ -5373,62 +5373,6 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
           ))}
         </div>
       </div>
-
-      {/* ── Drawdown waterfall ── */}
-      {(() => {
-        // Find discrete drawdown episodes: peak→trough→recovery sequences
-        let peak = 0, inDD = false, ddStart = -1;
-        const episodes = [];
-        cumSeries.forEach((v, i) => {
-          if (v > peak) {
-            if (inDD && ddStart >= 0) {
-              episodes.push({ start: ddStart, end: i - 1, depth: peak - Math.min(...cumSeries.slice(ddStart, i)), duration: i - ddStart });
-            }
-            peak = v; inDD = false; ddStart = -1;
-          } else if (v < peak) {
-            if (!inDD) { inDD = true; ddStart = i; }
-          }
-        });
-        if (inDD && ddStart >= 0) {
-          episodes.push({ start: ddStart, end: cumSeries.length - 1, depth: peak - Math.min(...cumSeries.slice(ddStart)), duration: cumSeries.length - ddStart, open: true });
-        }
-        if (!episodes.length) return (
-          <div className="card">
-            <div className="card-head"><div className="card-title">Drawdown waterfall</div></div>
-            <div style={{padding:'30px 0',textAlign:'center',color:'var(--ink-3)',fontFamily:'var(--mono)',fontSize:12}}>No drawdown episodes yet — all equity is at or near peak.</div>
-          </div>
-        );
-        const maxDepth = Math.max(...episodes.map(e => e.depth), 1);
-        const maxDur   = Math.max(...episodes.map(e => e.duration), 1);
-        return (
-          <div className="card">
-            <div className="card-head">
-              <div className="card-title">Drawdown waterfall</div>
-              <div className="card-meta">{episodes.length} episode{episodes.length!==1?'s':''} · worst {fmtMoney(-maxDepth,0)}</div>
-            </div>
-            <div style={{display:'flex',flexDirection:'column',gap:6,padding:'8px 0'}}>
-              {episodes.map((ep, i) => {
-                const depthPct = ep.depth / maxDepth;
-                const durPct   = ep.duration / maxDur;
-                return (
-                  <div key={i} style={{display:'flex',alignItems:'center',gap:10}}>
-                    <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--ink-4)',width:22,flexShrink:0}}>#{i+1}</span>
-                    <div style={{flex:1,position:'relative',height:18,background:'var(--bg-3)',borderRadius:2,overflow:'hidden'}}>
-                      {/* depth bar */}
-                      <div style={{position:'absolute',left:0,top:0,height:'100%',width:`${depthPct*100}%`,background:'rgba(255,107,107,0.6)',borderRadius:2}}/>
-                      {/* duration overlay */}
-                      <div style={{position:'absolute',left:0,top:'30%',height:'40%',width:`${durPct*100}%`,background:'rgba(255,107,107,0.3)'}}/>
-                    </div>
-                    <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--down)',width:70,textAlign:'right',flexShrink:0}}>{fmtMoney(-ep.depth,0)}</span>
-                    <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--ink-4)',width:40,textAlign:'right',flexShrink:0}}>{ep.duration}t{ep.open?' ⋯':''}</span>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mono tiny muted" style={{marginTop:8}}>Each row = one peak-to-trough episode. Bar width = depth (dark) and duration (light). ⋯ = episode still open (not yet recovered to prior peak).</div>
-          </div>
-        );
-      })()}
     </div>
   );
 };
