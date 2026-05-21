@@ -5787,6 +5787,7 @@ const App = () => {
   const [backendOk, setBackendOk] = React.useState(null);
 
   const [marketStatus, setMarketStatus] = React.useState(() => getMarketStatus());
+  const [streamRetry, setStreamRetry] = React.useState(0);
   React.useEffect(() => {
     setMarketStatus(getMarketStatus());
     const id = setInterval(() => setMarketStatus(getMarketStatus()), 30000);
@@ -5796,6 +5797,10 @@ const App = () => {
   // Stable ref so interval callbacks can read latest alpaca without re-subscribing
   const alpacaRef = React.useRef(alpaca);
   React.useEffect(() => { alpacaRef.current = alpaca; }, [alpaca]);
+
+  // Stable ref so swarm closure can read latest Alpaca-authoritative market status
+  const marketStatusRef = React.useRef(marketStatus);
+  React.useEffect(() => { marketStatusRef.current = marketStatus; }, [marketStatus]);
 
   // Backend health-check — polls every 15 s
   React.useEffect(() => {
@@ -5904,9 +5909,14 @@ const App = () => {
         }
       } catch (_) {}
     };
-    es.onerror = () => { streamRef.current = null; };
+    es.onerror = () => {
+      es.close();
+      streamRef.current = null;
+      // Trigger reconnect after 5 s if still connected
+      setTimeout(() => setStreamRetry(n => n + 1), 5000);
+    };
     return () => { es.close(); streamRef.current = null; };
-  }, [alpaca.connected, alpaca.token]);
+  }, [alpaca.connected, alpaca.token, streamRetry]);
 
   React.useEffect(() => { localStorage.setItem('shoal_sym', activeSymbol); }, [activeSymbol]);
   React.useEffect(() => { localStorage.setItem('shoal_dir', direction); }, [direction]);
@@ -6121,7 +6131,7 @@ const App = () => {
               isNew: true,
             };
 
-            const mktNow = getMarketStatus();
+            const mktNow = marketStatusRef.current;
             if ((isLiveReal || isBrokerPaper) && mktNow.isOpen) {
               // Market OPEN + broker connected: route live order to Alpaca API
               const alpacaSide = side === 'BUY' ? 'buy' : 'sell';
