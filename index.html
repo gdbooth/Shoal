@@ -5732,7 +5732,9 @@ const App = () => {
     AGENTS.forEach(a => w[a.id] = a.weight / total);
     return w;
   });
-  const [agentHistory, setAgentHistory] = React.useState({});
+  const [agentHistory, setAgentHistory] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem('shoal_agent_history') || '{}'); } catch (_) { return {}; }
+  });
   const [agentAccuracySeries, setAgentAccuracySeries] = React.useState({});
   const [lastSignals, setLastSignals] = React.useState(() => SIGNALS_ALL['NVDA'] || null);
   const [agentParams, setAgentParams] = React.useState({});
@@ -5972,6 +5974,7 @@ const App = () => {
     return () => { es.close(); streamRef.current = null; };
   }, [alpaca.connected, alpaca.token, streamRetry]);
 
+  React.useEffect(() => { localStorage.setItem('shoal_agent_history', JSON.stringify(agentHistory)); }, [agentHistory]);
   React.useEffect(() => { localStorage.setItem('shoal_sym', activeSymbol); }, [activeSymbol]);
   React.useEffect(() => { localStorage.setItem('shoal_dir', direction); }, [direction]);
   React.useEffect(() => { localStorage.setItem('shoal_balance', balance); }, [balance]);
