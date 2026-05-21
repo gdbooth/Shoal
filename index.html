@@ -3033,8 +3033,8 @@ const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
   const filtered = filter === 'ALL' ? feed : feed.filter(t => t.side === filter || t.status === filter);
 
   const marketStatus = ctx?.marketStatus;
-  // Only show market-closed banner for LIVE mode — simulated and paper modes trade regardless of market hours
-  const mktClosed = mode === 'LIVE' && marketStatus && !marketStatus.isOpen;
+  // Show market-closed banner for LIVE and VIRTUAL modes when broker is connected and market is closed
+  const mktClosed = (mode === 'LIVE' || mode === 'VIRTUAL') && marketStatus && !marketStatus.isOpen;
 
   return (
     <div className="page" data-screen-label="02 Activity">
@@ -3042,9 +3042,9 @@ const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
         <div style={{display:'flex',alignItems:'center',gap:12,background:'rgba(255,171,0,0.08)',border:'1px solid rgba(255,171,0,0.3)',borderRadius:6,padding:'10px 16px',marginBottom:16,fontFamily:'var(--mono)',fontSize:12}}>
           <span style={{fontSize:16}}>🔕</span>
           <div>
-            <span style={{color:'var(--warn)',fontWeight:600,letterSpacing:'0.08em'}}>MARKET CLOSED — LIVE ORDERS PAUSED</span>
+            <span style={{color:'var(--warn)',fontWeight:600,letterSpacing:'0.08em'}}>{mode === 'LIVE' ? 'MARKET CLOSED — LIVE ORDERS PAUSED' : 'MARKET CLOSED — SIGNALS SIMULATED'}</span>
             <span style={{color:'var(--ink-3)',marginLeft:12}}>
-              Broker orders paused until market reopens.
+              {mode === 'LIVE' ? 'Broker orders paused until market reopens.' : 'Trading signals are simulated (Market-Closed) until market reopens.'}
               {marketStatus.nextOpen && <span> Opens {marketStatus.nextOpen.toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}.</span>}
             </span>
           </div>
@@ -3089,7 +3089,7 @@ const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
               <div className="feed-time">{fmtTime(t.ts)}</div>
               <div className="feed-sym">{t.sym}</div>
               <div><span className={'pill ' + (t.side==='BUY'?'buy':'sell')}>{t.side}</span></div>
-              <div className="feed-reason">{t.reason}</div>
+              <div className="feed-reason">{t.reason}{t._marketClosed && <span className="mono" style={{fontSize:9,letterSpacing:'0.1em',marginLeft:6,padding:'1px 4px',borderRadius:3,background:'var(--line-2)',color:'var(--warn)'}}>MKT-CLOSED·SIM</span>}</div>
               <div className="mono tiny muted">{t.qty}@{fmtNum(t.price)}</div>
               <div className={'feed-pnl ' + (t.pnl > 0 ? 'up' : t.pnl < 0 ? 'dn' : 'muted')}>{t.pnl !== null ? fmtMoney(t.pnl) : '— open —'}</div>
             </div>
@@ -3178,7 +3178,7 @@ const ScreenHistory = ({ mode, tick, onTradeClick, ctx }) => {
     URL.revokeObjectURL(url);
   };
 
-  const mktClosed = mode === 'LIVE' && ctx?.marketStatus && !ctx.marketStatus.isOpen;
+  const mktClosed = (mode === 'LIVE' || mode === 'VIRTUAL') && ctx?.marketStatus && !ctx.marketStatus.isOpen;
 
   return (
     <div className="page" data-screen-label="03 Trade history">
@@ -3186,8 +3186,8 @@ const ScreenHistory = ({ mode, tick, onTradeClick, ctx }) => {
         <div style={{display:'flex',alignItems:'center',gap:12,background:'rgba(255,171,0,0.08)',border:'1px solid rgba(255,171,0,0.3)',borderRadius:6,padding:'10px 16px',marginBottom:16,fontFamily:'var(--mono)',fontSize:12}}>
           <span style={{fontSize:16}}>🔕</span>
           <div>
-            <span style={{color:'var(--warn)',fontWeight:600,letterSpacing:'0.08em'}}>MARKET CLOSED</span>
-            <span style={{color:'var(--ink-3)',marginLeft:12}}>Open positions shown below are not being updated by the broker. Prices shown are estimates.</span>
+            <span style={{color:'var(--warn)',fontWeight:600,letterSpacing:'0.08em'}}>MARKET CLOSED{mode === 'VIRTUAL' ? ' — SIGNALS SIMULATED' : ''}</span>
+            <span style={{color:'var(--ink-3)',marginLeft:12}}>{mode === 'VIRTUAL' ? 'New signals are simulated (Market-Closed). Open positions shown are simulated.' : 'Open positions shown below are not being updated by the broker. Prices shown are estimates.'}</span>
           </div>
         </div>
       )}
@@ -3879,7 +3879,7 @@ const ScreenTrade = ({ trade, onBack, mode, ctx }) => {
                 <span className="reason-label" style={{fontWeight:500}}>EXECUTE</span>
                 <span className="reason-value" style={{color: t.side==='BUY'?'var(--up)':'var(--down)'}}>{t.side} {t.qty} @ market</span>
               </div>
-              <div className="reason-meta">routed via Alpaca · {t.mode === 'LIVE' ? 'live order' : 'paper account'}</div>
+              <div className="reason-meta">{t._marketClosed ? 'market closed · simulated locally' : `routed via Alpaca · ${t.mode === 'LIVE' ? 'live order' : 'paper account'}`}</div>
             </div>
           </div>
         </div>
@@ -6124,24 +6124,11 @@ const App = () => {
               isNew: true,
             };
 
-            if (isLiveReal || isBrokerPaper) {
-              // Build order body based on market state.
-              // Alpaca rejects `market + day` orders when the market is closed, so we use GTC limit
-              // orders outside regular hours so they queue in the broker and fill at next open.
-              const mktNow = getMarketStatus();
+            const mktNow = getMarketStatus();
+            if ((isLiveReal || isBrokerPaper) && mktNow.isOpen) {
+              // Market OPEN + broker connected: route live order to Alpaca API
               const alpacaSide = side === 'BUY' ? 'buy' : 'sell';
-              let orderBody;
-              if (mktNow.isOpen) {
-                orderBody = { symbol: tk.sym, notional: String(notional), side: alpacaSide, type: 'market', time_in_force: 'day' };
-              } else if (riskNow.ah) {
-                const intQty = Math.max(1, Math.floor(notional / price));
-                orderBody = { symbol: tk.sym, qty: String(intQty), side: alpacaSide, type: 'limit', limit_price: price.toFixed(2), time_in_force: 'day', extended_hours: true };
-              } else {
-                // Market closed, AH off: GTC limit at entry price ± 0.5% so it fills readily at next open
-                const intQty = Math.max(1, Math.floor(notional / price));
-                const lx = side === 'BUY' ? (price * 1.005).toFixed(2) : (price * 0.995).toFixed(2);
-                orderBody = { symbol: tk.sym, qty: String(intQty), side: alpacaSide, type: 'limit', limit_price: lx, time_in_force: 'gtc' };
-              }
+              const orderBody = { symbol: tk.sym, notional: String(notional), side: alpacaSide, type: 'market', time_in_force: 'day' };
               console.log('[Shoal] → Alpaca order', orderBody);
               fetch(`${BACKEND_URL}/api/orders`, {
                 method: 'POST',
@@ -6161,7 +6148,10 @@ const App = () => {
                 setTrades(prev => [{ ...newTrade, _brokerSent: true }, ...prev].slice(0, 200));
               }
             } else {
-              setTrades(prev => [newTrade, ...prev].slice(0, 200));
+              // Market closed or not connected: simulate locally.
+              // _marketClosed=true when broker is connected but market is closed (signals are real but execution is deferred).
+              const _marketClosed = (isLiveReal || isBrokerPaper) && !mktNow.isOpen;
+              setTrades(prev => [{ ...newTrade, _marketClosed }, ...prev].slice(0, 200));
             }
           }
         }
@@ -6373,7 +6363,7 @@ const App = () => {
           <div className="row"><span>Engine</span><span className="ok">● online</span></div>
           <div className="row"><span>Backend</span><span className={backendOk===true?'ok':backendOk===false?'dn':'muted'}>{backendOk===true?'● online':backendOk===false?'○ offline':'○ …'}</span></div>
           <div className="row"><span>Broker</span><span className={alpaca.connected ? 'ok' : ''}>{alpaca.connected ? '● Alpaca' + (alpaca.token ? ' ⟳' : '') : '○ none'}</span></div>
-          <div className="row"><span>Market</span><span className={marketStatus.isOpen ? 'ok' : ''} style={!marketStatus.isOpen ? {color:'var(--warn)'} : {}}>{marketStatus.isOpen ? '● open' : '○ closed'}</span></div>
+          <div className="row"><span>Market</span><span className={!alpaca.connected ? '' : marketStatus.isOpen ? 'ok' : ''} style={!alpaca.connected ? {color:'var(--ink-4)'} : !marketStatus.isOpen ? {color:'var(--warn)'} : {}}>{!alpaca.connected ? '— not connected' : marketStatus.isOpen ? '● open' : '○ closed'}</span></div>
           <div className="row"><span>Latency</span><span>{42 + (tick % 8)}ms</span></div>
           <div className="theme-toggle" onClick={()=>setThemeMode(m=>m==='dark'?'light':'dark')}>
             <span>{themeMode === 'light' ? '◑ Light mode' : '◐ Dark mode'}</span>
@@ -6391,7 +6381,7 @@ const App = () => {
           <div className="crumb">SHOAL / <b>{navItemLabel}</b></div>
           <button className="btn" style={{marginLeft:8,padding:'6px 12px',display:'flex',alignItems:'center',gap:10}} onClick={()=>setSymbolPicker(true)} title="Switch symbol ( / )">
             <span className="mono" style={{color:'var(--ink)',fontWeight:500,letterSpacing:'0.02em'}}>◎ {activeSymbol}</span>
-            {!marketStatus.isOpen && <span style={{fontSize:9,letterSpacing:'0.12em',padding:'2px 6px',borderRadius:3,background:'var(--line-2)',color:'var(--warn)',fontFamily:'var(--mono)',fontWeight:500}}>CLOSED</span>}
+            {alpaca.connected && !marketStatus.isOpen && <span style={{fontSize:9,letterSpacing:'0.12em',padding:'2px 6px',borderRadius:3,background:'var(--line-2)',color:'var(--warn)',fontFamily:'var(--mono)',fontWeight:500}}>CLOSED</span>}
             <span className="mono tiny muted" style={{letterSpacing:'0.1em'}}>⌘/</span>
           </button>
           <div className="tweak-opts" style={{marginLeft:6}}>
