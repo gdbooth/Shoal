@@ -1879,7 +1879,7 @@ const AGENT_OPTIMIZE_KEYS = {
 };
 
 // Walk-forward accuracy backtest: grid-search one param for one agent
-function backtestOneAgent(agentId, sym, agentParams) {
+async function backtestOneAgent(agentId, sym, agentParams) {
   const okKey = AGENT_OPTIMIZE_KEYS[agentId];
   if (!okKey || !okKey.id) return null;
   const prices = PRICE_HISTORY[sym];
@@ -1887,6 +1887,7 @@ function backtestOneAgent(agentId, sym, agentParams) {
   let bestValue = okKey.values[0], bestScore = -Infinity;
   const results = [];
   for (const candVal of okKey.values) {
+    await new Promise(r => setTimeout(r, 0)); // yield per candidate to keep UI responsive
     const params = { ...agentParams, [agentId]: { ...(agentParams[agentId] || {}), [okKey.id]: candVal } };
     let correct = 0, total = 0;
     const step = 5;
@@ -3022,12 +3023,20 @@ window.ScreenDashboard = ScreenDashboard;
 const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
   const feed = ctx?.trades || [];
   const [filter, setFilter] = React.useState('ALL');
+  const [closingAll, setClosingAll] = React.useState(false);
+  const closingTimerRef = React.useRef(null);
 
-  // when the user resets the account, drop all old trades from the feed
-  React.useEffect(() => {
-    if (!running) return;
-    return () => {};
-  }, [running, mode]);
+  React.useEffect(() => () => { if (closingTimerRef.current) clearTimeout(closingTimerRef.current); }, []);
+
+  const openCount = feed.filter(t => t.status === 'OPEN').length;
+
+  const handleCloseAll = () => {
+    if (!openCount) return;
+    setClosingAll(true);
+    ctx?.handleCloseAll?.();
+    if (closingTimerRef.current) clearTimeout(closingTimerRef.current);
+    closingTimerRef.current = setTimeout(() => setClosingAll(false), 1000);
+  };
 
   const filtered = filter === 'ALL' ? feed : feed.filter(t => t.side === filter || t.status === filter);
 
@@ -3076,7 +3085,15 @@ const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
             <div className="card-title">Order tape</div>
             {running && <span className="bot-status" style={{fontSize:9,padding:'3px 8px'}}><span className="led"></span>STREAMING</span>}
           </div>
-          <div style={{display:'flex',gap:6}}>
+          <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            {openCount > 0 && (
+              <button
+                onClick={handleCloseAll}
+                disabled={closingAll}
+                style={{fontFamily:'var(--mono)',fontSize:9,letterSpacing:'0.08em',padding:'3px 9px',borderRadius:4,border:'1px solid rgba(239,68,68,0.4)',background:'rgba(239,68,68,0.08)',color:'var(--down)',cursor:'pointer',opacity:closingAll?0.5:1,fontWeight:600}}>
+                {closingAll ? 'CLOSING…' : `CLOSE ALL (${openCount})`}
+              </button>
+            )}
             {['ALL','BUY','SELL','OPEN','WIN','LOSS'].map(f => (
               <button key={f} className={'tweak-opt ' + (filter===f?'on':'')} onClick={()=>setFilter(f)}>{f}</button>
             ))}
@@ -4497,8 +4514,8 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
 
           <div className="field">
             <div style={{display:'flex',justifyContent:'space-between'}}>
-              <div className="field-label">Max position size</div>
-              <div className="mono" style={{fontSize:13}}>{risk.maxPos}% of equity</div>
+              <div className="field-label">Max concurrent positions</div>
+              <div className="mono" style={{fontSize:13}}>{risk.maxPos} positions</div>
             </div>
             <input type="range" min="1" max="50" step="1" value={risk.maxPos} onChange={e=>setRisk({...risk, maxPos: +e.target.value})}/>
           </div>
@@ -5388,11 +5405,18 @@ const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnab
 
   const optimize = async (agentId) => {
     setOptimizing(o => ({ ...o, [agentId]: true }));
-    await new Promise(r => setTimeout(r, 0));
-    const result = backtestOneAgent(agentId, 'NVDA', agentParams);
+    const result = await backtestOneAgent(agentId, 'NVDA', agentParams);
     if (result) sp(agentId, result.paramKey, result.bestValue);
     setOptResults(o => ({ ...o, [agentId]: result }));
     setOptimizing(o => ({ ...o, [agentId]: false }));
+  };
+
+  const [optimizingAll, setOptimizingAll] = React.useState(false);
+  const optimizeAll = async () => {
+    if (optimizingAll) return;
+    setOptimizingAll(true);
+    for (const a of AGENTS) { await optimize(a.id); }
+    setOptimizingAll(false);
   };
 
   const families = [...new Set(AGENTS.map(a => a.family))];
@@ -5409,6 +5433,9 @@ const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnab
       <div style={{display:'flex',justifyContent:'flex-end',marginBottom:16,gap:10}}>
         <button className="btn" style={{fontSize:11}} onClick={() => setEnabledAgents(new Set(AGENTS.map(a => a.id)))}>Enable all</button>
         <button className="btn" style={{fontSize:11}} onClick={() => { setAgentParams({}); setOptResults({}); }}>Reset all params</button>
+        <button className="btn" style={{fontSize:11,opacity:optimizingAll?0.5:1}} onClick={optimizeAll} disabled={optimizingAll}>
+          {optimizingAll ? '⟳ Optimising…' : '⚡ Optimise all'}
+        </button>
       </div>
 
       {families.map(family => (
@@ -5418,7 +5445,7 @@ const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnab
             {AGENTS.filter(a => a.family === family).map(agent => {
               const enabled = !enabledAgents || enabledAgents.has(agent.id);
               const hist = agentHistory?.[agent.id] || [];
-              const acc  = hist.length >= 2 ? hist.filter(Boolean).length / hist.length : agent.accuracy;
+              const acc  = (hist.length >= 5 ? decayAccuracy(hist) : null) ?? (hist.length >= 2 ? hist.filter(Boolean).length / hist.length : agent.accuracy);
               const w    = agentWeights?.[agent.id] ?? agent.weight;
               const defs = AGENT_PARAM_DEFS[agent.id] || [];
               const isExp = expanded[agent.id];
@@ -5909,10 +5936,12 @@ const App = () => {
         }
       } catch (_) {}
     };
+    let _errFired = false;
     es.onerror = () => {
+      if (_errFired) return;
+      _errFired = true;
       es.close();
       streamRef.current = null;
-      // Trigger reconnect after 5 s if still connected
       setTimeout(() => setStreamRetry(n => n + 1), 5000);
     };
     return () => { es.close(); streamRef.current = null; };
@@ -5982,7 +6011,7 @@ const App = () => {
             const pnlAmt = (upnlPct * 0.3) * t.qty * t.price; // slight haircut at time-stop
             const exit = t.price * (1 + markPct * 0.3 * (t.side === 'BUY' ? 1 : -1));
             if (t._brokerSent) closedSyms.add(t.sym);
-            return { ...t, status: pnlAmt >= 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false, closeReason: 'TIME-STOP' };
+            return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false, closeReason: 'TIME-STOP' };
           }
           // [3] Stop-loss: force close if down more than stopLoss%
           if (upnlPct <= -stopLossPct) {
@@ -6017,29 +6046,38 @@ const App = () => {
         });
       }
 
-      // Build dynamicEnabled: manual toggles first, then exclude agents whose decay-weighted
-      // accuracy is below the threshold — but only once they have ≥ 5 scored trades so that
-      // cold-start (no history yet) never causes mass exclusion.
       const hist = agentHistoryRef.current;
       const minAccuracy = (riskNow.minAgentAccuracy ?? 35) / 100;
+
+      // Cache decay-weighted accuracy once per tick — reused by dynamicEnabled and Kelly sizing
+      const accCache = new Map(AGENTS.map(a => [a.id, decayAccuracy(hist[a.id])]));
+
       const dynamicEnabled = new Set(
         [...enabledAgentsRef.current].filter(id => {
           const h = hist[id];
-          if (!h || h.length < 5) return true; // not enough data yet → keep active
-          const acc = decayAccuracy(h);
+          if (!h || h.length < 5) return true;
+          const acc = accCache.get(id);
           return acc === null || acc >= minAccuracy;
         })
       );
 
-      // [10] Build per-ticker recent win rate from closed trades (last 10 per ticker)
-      const allClosed = tradesRef.current.filter(t => t.pnl != null);
-      const tickerEdge = {};
-      TICKERS.forEach(tk => {
-        const recent = allClosed.filter(t => t.sym === tk.sym).slice(-10);
-        if (recent.length >= 3) {
-          tickerEdge[tk.sym] = recent.filter(t => t.pnl > 0).length / recent.length;
+      // Confidence history — always runs every tick so the chart reflects live universe confidence
+      {
+        const shuffled = TICKERS.slice();
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
         }
-      });
+        const sample = shuffled.slice(0, Math.min(12, shuffled.length));
+        let confSum = 0, confCnt = 0;
+        for (const tk2 of sample) {
+          const s2 = (liveSignalsRef.current || SIGNALS_ALL)[tk2.sym];
+          if (!s2 || !Object.keys(s2).length) continue;
+          confSum += computeEnsemble(s2, agentWeightsRef.current, dynamicEnabled).confidence;
+          confCnt++;
+        }
+        if (confCnt > 0) setConfHistory(prev => [...prev.slice(-89), +(confSum / confCnt).toFixed(3)]);
+      }
 
       if (Math.random() < 0.55) {
         const maxVal      = riskNow.maxTradeValue ?? 5000;
@@ -6049,13 +6087,8 @@ const App = () => {
         const minCons     = riskNow.minConsensus   ?? 5;
         const blacklist   = blacklistedSymbolsRef.current;
 
-        // [8] Kelly fraction from average agent decay-weighted accuracy
-        const agentAccs = AGENTS.map(a => {
-          const h = hist[a.id];
-          return decayAccuracy(h) ?? a.accuracy;
-        });
-        const avgWinRate = agentAccs.reduce((s, a) => s + a, 0) / agentAccs.length;
-        // Half-Kelly sizing: f = max(0.15, 2*(avgWinRate-0.5)), capped at 0.5
+        // [8] Half-Kelly sizing from cached decay-weighted accuracy
+        const avgWinRate = AGENTS.reduce((s, a) => s + (accCache.get(a.id) ?? a.accuracy), 0) / AGENTS.length;
         const kellyFrac = Math.max(0.15, Math.min(0.5, 2 * (avgWinRate - 0.5)));
 
         // Snapshot current open-position sector concentrations
@@ -6069,6 +6102,16 @@ const App = () => {
         const maxPos = riskNow.maxPos ?? 50;
 
         if (totalOpen >= maxPos) return;
+
+        // [10] Per-ticker win rate — O(N) with Map grouping, computed only when a trade will be attempted
+        const allClosed = tradesRef.current.filter(t => t.pnl != null);
+        const byTicker = new Map();
+        for (const t of allClosed) { const arr = byTicker.get(t.sym); if (arr) arr.push(t); else byTicker.set(t.sym, [t]); }
+        const tickerEdge = {};
+        TICKERS.forEach(tk => {
+          const recent = (byTicker.get(tk.sym) || []).slice(-10);
+          if (recent.length >= 3) tickerEdge[tk.sym] = recent.filter(t => t.pnl > 0).length / recent.length;
+        });
 
         const signalSource = liveSignalsRef.current || SIGNALS_ALL;
         const candidates = [];
@@ -6190,25 +6233,6 @@ const App = () => {
         }
       }
 
-      // Compute rolling average confidence across the full universe so the chart shows real variation
-      // (single-symbol confidence barely changes since signals are static; cross-universe average varies each tick)
-      {
-        const univ2 = TICKERS;
-        // Shuffle the universe each tick using a lightweight random pick so we get different subsets
-        const shuffled = univ2.slice().sort(() => Math.random() - 0.5);
-        const sample = shuffled.slice(0, Math.min(12, shuffled.length));
-        let confSum = 0, confCnt = 0;
-        for (const tk2 of sample) {
-          const s2 = (liveSignalsRef.current || SIGNALS_ALL)[tk2.sym];
-          if (!s2 || !Object.keys(s2).length) continue;
-          confSum += computeEnsemble(s2, agentWeightsRef.current, dynamicEnabled).confidence;
-          confCnt++;
-        }
-        if (confCnt > 0) {
-          const avgConf = confSum / confCnt;
-          setConfHistory(prev => [...prev.slice(-89), +avgConf.toFixed(3)]);
-        }
-      }
     }, 3500);
     return () => clearInterval(ivl);
   }, [running, mode, direction, risk]);
@@ -6289,6 +6313,26 @@ const App = () => {
 
   const handleTradeClick = (t) => { setSelectedTrade(t); setRoute('trade'); };
 
+  const handleCloseAll = () => {
+    const isLiveReal    = mode === 'LIVE'    && !!alpaca?.token && alpaca?.env === 'live';
+    const isBrokerPaper = mode === 'VIRTUAL' && !!alpaca?.token && alpaca?.env === 'paper';
+    const openSyms = new Set(tradesRef.current.filter(t => t.status === 'OPEN').map(t => t.sym));
+    setTrades(prev => prev.map(t => {
+      if (t.status !== 'OPEN' || t._real) return t;
+      const exitPrice = livePricesRef.current[t.sym] || t.price;
+      const pnlAmt = (exitPrice - t.price) * t.qty * (t.side === 'BUY' ? 1 : -1);
+      return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit: exitPrice, exitTs: Date.now(), isNew: false };
+    }));
+    if (isLiveReal || isBrokerPaper) {
+      openSyms.forEach(sym => {
+        fetch(`${BACKEND_URL}/api/positions/${sym}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + alpaca.token },
+        }).catch(() => {});
+      });
+    }
+  };
+
   const requestMode = (m) => {
     if (m === mode) return;
     setPendingMode(m);
@@ -6323,7 +6367,7 @@ const App = () => {
     return trades.filter(t => t.pnl != null && (t.exitTs || 0) >= midnight).reduce((s, t) => s + t.pnl, 0);
   }, [trades]);
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
