@@ -5674,7 +5674,15 @@ const App = () => {
   const [mode, setMode] = React.useState(() => {
     const saved = localStorage.getItem('shoal_mode');
     const valid = ['SIMULATED', 'VIRTUAL', 'LIVE'];
-    return valid.includes(saved) ? saved : 'SIMULATED';
+    const savedMode = valid.includes(saved) ? saved : 'SIMULATED';
+    // If Alpaca is not connected, never restore a broker-dependent mode
+    if (savedMode !== 'SIMULATED') {
+      try {
+        const savedAlpaca = JSON.parse(localStorage.getItem('shoal_alpaca') || '{}');
+        if (!savedAlpaca.connected) return 'SIMULATED';
+      } catch (_) { return 'SIMULATED'; }
+    }
+    return savedMode;
   });
   const [route, setRoute] = React.useState(() => localStorage.getItem('shoal_route') || 'dashboard');
   const [showOnboarding, setShowOnboarding] = React.useState(() => !localStorage.getItem('shoal_onboarded'));
@@ -6220,6 +6228,10 @@ const App = () => {
   }, [trades]);
 
   React.useEffect(() => { localStorage.setItem('shoal_mode', mode); }, [mode]);
+  // Drop to SIMULATED whenever the broker connection is lost
+  React.useEffect(() => {
+    if (!alpaca.connected && mode !== 'SIMULATED') setMode('SIMULATED');
+  }, [alpaca.connected]);
   React.useEffect(() => { localStorage.setItem('shoal_route', route); }, [route]);
   React.useEffect(() => { localStorage.setItem('shoal_alpaca', JSON.stringify(alpaca)); }, [alpaca]);
 
