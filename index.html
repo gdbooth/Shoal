@@ -4641,7 +4641,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
             <div className="mono tiny" style={{color:'var(--info)',letterSpacing:'0.14em'}}>◑ VIRTUAL</div>
             <div className="serif" style={{fontSize:19,marginTop:8,marginBottom:6}}>Broker paper</div>
             <div className="tiny" style={{color:'var(--ink-2)',lineHeight:1.5,marginBottom:10}}>
-              Connected to Alpaca paper account. Uses live signals and real market data, but executes fills locally — trading is active even when the market is closed.
+              Connected to Alpaca paper account. Orders are sent to Alpaca paper trading via the API when the market is open — real order flow, no real capital at risk.
             </div>
             <div className="mono tiny" style={{color: alpaca.connected && alpaca.env === 'paper' ? 'var(--info)' : 'var(--ink-4)'}}>{alpaca.connected && alpaca.env === 'paper' ? '● Paper account ready' : 'Requires paper account connection'}</div>
           </div>
@@ -4880,7 +4880,7 @@ const ModeSwitchModal = ({ targetMode, alpaca, onConfirm, onCancel }) => {
     { id: 'c', text: 'I accept that the bot can lose money — past performance is not indicative.' },
     { id: 'd', text: 'I have a daily loss kill-switch configured.' },
   ] : targetMode === 'VIRTUAL' ? [
-    { id: 'a', text: 'I have a connected Alpaca paper account. Signals will use real market data but fills are simulated locally.' },
+    { id: 'a', text: 'I have a connected Alpaca paper account. Orders will be sent to Alpaca paper trading via the API — real order flow, no real capital at risk.' },
   ] : [
     { id: 'a', text: 'I want to switch to simulated mode. No broker connection required, all fills are local.' },
   ];
@@ -6055,13 +6055,15 @@ const App = () => {
           sectorCounts[sect] = (sectorCounts[sect] || 0) + 1;
         });
         const totalOpen = openTrades.length;
+        const maxPos = riskNow.maxPos ?? 6;
+
+        if (totalOpen >= maxPos) return;
 
         const candidates = [];
         for (const tk of TICKERS) {
           if (blacklist.has(tk.sym)) continue;
           const sigs = SIGNALS_ALL[tk.sym];
           if (!sigs) continue;
-          if (tk.last * 1.005 > maxVal) continue;
           const ens = computeEnsemble(sigs, agentWeightsRef.current, dynamicEnabled);
           // [1] Confidence gate
           if (ens.confidence < minConf) continue;
@@ -6143,17 +6145,29 @@ const App = () => {
                 body: JSON.stringify(orderBody),
               }).then(async r => {
                 const body = await r.json();
-                if (!r.ok) { console.warn('[Shoal] Alpaca order rejected', tk.sym, body.message || r.status, body); return; }
+                if (!r.ok) {
+                  const errMsg = body.message || `HTTP ${r.status}`;
+                  console.warn('[Shoal] Alpaca order rejected', tk.sym, errMsg, body);
+                  const errToast = { id: Date.now(), type: 'close-loss', sym: tk.sym, text: 'rejected: ' + errMsg };
+                  setToasts(prev => [...prev.slice(-4), errToast]);
+                  setTimeout(() => setToasts(prev => prev.filter(t => t.id !== errToast.id)), 5000);
+                  return;
+                }
                 console.log('[Shoal] ✓ Order confirmed', body.id, body.status, body.symbol);
                 const filledPrice = parseFloat(body.filled_avg_price || 0);
                 if (filledPrice > 0) {
                   const slip = (filledPrice - price) / price;
                   setSlippageLog(prev => [...prev.slice(-49), { sym: tk.sym, side, expected: price, actual: filledPrice, slip, ts: Date.now() }]);
                 }
-              }).catch(err => console.warn('[Shoal] Order fetch error:', err.message));
-              if (!isLiveReal) {
-                setTrades(prev => [{ ...newTrade, _brokerSent: true }, ...prev].slice(0, 200));
-              }
+                if (!isLiveReal) {
+                  setTrades(prev => [{ ...newTrade, _brokerSent: true }, ...prev].slice(0, 200));
+                }
+              }).catch(err => {
+                console.warn('[Shoal] Order fetch error:', err.message);
+                const errToast = { id: Date.now(), type: 'close-loss', sym: tk.sym, text: 'network: ' + err.message };
+                setToasts(prev => [...prev.slice(-4), errToast]);
+                setTimeout(() => setToasts(prev => prev.filter(t => t.id !== errToast.id)), 5000);
+              });
             } else {
               // Market closed or not connected: simulate locally.
               // _marketClosed=true when broker is connected but market is closed (signals are real but execution is deferred).
