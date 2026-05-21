@@ -1531,7 +1531,7 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
   const maF = prices.slice(n - mFast).reduce((s,p)=>s+p,0)/mFast;
   const maS = prices.slice(n - mSlow).reduce((s,p)=>s+p,0)/mSlow;
   const momoGap = (maF - maS) / maS;
-  const momo = { dir: momoGap > mThr ? 1 : momoGap < -mThr ? -1 : 0, strength: Math.min(0.9, Math.abs(momoGap)*60) };
+  const momo = { dir: momoGap >= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(momoGap)*60) };
 
   // mean: RSI(period) — oversold → BUY, overbought → SELL
   const mPer = gp('mean','period',14), mLo = gp('mean','lo',35), mHi = gp('mean','hi',65);
@@ -1540,16 +1540,16 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
   const avgG = ch14.reduce((s,r)=>s+Math.max(0,r),0)/mPer;
   const avgL = ch14.reduce((s,r)=>s+Math.max(0,-r),0)/mPer;
   const rsi  = avgL === 0 ? 100 : 100 - 100/(1 + avgG/avgL);
-  const mean = { dir: rsi < mLo ? 1 : rsi > mHi ? -1 : 0, strength: rsi < mLo ? (mLo-rsi)/mLo : rsi > mHi ? (rsi-mHi)/(100-mHi) : 0 };
+  const mean = { dir: rsi <= 50 ? 1 : -1, strength: Math.min(0.9, Math.abs(rsi - 50) / 50) };
 
-  // brkt: Donchian breakout
+  // brkt: Donchian channel position — upper half bullish, lower half bearish, breakouts strongest
   const bPer = gp('brkt','period',20);
   const hiB = Math.max(...prices.slice(n - bPer - 1, n - 1));
   const loB = Math.min(...prices.slice(n - bPer - 1, n - 1));
-  const brkt = {
-    dir: last > hiB ? 1 : last < loB ? -1 : 0,
-    strength: last > hiB ? Math.min(0.9,(last-hiB)/last*40) : last < loB ? Math.min(0.9,(loB-last)/last*40) : 0,
-  };
+  const channelMid = (hiB + loB) / 2;
+  const channelHalf = hiB > loB ? (hiB - loB) / 2 : last * 0.01;
+  const brktRelPos = (last - channelMid) / channelHalf;
+  const brkt = { dir: brktRelPos >= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(brktRelPos) * 0.55) };
 
   // vwap: EMA reversion proxy
   const vPer = gp('vwap','period',10), vThr = gp('vwap','thresh',0.012);
@@ -1558,21 +1558,21 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
   let emaV = prices[n - vPer - 1];
   for (let i = n - vPer; i < n; i++) emaV = prices[i]*kv + emaV*(1-kv);
   const vwapGap = (last - emaV)/emaV;
-  const vwap = { dir: vwapGap < -vThr ? 1 : vwapGap > vThr ? -1 : 0, strength: Math.min(0.9, Math.abs(vwapGap)*25) };
+  const vwap = { dir: vwapGap <= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(vwapGap)*25) };
 
   // vol: realized annualized vol vs threshold
   const volPer = gp('vol','period',20), volThr = gp('vol','thr',0.28);
   const rets20 = rets(prices.slice(n - volPer - 1));
   const meanR  = rets20.reduce((s,r)=>s+r,0)/volPer;
   const vol20  = Math.sqrt(rets20.reduce((s,r)=>s+(r-meanR)**2,0)/volPer * 252);
-  const vol = { dir: vol20 < volThr*0.65 ? 1 : vol20 > volThr*1.35 ? -1 : 0, strength: Math.min(0.9, Math.abs(vol20-volThr)/volThr) };
+  const vol = { dir: vol20 <= volThr ? 1 : -1, strength: Math.min(0.9, Math.abs(vol20-volThr)/volThr) };
 
   // skew: short vs long vol direction-of-change
   const skFast = gp('skew','fast',5), skThr = gp('skew','thr',0.2);
   const retsF  = rets(prices.slice(n - skFast - 1));
   const volF   = Math.sqrt(retsF.reduce((s,r)=>s+r*r,0)/skFast * 252);
   const volChg = vol20 > 0 ? (volF - vol20)/vol20 : 0;
-  const skew = { dir: volChg > skThr ? -1 : volChg < -skThr ? 1 : 0, strength: Math.min(0.9, Math.abs(volChg)) };
+  const skew = { dir: volChg <= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(volChg)) };
 
   // patt: cosine-similarity k-NN on N-day return pattern
   const pLen   = Math.min(gp('patt','len',20), Math.floor(n/3));
@@ -1587,7 +1587,7 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
     if (sim > bestSim) { bestSim = sim; bestStart = s; }
   }
   const futRet = bestStart + pLen < n ? prices[bestStart+pLen]/prices[bestStart+pLen-1]-1 : 0;
-  const patt = { dir: futRet > 0.004 ? 1 : futRet < -0.004 ? -1 : 0, strength: Math.min(0.9, Math.abs(futRet)*50) };
+  const patt = { dir: futRet >= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(futRet)*50) };
 
   // earn: medium-term MA drift (PEAD proxy)
   const eFast = gp('earn','fast',30), eSlow = gp('earn','slow',60), eThr = gp('earn','thresh',0.015);
@@ -1595,7 +1595,7 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
   const maEF = prices.slice(n-eFast).reduce((s,p)=>s+p,0)/eFast;
   const maES = prices.slice(n-eSlow).reduce((s,p)=>s+p,0)/eSlow;
   const earnDrift = (maEF - maES)/maES;
-  const earn = { dir: earnDrift > eThr ? 1 : earnDrift < -eThr ? -1 : 0, strength: Math.min(0.9, Math.abs(earnDrift)*20) };
+  const earn = { dir: earnDrift >= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(earnDrift)*20) };
 
   // fund: annualized Sharpe ratio (was firing zero due to non-annualized threshold)
   const fPer = gp('fund','period',20), fThr = gp('fund','thr',0.5);
@@ -1603,7 +1603,7 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
   const meanRF   = retsFund.reduce((s,r)=>s+r,0)/fPer;
   const stdRF    = Math.sqrt(retsFund.reduce((s,r)=>s+(r-meanRF)**2,0)/fPer) + 1e-6;
   const annuSharpe = (meanRF/stdRF) * Math.sqrt(252);
-  const fund = { dir: annuSharpe > fThr ? 1 : annuSharpe < -fThr ? -1 : 0, strength: Math.min(0.9, Math.abs(annuSharpe)/(fThr*4)) };
+  const fund = { dir: annuSharpe >= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(annuSharpe)/(fThr*4)) };
 
   // corr: market breadth (fraction above 5d MA) — replaces near-zero synthetic correlation
   const cHi = gp('corr','breadthHi',0.6), cLo = gp('corr','breadthLo',0.4);
@@ -1617,7 +1617,7 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
   }, 0);
   // Divide by valid-data count only; avoids near-zero breadth when most TICKERS lack PRICE_HISTORY data
   const breadth = breadthValid > 0 ? breadthCnt / breadthValid : 0.5;
-  const corr = { dir: breadth > cHi ? 1 : breadth < cLo ? -1 : 0, strength: Math.min(0.9, Math.abs(breadth - 0.5) * 3) };
+  const corr = { dir: breadth >= 0.5 ? 1 : -1, strength: Math.min(0.9, Math.abs(breadth - 0.5) * 3) };
 
   // pair: z-score vs sector 1d return → mean-revert outliers
   const pThr   = gp('pair','thr',1.5);
@@ -1626,24 +1626,24 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
   const sectSd = Math.sqrt(sRets.reduce((a,v)=>a+(v-sectMu)**2,0)/sRets.length) + 1e-6;
   const dayRet = last/prices[n-2]-1;
   const zscore = (dayRet-sectMu)/sectSd;
-  const pair   = { dir: zscore > pThr ? -1 : zscore < -pThr ? 1 : 0, strength: Math.min(0.9, Math.abs(zscore)/3) };
+  const pair   = { dir: zscore <= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(zscore)/3) };
 
   // flow: price-change acceleration
   const acc  = (last-prices[n-2])-(prices[n-2]-prices[n-3]);
-  const flow = { dir: acc > 0 ? 1 : acc < 0 ? -1 : 0, strength: Math.min(0.9, Math.abs(acc)/last*200) };
+  const flow = { dir: acc >= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(acc)/last*200) };
 
   // mm: N-day high-low range compression
   const mmPer = gp('mm','period',5), mmLo = gp('mm','loThr',0.006), mmHi = gp('mm','hiThr',0.022);
   const hiMM   = Math.max(...prices.slice(n-mmPer));
   const loMM   = Math.min(...prices.slice(n-mmPer));
   const rangeN = hiMM > 0 ? (hiMM-loMM)/hiMM : 0;
-  const mm = { dir: rangeN < mmLo ? 1 : rangeN > mmHi ? -1 : 0, strength: Math.min(0.9, Math.abs(rangeN-(mmLo+mmHi)/2)*30) };
+  const mm = { dir: rangeN <= (mmLo + mmHi) / 2 ? 1 : -1, strength: Math.min(0.9, Math.abs(rangeN-(mmLo+mmHi)/2)*30) };
 
   // macr: average N-day return across all tickers
   const mPeriod = gp('macr','period',10), mThrMacr = gp('macr','thr',0.01);
   const mktRets = TICKERS.map(tk=>{const p=xp(tk.sym);return p.length>mPeriod+1?p[p.length-1]/p[p.length-mPeriod-1]-1:0;});
   const mktMu   = mktRets.reduce((a,v)=>a+v,0)/mktRets.length;
-  const macr    = { dir: mktMu > mThrMacr ? 1 : mktMu < -mThrMacr ? -1 : 0, strength: Math.min(0.9, Math.abs(mktMu)*25) };
+  const macr    = { dir: mktMu >= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(mktMu)*25) };
 
   // news: fast vs slow velocity differential
   const nFast = gp('news','fast',3), nSlow = gp('news','slow',10), nThr = gp('news','thresh',0.01);
@@ -1651,12 +1651,12 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
   const velF   = (last-prices[n-nFast-1])/prices[n-nFast-1];
   const velS   = (last-prices[n-nSlow-1])/prices[n-nSlow-1];
   const newsSig = velF - velS;
-  const news = { dir: newsSig > nThr ? 1 : newsSig < -nThr ? -1 : 0, strength: Math.min(0.9, Math.abs(newsSig)*30) };
+  const news = { dir: newsSig >= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(newsSig)*30) };
 
   // soc: N-day momentum as social-sentiment proxy
   const sPer = gp('soc','period',3), sThr = gp('soc','thresh',0.006);
   const socRet = (last-prices[n-sPer-1])/prices[n-sPer-1];
-  const soc    = { dir: socRet > sThr ? 1 : socRet < -sThr ? -1 : 0, strength: Math.min(0.9, Math.abs(socRet)*50) };
+  const soc    = { dir: socRet >= 0 ? 1 : -1, strength: Math.min(0.9, Math.abs(socRet)*50) };
 
   return { momo, mean, brkt, vwap, vol, skew, patt, earn, fund, corr, pair, flow, mm, macr, news, soc };
 }
@@ -2878,7 +2878,7 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
                 <span className="muted">{tally.buy} BUY · {tally.sell} SELL · {tally.hold} HOLD</span>
                 <span className={dec === 'BUY' ? 'up' : 'dn'}>{dec === 'BUY' ? 'conviction rising →' : 'conviction falling →'}</span>
               </div>
-              {ctx?.dynamicExcluded?.size > 0 && <div style={{marginTop:6,fontFamily:'var(--mono)',fontSize:10,color:'var(--warn)'}}>⚠ {ctx.dynamicExcluded.size} agent{ctx.dynamicExcluded.size>1?'s':''} excluded (below accuracy threshold) — shown greyed out</div>}
+              {ctx?.dynamicExcluded?.size > 0 && <div style={{marginTop:6,fontFamily:'var(--mono)',fontSize:10,color:'var(--warn)'}}>⚠ {ctx.dynamicExcluded.size} agent{ctx.dynamicExcluded.size>1?'s':''} manually disabled — shown greyed out</div>}
             </>);
           })()}
         </div>
@@ -5138,7 +5138,7 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
   const agentAccuracySeries = ctx?.agentAccuracySeries || {};
   const agentHistory        = ctx?.agentHistory        || {};
   const agentWeights        = ctx?.agentWeights        || {};
-  const minAccThreshold     = (ctx?.risk?.minAgentAccuracy ?? 35) / 100;
+
   const maxLen = AGENTS.reduce((m, a) => Math.max(m, (agentAccuracySeries[a.id] || []).length), 0);
 
   const [sortKey, setSortKey] = React.useState('acc');
@@ -5156,12 +5156,8 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
     </th>
   );
 
-  // Determine which agents are currently excluded (≥5 history trades, accuracy < threshold)
-  const isExcluded = (a) => {
-    const hist = agentHistory[a.id] || [];
-    if (hist.length < 5) return false;
-    return hist.filter(Boolean).length / hist.length < minAccThreshold;
-  };
+  // An agent is excluded only if the user has manually disabled it via the toggle
+  const isExcluded = (a) => (ctx?.dynamicExcluded || new Set()).has(a.id);
 
   // Build series: append null for excluded agents at the current end to show a gap
   const agentSeries = AGENTS.map(a => {
@@ -5195,7 +5191,7 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
       <div className="page-head">
         <div className="page-eyebrow">Agent intelligence · win/loss accuracy over time</div>
         <h1 className="page-title">Which agents are <em>earning their weight</em>?</h1>
-        <p className="page-sub">Rolling accuracy is computed from each agent's last 30 closed calls. Weights shift via reinforcement after every close — strong agents grow, weak agents shrink. Agents below the {(minAccThreshold*100).toFixed(0)}% threshold are excluded from consensus until they recover.</p>
+        <p className="page-sub">Rolling accuracy is computed from each agent's last 30 closed calls. Weights shift via reinforcement after every close — strong agents grow, weak agents shrink. All enabled agents always contribute to every consensus call; use the Agent Config screen to manually disable any agent.</p>
       </div>
 
       <div className="card" style={{marginBottom:16}}>
@@ -5221,7 +5217,7 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
                 yFmt={v => (v * 100).toFixed(0) + '%'}
                 fillFirst={false}
                 solidLines={true}
-                hLines={[{value: minAccThreshold, color:'var(--down)', label: Math.round(minAccThreshold*100)+'% min'}]}
+                hLines={[{value: 0.5, color:'var(--ink-4)', label: '50%'}]}
               />
               <div className="legend" style={{marginTop:10,display:'flex',flexWrap:'wrap',gap:'4px 14px'}}>
                 {AGENTS.map(a => {
@@ -5273,9 +5269,7 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
                 <td className="mono" style={{textAlign:'right'}}>{(a.w * 100).toFixed(1)}%</td>
                 <td style={{textAlign:'right'}}>
                   {a.excl
-                    ? <span className="dn" style={{fontSize:10,letterSpacing:'0.06em'}} title={`${a.acc !== null ? (a.acc*100).toFixed(1)+'%' : '?'} accuracy across ${a.hist.length} trades — below ${(minAccThreshold*100).toFixed(0)}% threshold. Auto-reinstated when accuracy recovers.`}>
-                        EXCLUDED · {a.acc !== null ? (a.acc*100).toFixed(0)+'%' : '?'} &lt; {(minAccThreshold*100).toFixed(0)}%
-                      </span>
+                    ? <span className="dn" style={{fontSize:10,letterSpacing:'0.06em'}} title="Manually disabled via Agent Config — toggle on to re-enable">DISABLED</span>
                     : <span className="up" style={{fontSize:10,letterSpacing:'0.06em'}}>ACTIVE</span>}
                 </td>
               </tr>
@@ -6005,17 +5999,9 @@ const App = () => {
         });
       }
 
-      // [8] Dynamic enabled set using exponentially-weighted (decay) accuracy — recent calls count more
-      const minAcc = (riskNow.minAgentAccuracy ?? 35) / 100;
+      // All manually-enabled agents participate in every call — no accuracy-based auto-exclusion
       const hist = agentHistoryRef.current;
-      const dynamicEnabled = new Set(
-        [...enabledAgentsRef.current].filter(id => {
-          const h = hist[id];
-          if (!h || h.length < 5) return true;
-          const acc = decayAccuracy(h);
-          return acc === null || acc >= minAcc;
-        })
-      );
+      const dynamicEnabled = enabledAgentsRef.current;
 
       // [10] Build per-ticker recent win rate from closed trades (last 10 per ticker)
       const allClosed = tradesRef.current.filter(t => t.pnl != null);
@@ -6269,18 +6255,10 @@ const App = () => {
     return <ScreenOnboarding onDone={() => { localStorage.setItem('shoal_onboarded', '1'); setShowOnboarding(false); }}/>;
   }
 
-  // Agents excluded from consensus this tick (below accuracy threshold)
-  // [8] Dynamic exclusion uses exponentially-weighted accuracy so recent mistakes matter more
+  // Agents excluded from consensus — only those the user has manually toggled off
   const dynamicExcluded = React.useMemo(() => {
-    const minAcc = (risk.minAgentAccuracy ?? 35) / 100;
-    return new Set(AGENTS.filter(a => {
-      if (!enabledAgents.has(a.id)) return true;
-      const h = agentHistory[a.id] || [];
-      if (h.length < 5) return false;
-      const acc = decayAccuracy(h);
-      return acc !== null && acc < minAcc;
-    }).map(a => a.id));
-  }, [agentHistory, risk.minAgentAccuracy, enabledAgents]);
+    return new Set(AGENTS.filter(a => !enabledAgents.has(a.id)).map(a => a.id));
+  }, [enabledAgents]);
 
   // Session P&L: realized closed trades since ET midnight (US market day boundary)
   const sessionPnl = React.useMemo(() => {
