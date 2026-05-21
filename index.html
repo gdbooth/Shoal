@@ -6073,19 +6073,9 @@ const App = () => {
         });
       }
 
-      // Build dynamicEnabled: manual toggles first, then exclude agents whose decay-weighted
-      // accuracy is below the threshold — but only once they have ≥ 5 scored trades so that
-      // cold-start (no history yet) never causes mass exclusion.
+      // All manually-enabled agents participate in every call — no accuracy-based auto-exclusion
       const hist = agentHistoryRef.current;
-      const minAccuracy = (riskNow.minAgentAccuracy ?? 35) / 100;
-      const dynamicEnabled = new Set(
-        [...enabledAgentsRef.current].filter(id => {
-          const h = hist[id];
-          if (!h || h.length < 5) return true; // not enough data yet → keep active
-          const acc = decayAccuracy(h);
-          return acc === null || acc >= minAccuracy;
-        })
-      );
+      const dynamicEnabled = enabledAgentsRef.current;
 
       // [10] Build per-ticker recent win rate from closed trades (last 10 per ticker)
       const allClosed = tradesRef.current.filter(t => t.pnl != null);
@@ -6358,17 +6348,10 @@ const App = () => {
     return <ScreenOnboarding onDone={() => { localStorage.setItem('shoal_onboarded', '1'); setShowOnboarding(false); }}/>;
   }
 
-  // Agents excluded from consensus: manually toggled off OR below accuracy threshold (≥ 5 trades required)
+  // Agents excluded from consensus — only those the user has manually toggled off
   const dynamicExcluded = React.useMemo(() => {
-    const minAcc = (risk.minAgentAccuracy ?? 35) / 100;
-    return new Set(AGENTS.filter(a => {
-      if (!enabledAgents.has(a.id)) return true;
-      const h = agentHistory[a.id];
-      if (!h || h.length < 5) return false;
-      const acc = decayAccuracy(h);
-      return acc !== null && acc < minAcc;
-    }).map(a => a.id));
-  }, [enabledAgents, agentHistory, risk.minAgentAccuracy]);
+    return new Set(AGENTS.filter(a => !enabledAgents.has(a.id)).map(a => a.id));
+  }, [enabledAgents]);
 
   // Session P&L: realized closed trades since ET midnight (US market day boundary)
   const sessionPnl = React.useMemo(() => {
