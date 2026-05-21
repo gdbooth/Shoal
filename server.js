@@ -169,6 +169,22 @@ app.delete('/api/orders/:id', auth, async (req, res) => {
   }
 });
 
+// ── Market data: daily bars for live signal computation ───────────────────────
+// Returns up to 252 daily closes per symbol so the client can recompute all
+// 16 agent signals from real prices instead of the synthetic seed data.
+app.get('/api/bars', auth, async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || '').split(',').filter(Boolean).slice(0, 30).join(',');
+    if (!symbols) return res.status(400).json({ error: 'symbols required' });
+    const url = `https://data.alpaca.markets/v2/stocks/bars?symbols=${encodeURIComponent(symbols)}&timeframe=1Day&limit=252&feed=iex&adjustment=raw`;
+    const r = await fetch(url, { headers: alpacaHeaders(req.session) });
+    const data = await r.json();
+    res.status(r.status).json(data);
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
 // ── SSE stream: polls account + positions + orders every 3 s ─────────────────
 // Token is read from ?token= because EventSource does not support custom headers.
 app.get('/api/stream', auth, (req, res) => {

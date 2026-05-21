@@ -2693,9 +2693,8 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
     const enabledSet = new Set(AGENTS.map(a => a.id).filter(id => !excl.has(id)));
     return TICKERS.map(tk => {
       if (blacklist.has(tk.sym)) return { sym: tk.sym, filter: 'BLACKLISTED', sector: tk.sector };
-      const sigs = SIGNALS_ALL[tk.sym];
+      const sigs = (ctx?.liveSignals || SIGNALS_ALL)[tk.sym];
       if (!sigs) return { sym: tk.sym, filter: 'NO SIGNALS', sector: tk.sector };
-      if (tk.last * 1.005 > maxVal) return { sym: tk.sym, filter: 'PRICE LIMIT', sector: tk.sector };
       const ens = computeEnsemble(sigs, wts, enabledSet);
       if (ens.disagreement > maxDisagree) return { sym: tk.sym, filter: 'HIGH DISAGREE', sector: tk.sector };
       if (totalOpen >= 3) {
@@ -4228,8 +4227,8 @@ const ScreenMarket = ({ tick, mode, ctx }) => {
     SECTOR_TICKERS[s].forEach((sym, ti) => {
       const seed = (si * 8 + ti);
       const chg = (Math.sin(seed + tick * 0.07) + Math.cos(seed * 1.7 + tick * 0.03)) * 1.8;
-      // Real TA confidence for tickers in SIGNALS_ALL; otherwise synthetic
-      const realSigs = SIGNALS_ALL[sym];
+      // Real TA confidence from live signals when connected, otherwise static fallback
+      const realSigs = (ctx?.liveSignals || SIGNALS_ALL)[sym];
       let conf;
       if (realSigs) {
         const ens = computeEnsemble(realSigs, {});
@@ -5755,10 +5754,14 @@ const App = () => {
   React.useEffect(() => { activeSymbolRef.current = activeSymbol; }, [activeSymbol]);
   React.useEffect(() => { blacklistedSymbolsRef.current = blacklistedSymbols; }, [blacklistedSymbols]);
   React.useEffect(() => { balanceRef.current = balance; }, [balance]);
-  // Keep lastSignals in sync with active symbol and agentParams
+  // Keep lastSignals in sync with active symbol and agentParams; prefer live signals when available
   React.useEffect(() => {
-    setLastSignals(computeSignals(activeSymbol, PRICE_HISTORY, agentParams) || SIGNALS_ALL[activeSymbol] || null);
-  }, [activeSymbol, agentParams]);
+    setLastSignals(
+      (liveSignals || {})[activeSymbol] ||
+      computeSignals(activeSymbol, PRICE_HISTORY, agentParams) ||
+      SIGNALS_ALL[activeSymbol] || null
+    );
+  }, [activeSymbol, agentParams, liveSignals]);
 
   // Watch for newly closed trades → update agent weights + accuracy history + accuracy series
   const prevTradesRef = React.useRef([]);
@@ -5801,6 +5804,54 @@ const App = () => {
   // Stable ref so swarm closure can read latest Alpaca-authoritative market status
   const marketStatusRef = React.useRef(marketStatus);
   React.useEffect(() => { marketStatusRef.current = marketStatus; }, [marketStatus]);
+
+  // Live signals + prices computed from real Alpaca daily bars.
+  // null / {} when disconnected — swarm falls back to static SIGNALS_ALL / tk.last.
+  const [liveSignals, setLiveSignals] = React.useState(null);
+  const [livePrices, setLivePrices] = React.useState({});
+  const liveSignalsRef = React.useRef(null);
+  const livePricesRef  = React.useRef({});
+  React.useEffect(() => { liveSignalsRef.current = liveSignals; }, [liveSignals]);
+  React.useEffect(() => { livePricesRef.current  = livePrices;  }, [livePrices]);
+
+  // Fetch 252 daily bars for all tickers when connected; recompute signals from real prices.
+  React.useEffect(() => {
+    if (!alpaca.connected || !alpaca.token) {
+      setLiveSignals(null);
+      setLivePrices({});
+      return;
+    }
+    const symbols = TICKERS.map(t => t.sym).join(',');
+    const fetchBars = async () => {
+      try {
+        const r = await fetch(
+          `${BACKEND_URL}/api/bars?symbols=${encodeURIComponent(symbols)}`,
+          { headers: { 'Authorization': 'Bearer ' + alpaca.token }, signal: AbortSignal.timeout(15000) }
+        );
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!data.bars) return;
+        // Extract close prices and build a price-history object keyed by symbol
+        const priceHistory = {};
+        const prices = {};
+        for (const sym of Object.keys(data.bars)) {
+          const closes = data.bars[sym].map(b => b.c).filter(c => c > 0);
+          if (closes.length >= 60) { priceHistory[sym] = closes; prices[sym] = closes[closes.length - 1]; }
+        }
+        // Recompute all 16-agent signals from real prices (cross-ticker agents use priceHistory too)
+        const sigs = {};
+        for (const tk of TICKERS) {
+          if (!priceHistory[tk.sym]) continue;
+          const s = computeSignals(tk.sym, priceHistory);
+          if (s) sigs[tk.sym] = s;
+        }
+        if (Object.keys(sigs).length > 0) { setLiveSignals(sigs); setLivePrices(prices); }
+      } catch (_) {}
+    };
+    fetchBars();
+    const id = setInterval(fetchBars, 10 * 60 * 1000); // refresh every 10 min
+    return () => clearInterval(id);
+  }, [alpaca.connected, alpaca.token]);
 
   // Backend health-check — polls every 15 s
   React.useEffect(() => {
@@ -6059,10 +6110,11 @@ const App = () => {
 
         if (totalOpen >= maxPos) return;
 
+        const signalSource = liveSignalsRef.current || SIGNALS_ALL;
         const candidates = [];
         for (const tk of TICKERS) {
           if (blacklist.has(tk.sym)) continue;
-          const sigs = SIGNALS_ALL[tk.sym];
+          const sigs = signalSource[tk.sym];
           if (!sigs) continue;
           const ens = computeEnsemble(sigs, agentWeightsRef.current, dynamicEnabled);
           // [1] Confidence gate
@@ -6101,7 +6153,7 @@ const App = () => {
           }
 
           const { tk, sigs, ens: ensemble, side } = chosen;
-          const price = tk.last * (1 + (Math.random() - 0.5) * 0.01);
+          const price = (livePricesRef.current[tk.sym] || tk.last) * (1 + (Math.random() - 0.5) * 0.001);
           // [8] Kelly-adjusted notional — scales with historical win rate
           const notional = parseFloat((maxVal * ensemble.confidence * (0.5 + kellyFrac)).toFixed(2));
           const qty = parseFloat((notional / price).toFixed(4));
@@ -6187,7 +6239,7 @@ const App = () => {
         const sample = shuffled.slice(0, Math.min(12, shuffled.length));
         let confSum = 0, confCnt = 0;
         for (const tk2 of sample) {
-          const s2 = SIGNALS_ALL[tk2.sym];
+          const s2 = signalSource[tk2.sym];
           if (!s2 || !Object.keys(s2).length) continue;
           confSum += computeEnsemble(s2, agentWeightsRef.current, dynamicEnabled).confidence;
           confCnt++;
@@ -6304,7 +6356,7 @@ const App = () => {
     return trades.filter(t => t.pnl != null && (t.exitTs || 0) >= midnight).reduce((s, t) => s + t.pnl, 0);
   }, [trades]);
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
