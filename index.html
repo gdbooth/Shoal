@@ -3022,6 +3022,16 @@ window.ScreenDashboard = ScreenDashboard;
 const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
   const feed = ctx?.trades || [];
   const [filter, setFilter] = React.useState('ALL');
+  const [closingAll, setClosingAll] = React.useState(false);
+
+  const openCount = feed.filter(t => t.status === 'OPEN').length;
+
+  const handleCloseAll = async () => {
+    if (!openCount || closingAll) return;
+    setClosingAll(true);
+    ctx?.handleCloseAll?.();
+    setTimeout(() => setClosingAll(false), 1000);
+  };
 
   // when the user resets the account, drop all old trades from the feed
   React.useEffect(() => {
@@ -3076,7 +3086,15 @@ const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
             <div className="card-title">Order tape</div>
             {running && <span className="bot-status" style={{fontSize:9,padding:'3px 8px'}}><span className="led"></span>STREAMING</span>}
           </div>
-          <div style={{display:'flex',gap:6}}>
+          <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            {openCount > 0 && (
+              <button
+                onClick={handleCloseAll}
+                disabled={closingAll}
+                style={{fontFamily:'var(--mono)',fontSize:9,letterSpacing:'0.08em',padding:'3px 9px',borderRadius:4,border:'1px solid rgba(239,68,68,0.4)',background:'rgba(239,68,68,0.08)',color:'var(--down)',cursor:'pointer',opacity:closingAll?0.5:1,fontWeight:600}}>
+                {closingAll ? 'CLOSING…' : `CLOSE ALL (${openCount})`}
+              </button>
+            )}
             {['ALL','BUY','SELL','OPEN','WIN','LOSS'].map(f => (
               <button key={f} className={'tweak-opt ' + (filter===f?'on':'')} onClick={()=>setFilter(f)}>{f}</button>
             ))}
@@ -5451,6 +5469,17 @@ const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnab
     setOptimizing(o => ({ ...o, [agentId]: false }));
   };
 
+  const [optimizingAll, setOptimizingAll] = React.useState(false);
+  const optimizeAll = async () => {
+    if (optimizingAll) return;
+    setOptimizingAll(true);
+    const optimisable = AGENTS.filter(a => !!AGENT_OPTIMIZE_KEYS[a.id]?.id);
+    for (const a of optimisable) {
+      await optimize(a.id);
+    }
+    setOptimizingAll(false);
+  };
+
   const families = [...new Set(AGENTS.map(a => a.family))];
   const enabledCount = enabledAgents ? enabledAgents.size : AGENTS.length;
 
@@ -5465,6 +5494,9 @@ const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnab
       <div style={{display:'flex',justifyContent:'flex-end',marginBottom:16,gap:10}}>
         <button className="btn" style={{fontSize:11}} onClick={() => setEnabledAgents(new Set(AGENTS.map(a => a.id)))}>Enable all</button>
         <button className="btn" style={{fontSize:11}} onClick={() => { setAgentParams({}); setOptResults({}); }}>Reset all params</button>
+        <button className="btn" style={{fontSize:11,opacity:optimizingAll?0.5:1}} onClick={optimizeAll} disabled={optimizingAll}>
+          {optimizingAll ? '⟳ Optimising…' : '⚡ Optimise all'}
+        </button>
       </div>
 
       {families.map(family => (
@@ -6345,6 +6377,26 @@ const App = () => {
 
   const handleTradeClick = (t) => { setSelectedTrade(t); setRoute('trade'); };
 
+  const handleCloseAll = () => {
+    const isLiveReal    = mode === 'LIVE'    && !!alpaca?.token && alpaca?.env === 'live';
+    const isBrokerPaper = mode === 'VIRTUAL' && !!alpaca?.token && alpaca?.env === 'paper';
+    const openSyms = new Set(trades.filter(t => t.status === 'OPEN').map(t => t.sym));
+    setTrades(prev => prev.map(t => {
+      if (t.status !== 'OPEN' || t._real) return t;
+      const exitPrice = livePrices[t.sym] || t.price;
+      const pnlAmt = (exitPrice - t.price) * t.qty * (t.side === 'BUY' ? 1 : -1);
+      return { ...t, status: pnlAmt >= 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit: exitPrice, exitTs: Date.now(), isNew: false };
+    }));
+    if ((isLiveReal || isBrokerPaper) && alpaca.token) {
+      openSyms.forEach(sym => {
+        fetch(`${BACKEND_URL}/api/positions/${sym}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + alpaca.token },
+        }).catch(() => {});
+      });
+    }
+  };
+
   const requestMode = (m) => {
     if (m === mode) return;
     setPendingMode(m);
@@ -6379,7 +6431,7 @@ const App = () => {
     return trades.filter(t => t.pnl != null && (t.exitTs || 0) >= midnight).reduce((s, t) => s + t.pnl, 0);
   }, [trades]);
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
