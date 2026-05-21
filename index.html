@@ -4500,7 +4500,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
               <div className="field-label">Max position size</div>
               <div className="mono" style={{fontSize:13}}>{risk.maxPos}% of equity</div>
             </div>
-            <input type="range" min="1" max="20" step="1" value={risk.maxPos} onChange={e=>setRisk({...risk, maxPos: +e.target.value})}/>
+            <input type="range" min="1" max="50" step="1" value={risk.maxPos} onChange={e=>setRisk({...risk, maxPos: +e.target.value})}/>
           </div>
 
           <div className="field">
@@ -5715,7 +5715,7 @@ const App = () => {
     const saved = localStorage.getItem('shoal_alpaca');
     return saved ? JSON.parse(saved) : { connected: false, balance: 0, account: null, broker: 'Alpaca Markets' };
   });
-  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 6, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48 });
+  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 50, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48 });
   const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(() => new Set());
   const [slippageLog, setSlippageLog] = React.useState([]);
 
@@ -6122,7 +6122,7 @@ const App = () => {
           sectorCounts[sect] = (sectorCounts[sect] || 0) + 1;
         });
         const totalOpen = openTrades.length;
-        const maxPos = riskNow.maxPos ?? 6;
+        const maxPos = riskNow.maxPos ?? 50;
 
         if (totalOpen >= maxPos) return;
 
