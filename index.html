@@ -5754,6 +5754,11 @@ const App = () => {
   React.useEffect(() => { activeSymbolRef.current = activeSymbol; }, [activeSymbol]);
   React.useEffect(() => { blacklistedSymbolsRef.current = blacklistedSymbols; }, [blacklistedSymbols]);
   React.useEffect(() => { balanceRef.current = balance; }, [balance]);
+
+  // Declared here so the lastSignals effect below (which depends on liveSignals) doesn't hit TDZ
+  const [liveSignals, setLiveSignals] = React.useState(null);
+  const [livePrices, setLivePrices] = React.useState({});
+
   // Keep lastSignals in sync with active symbol and agentParams; prefer live signals when available
   React.useEffect(() => {
     setLastSignals(
@@ -5807,8 +5812,6 @@ const App = () => {
 
   // Live signals + prices computed from real Alpaca daily bars.
   // null / {} when disconnected — swarm falls back to static SIGNALS_ALL / tk.last.
-  const [liveSignals, setLiveSignals] = React.useState(null);
-  const [livePrices, setLivePrices] = React.useState({});
   const liveSignalsRef = React.useRef(null);
   const livePricesRef  = React.useRef({});
   React.useEffect(() => { liveSignalsRef.current = liveSignals; }, [liveSignals]);
