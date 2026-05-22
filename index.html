@@ -5695,19 +5695,22 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
   );
 
   let cum = 0;
-  const cumSeries = closed.map(t => { cum += t.pnl; return cum; });
-  const totalPnl  = cumSeries[cumSeries.length - 1] || 0;
-  const timeLabels = closed.map(t => {
+  // Equity after each closed trade = startEquity + cumulative realized P&L.
+  // Prepend startEquity so the chart starts at the reset baseline.
+  const equitySeries = [startEquity, ...closed.map(t => { cum += t.pnl; return startEquity + cum; })];
+  const totalPnl  = cum;
+  const timeLabels = ['start', ...closed.map(t => {
     const utc = new Date(t.exitTs || t.ts);
     const et = new Date(utc.toLocaleString('en-US', { timeZone: 'America/New_York' }));
     return `${(et.getMonth()+1)}/${et.getDate()} ${String(et.getHours()).padStart(2,'0')}:${String(et.getMinutes()).padStart(2,'0')} ET`;
-  });
+  })];
   const wins      = closed.filter(t => t.pnl > 0);
   const losses    = closed.filter(t => t.pnl <= 0);
   const winRate   = closed.length ? wins.length / closed.length : 0;
   const avgWin    = wins.length   ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length   : 0;
   const avgLoss   = losses.length ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
-  const maxDD     = cumSeries.reduce((dd, v, i, a) => {
+  // Max drawdown computed on equity series (peak-to-trough), unchanged in dollars.
+  const maxDD     = equitySeries.reduce((dd, v, i, a) => {
     const peak = Math.max(...a.slice(0, i + 1));
     return Math.min(dd, v - peak);
   }, 0);
@@ -5740,17 +5743,18 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
 
       <div className="card" style={{marginBottom:16}}>
         <div className="card-head">
-          <div className="card-title">Cumulative P&L</div>
-          <div className="card-meta">{closed.length} trades · running total</div>
+          <div className="card-title">Equity after each trade</div>
+          <div className="card-meta">{closed.length} trades · starting at {fmtMoney(startEquity, 0)}</div>
         </div>
         <LineChart
-          series={[cumSeries]}
-          zeroCrossColors={['var(--up)', 'var(--down)']}
-          labels={['Cumulative P&L']}
+          series={[equitySeries]}
+          colors={[totalPnl >= 0 ? 'var(--up)' : 'var(--down)']}
+          labels={['Equity']}
           height={240}
           yFmt={v => fmtMoney(v, 0)}
           fillFirst={true}
           xLabels={timeLabels}
+          hLines={[{value: startEquity, color: 'var(--ink-4)', label: 'start ' + fmtMoney(startEquity, 0)}]}
         />
       </div>
 
