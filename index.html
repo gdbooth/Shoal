@@ -4355,7 +4355,7 @@ window.ScreenMarket = ScreenMarket;
 <script type="text/babel" data-presets="react">
 // Settings screen — Alpaca connection + risk parameters
 
-const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset, backendOk }) => {
+const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset, onResetWeights, backendOk }) => {
   const [showConnect, setShowConnect] = React.useState(false);
   const [connecting, setConnecting] = React.useState(false);
   const [connectErr, setConnectErr] = React.useState('');
@@ -4638,6 +4638,13 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
               <div className="tiny muted" style={{marginTop:2}}>Wipe P&L, keep learned weights</div>
             </span>
             <button className="btn" onClick={onReset}>RESET →</button>
+          </div>
+          <div className="dialog-row">
+            <span className="l">
+              <div>Reset learned weights</div>
+              <div className="tiny muted" style={{marginTop:2}}>Clear agent history, restore default weights</div>
+            </span>
+            <button className="btn" onClick={onResetWeights}>RESET →</button>
           </div>
         </div>
       </div>
@@ -5114,8 +5121,32 @@ const ResetModal = ({ onConfirm, onCancel }) => {
   );
 };
 
+const WeightResetModal = ({ onConfirm, onCancel }) => (
+  <div className="modal-backdrop" onClick={onCancel}>
+    <div className="modal" onClick={e=>e.stopPropagation()}>
+      <div className="modal-head">
+        <div className="modal-title">Reset learned weights</div>
+        <button className="btn ghost" onClick={onCancel}>×</button>
+      </div>
+      <div className="modal-body">
+        <p style={{color:'var(--ink-2)',fontSize:13,lineHeight:1.6,marginBottom:14}}>
+          Clears all agent accuracy history and restores default weights. The swarm will begin re-learning from the next trades it closes. Virtual P&L and trade history are preserved.
+        </p>
+        <div className="tiny" style={{color:'var(--warn)',padding:'10px 12px',background:'rgba(255,170,40,0.06)',border:'1px solid rgba(255,170,40,0.25)',borderRadius:3,lineHeight:1.5}}>
+          <b style={{letterSpacing:'0.06em'}}>WARNING:</b> All learned agent weights and vote history will be permanently erased. This cannot be undone.
+        </div>
+      </div>
+      <div className="modal-foot">
+        <button className="btn ghost" onClick={onCancel}>CANCEL</button>
+        <button className="btn primary" onClick={onConfirm}>RESET WEIGHTS</button>
+      </div>
+    </div>
+  </div>
+);
+
 window.SymbolPicker = SymbolPicker;
 window.ResetModal = ResetModal;
+window.WeightResetModal = WeightResetModal;
 
 </script>
 <script type="text/babel" data-presets="react">
@@ -5665,6 +5696,7 @@ const App = () => {
   const [direction, setDirection] = React.useState(() => localStorage.getItem('shoal_dir') || 'BOTH');
   const [symbolPicker, setSymbolPicker] = React.useState(false);
   const [showReset, setShowReset] = React.useState(false);
+  const [showWeightReset, setShowWeightReset] = React.useState(false);
   const [tradesResetAt, setTradesResetAt] = React.useState(() => {
     const s = localStorage.getItem('shoal_trades_reset_at');
     return s ? +s : 0;
@@ -5972,6 +6004,17 @@ const App = () => {
     setTradesResetAt(now);
     setTrades([]);
     setShowReset(false);
+  };
+
+  const resetWeights = () => {
+    const total = AGENTS.reduce((s, a) => s + a.weight, 0);
+    const defaults = {};
+    AGENTS.forEach(a => defaults[a.id] = a.weight / total);
+    setAgentWeights(defaults);
+    setAgentHistory({});
+    setAgentAccuracySeries({});
+    localStorage.removeItem('shoal_agent_history');
+    setShowWeightReset(false);
   };
 
   // Global swarm execution — signal-driven trades with real TA, regardless of which screen is mounted.
@@ -6380,7 +6423,7 @@ const App = () => {
     agentperf:   <ScreenAgentPerf mode={mode} ctx={ctx}/>,
     pnltrend:    <ScreenPnlTrend mode={mode} ctx={ctx}/>,
     agentconfig: <ScreenAgentConfig agentParams={agentParams} setAgentParams={setAgentParams} enabledAgents={enabledAgents} setEnabledAgents={setEnabledAgents} agentWeights={agentWeights} agentHistory={agentHistory}/>,
-    settings:    <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} backendOk={backendOk}/>,
+    settings:    <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} onResetWeights={()=>setShowWeightReset(true)} backendOk={backendOk}/>,
   };
 
   const navItem = NAV.find(n => n.id === route);
@@ -6494,6 +6537,7 @@ const App = () => {
       {pendingMode && <ModeSwitchModal targetMode={pendingMode} alpaca={alpaca} onConfirm={confirmMode} onCancel={()=>setPendingMode(null)}/>}
       {symbolPicker && <SymbolPicker onPick={(s)=>{setActiveSymbol(s); setSymbolPicker(false);}} onClose={()=>setSymbolPicker(false)} marketStatus={marketStatus}/>}
       {showReset && <ResetModal onConfirm={resetAccount} onCancel={()=>setShowReset(false)}/>}
+      {showWeightReset && <WeightResetModal onConfirm={resetWeights} onCancel={()=>setShowWeightReset(false)}/>}
       {editMode && <TweaksPanel tweaks={tweaks} setTweaks={(nt) => {
         setTweaks(nt);
         window.parent.postMessage({type:'__edit_mode_set_keys', edits: nt}, '*');
