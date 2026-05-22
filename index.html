@@ -2902,22 +2902,33 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
         </div>
 
         <div className="card">
-          <div className="card-head">
-            <div className="card-title">Swarm consensus · live</div>
-            <div className="card-meta">{activeSymbol} · 14:32:08</div>
-          </div>
           {(() => {
-            const sigs = ctx?.lastSignals;
-            const wts  = ctx?.agentWeights || {};
-            const excl = ctx?.dynamicExcluded || new Set();
-            const enabledSet = new Set(AGENTS.map(a => a.id).filter(id => !excl.has(id)));
-            const ens  = sigs ? computeEnsemble(sigs, wts, enabledSet) : null;
-            const dec  = ens?.dir || (direction === 'SHORT' ? 'SELL' : 'BUY');
-            const conf = ens?.confidence || 0.71;
+            const focus = ctx?.swarmFocus;
+            const excl  = ctx?.dynamicExcluded || new Set();
+            // Use pre-computed votes from the swarm tick when available; fall back to
+            // computing from lastSignals for the active symbol before first tick fires.
+            let votes, dec, conf;
+            if (focus) {
+              votes = focus.votes;
+              dec   = focus.dir || (direction === 'SHORT' ? 'SELL' : 'BUY');
+              conf  = focus.confidence || 0.71;
+            } else {
+              const sigs = ctx?.lastSignals;
+              const wts  = ctx?.agentWeights || {};
+              const enabledSet = new Set(AGENTS.map(a => a.id).filter(id => !excl.has(id)));
+              const ens  = sigs ? computeEnsemble(sigs, wts, enabledSet) : null;
+              votes = ens?.votes || null;
+              dec   = ens?.dir || (direction === 'SHORT' ? 'SELL' : 'BUY');
+              conf  = ens?.confidence || 0.71;
+            }
             const tally = { buy: 0, sell: 0, hold: 0 };
-            AGENTS.forEach(a => { const v = ens?.votes?.[a.id]; tally[v === 1 ? 'buy' : v === -1 ? 'sell' : 'hold']++; });
+            AGENTS.forEach(a => { const v = votes?.[a.id]; tally[v === 1 ? 'buy' : v === -1 ? 'sell' : 'hold']++; });
             return (<>
-              <SwarmViz agents={AGENTS} decision={dec} confidence={conf} tick={tick} agentVotes={ens?.votes || null} excludedSet={excl}/>
+              <div className="card-head">
+                <div className="card-title">Swarm consensus · live</div>
+                <div className="card-meta">{focus?.sym || activeSymbol}{focus ? ' · ' + fmtTime(focus.ts) : ''}</div>
+              </div>
+              <SwarmViz agents={AGENTS} decision={dec} confidence={conf} tick={tick} agentVotes={votes} excludedSet={excl}/>
               <div style={{marginTop:12,display:'flex',justifyContent:'space-between',fontFamily:'var(--mono)',fontSize:11}}>
                 <span className="muted">{tally.buy} BUY · {tally.sell} SELL · {tally.hold} HOLD</span>
                 <span className={dec === 'BUY' ? 'up' : 'dn'}>{dec === 'BUY' ? 'conviction rising →' : 'conviction falling →'}</span>
@@ -5810,6 +5821,7 @@ const App = () => {
   });
   const [agentAccuracySeries, setAgentAccuracySeries] = React.useState({});
   const [lastSignals, setLastSignals] = React.useState(() => SIGNALS_ALL['NVDA'] || null);
+  const [swarmFocus, setSwarmFocus] = React.useState(null); // { sym, votes, dir, confidence, ts }
   const [agentParams, setAgentParams] = React.useState({});
   const [enabledAgents, setEnabledAgents] = React.useState(() => new Set(AGENTS.map(a => a.id)));
   const [confHistory, setConfHistory] = React.useState(() => [...CONFIDENCE_HISTORY]);
@@ -6262,11 +6274,13 @@ const App = () => {
 
         const signalSource = liveSignalsRef.current || SIGNALS_ALL;
         const candidates = [];
+        let scanBest = null; // highest-confidence ticker seen this scan (gate-independent)
         for (const tk of TICKERS) {
           if (blacklist.has(tk.sym)) continue;
           const sigs = signalSource[tk.sym];
           if (!sigs) continue;
           const ens = computeEnsemble(sigs, agentWeightsRef.current, dynamicEnabled);
+          if (!scanBest || ens.confidence > scanBest.ens.confidence) scanBest = { tk, sigs, ens };
           // [1] Confidence gate
           if (ens.confidence < minConf) continue;
           // [2] Minimum consensus gate (N agents must agree on direction)
@@ -6288,6 +6302,10 @@ const App = () => {
           candidates.push({ tk, sigs, ens, side });
         }
 
+        if (candidates.length === 0 && scanBest) {
+          setSwarmFocus({ sym: scanBest.tk.sym, votes: scanBest.ens.votes, dir: scanBest.ens.dir, confidence: scanBest.ens.confidence, ts: Date.now() });
+        }
+
         if (candidates.length > 0) {
           // [10] Weighted selection: confidence² × ticker edge factor
           const totalScore = candidates.reduce((s, c) => {
@@ -6303,6 +6321,7 @@ const App = () => {
           }
 
           const { tk, sigs, ens: ensemble, side } = chosen;
+          setSwarmFocus({ sym: tk.sym, votes: ensemble.votes, dir: ensemble.dir, confidence: ensemble.confidence, ts: Date.now() });
           const price = (livePricesRef.current[tk.sym] || tk.last) * (1 + (Math.random() - 0.5) * 0.001);
           // [8] Kelly-adjusted notional — scales with historical win rate
           const notional = parseFloat((maxVal * ensemble.confidence * (0.5 + kellyFrac)).toFixed(2));
@@ -6514,7 +6533,7 @@ const App = () => {
     return trades.filter(t => t.pnl != null && (t.exitTs || 0) >= midnight).reduce((s, t) => s + t.pnl, 0);
   }, [trades]);
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
