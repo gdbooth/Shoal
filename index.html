@@ -4735,6 +4735,14 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
           </div>
 
           <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div className="field-label">Auto-disable under-performing agents</div>
+              <button className={'tweak-opt ' + ((risk.autoDisableAgents !== false)?'on':'')} onClick={()=>setRisk({...risk, autoDisableAgents: risk.autoDisableAgents === false})}>{(risk.autoDisableAgents !== false)?'ON':'OFF'}</button>
+            </div>
+            <div className="mono tiny muted" style={{marginTop:4}}>When ON, agents whose rolling accuracy drops below the threshold below are automatically removed from consensus. When OFF, every enabled agent always votes regardless of accuracy.</div>
+          </div>
+
+          <div className="field" style={{opacity: (risk.autoDisableAgents !== false) ? 1 : 0.4, pointerEvents: (risk.autoDisableAgents !== false) ? 'auto' : 'none'}}>
             <div style={{display:'flex',justifyContent:'space-between'}}>
               <div className="field-label">Min agent accuracy</div>
               <div className="mono" style={{fontSize:13}}>≥ {risk.minAgentAccuracy ?? 35}%</div>
@@ -5931,7 +5939,7 @@ const App = () => {
     const saved = localStorage.getItem('shoal_alpaca');
     return saved ? JSON.parse(saved) : { connected: false, balance: 0, account: null, broker: 'Alpaca Markets' };
   });
-  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 50, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48 });
+  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 50, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, autoDisableAgents: true, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48 });
   const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(() => new Set());
   const [slippageLog, setSlippageLog] = React.useState([]);
 
@@ -6347,12 +6355,14 @@ const App = () => {
 
       const hist = agentHistoryRef.current;
       const minAccuracy = (riskNow.minAgentAccuracy ?? 35) / 100;
+      const autoDisableOn = riskNow.autoDisableAgents !== false;
 
       // Cache decay-weighted accuracy once per tick — reused by dynamicEnabled and Kelly sizing
       const accCache = new Map(AGENTS.map(a => [a.id, decayAccuracy(hist[a.id])]));
 
       const dynamicEnabled = new Set(
         [...enabledAgentsRef.current].filter(id => {
+          if (!autoDisableOn) return true;
           const h = hist[id];
           if (!h || h.length < 5) return true;
           const acc = accCache.get(id);
@@ -6652,17 +6662,19 @@ const App = () => {
     return <ScreenOnboarding onDone={() => { localStorage.setItem('shoal_onboarded', '1'); setShowOnboarding(false); }}/>;
   }
 
-  // Agents excluded from consensus: manually toggled off OR below accuracy threshold (≥ 5 trades required)
+  // Agents excluded from consensus: manually toggled off OR (when auto-disable is on) below accuracy threshold (≥ 5 trades required)
   const dynamicExcluded = React.useMemo(() => {
     const minAcc = (risk.minAgentAccuracy ?? 35) / 100;
+    const autoOff = risk.autoDisableAgents === false;
     return new Set(AGENTS.filter(a => {
       if (!enabledAgents.has(a.id)) return true;
+      if (autoOff) return false;
       const h = agentHistory[a.id];
       if (!h || h.length < 5) return false;
       const acc = decayAccuracy(h);
       return acc !== null && acc < minAcc;
     }).map(a => a.id));
-  }, [enabledAgents, agentHistory, risk.minAgentAccuracy]);
+  }, [enabledAgents, agentHistory, risk.minAgentAccuracy, risk.autoDisableAgents]);
 
   // Session P&L: realized closed trades since ET midnight (US market day boundary)
   const sessionPnl = React.useMemo(() => {
