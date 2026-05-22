@@ -1719,7 +1719,50 @@ function updateAgentHistory(history, trade) {
   return next;
 }
 
-// Exponentially weighted accuracy — recent trades count more (decay factor 1.1x per step)
+function serializeWeightsCSV(agents, weights, history) {
+  const maxLen = Math.max(0, ...agents.map(a => (history[a.id] || []).length));
+  const voteHeaders = Array.from({ length: maxLen }, (_, i) => `vote_${i + 1}`);
+  const rows = [['agent_id', 'agent_name', 'weight', ...voteHeaders].join(',')];
+  for (const a of agents) {
+    const hist = history[a.id] || [];
+    const votes = hist.map(v => v ? 'true' : 'false');
+    while (votes.length < maxLen) votes.push('');
+    rows.push([a.id, `"${a.name}"`, (weights[a.id] || 0).toFixed(6), ...votes].join(','));
+  }
+  return rows.join('\n');
+}
+
+function parseWeightsCSV(csvText, agents) {
+  const lines = csvText.trim().split(/\r?\n/);
+  if (lines.length < 2) throw new Error('CSV must have at least a header row and one data row');
+  const headers = lines[0].split(',');
+  const idIdx = headers.indexOf('agent_id');
+  const wIdx  = headers.indexOf('weight');
+  if (idIdx === -1) throw new Error('Missing agent_id column');
+  if (wIdx  === -1) throw new Error('Missing weight column');
+  const voteIndices = headers.reduce((acc, h, i) => { if (h.startsWith('vote_')) acc.push(i); return acc; }, []);
+  const validIds = new Set(agents.map(a => a.id));
+  const weights = {}, history = {};
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(',').map(c => c.replace(/^"|"$/g, ''));
+    const id = cols[idIdx];
+    if (!validIds.has(id)) continue;
+    const w = parseFloat(cols[wIdx]);
+    if (!isNaN(w) && w >= 0) weights[id] = w;
+    const votes = voteIndices
+      .map(vi => cols[vi])
+      .filter(v => v === 'true' || v === 'false')
+      .map(v => v === 'true');
+    if (votes.length > 0) history[id] = votes;
+  }
+  const total = Object.values(weights).reduce((s, v) => s + v, 0);
+  if (total > 0) for (const k of Object.keys(weights)) weights[k] /= total;
+  return { weights, history };
+}
+
+// Exponentially weighted accuracy — recent trades count more (decay factor 1.1x per store)
 function decayAccuracy(hist) {
   if (!hist || hist.length < 2) return null;
   let wSum = 0, wCorr = 0;
@@ -4355,10 +4398,11 @@ window.ScreenMarket = ScreenMarket;
 <script type="text/babel" data-presets="react">
 // Settings screen — Alpaca connection + risk parameters
 
-const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset, onResetWeights, backendOk }) => {
+const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset, onResetWeights, onExportWeights, onImportWeights, backendOk }) => {
   const [showConnect, setShowConnect] = React.useState(false);
   const [connecting, setConnecting] = React.useState(false);
   const [connectErr, setConnectErr] = React.useState('');
+  const importCsvRef = React.useRef(null);
   const [form, setForm] = React.useState({
     env: 'paper',   // 'paper' | 'live'
     keyId: '',
@@ -4645,6 +4689,30 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
               <div className="tiny muted" style={{marginTop:2}}>Clear agent history, restore default weights</div>
             </span>
             <button className="btn" onClick={onResetWeights}>RESET →</button>
+          </div>
+          <div className="dialog-row">
+            <span className="l">
+              <div>Weights history</div>
+              <div className="tiny muted" style={{marginTop:2}}>Export or import agent weights &amp; vote history as CSV</div>
+            </span>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn" onClick={onExportWeights}>EXPORT CSV</button>
+              <button className="btn" onClick={()=>importCsvRef.current?.click()}>IMPORT CSV</button>
+              <input
+                ref={importCsvRef}
+                type="file"
+                accept=".csv"
+                style={{display:'none'}}
+                onChange={e => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = ev => onImportWeights(ev.target.result);
+                  reader.readAsText(file);
+                  e.target.value = '';
+                }}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -6017,6 +6085,40 @@ const App = () => {
     setShowWeightReset(false);
   };
 
+  const exportWeights = () => {
+    const csv = serializeWeightsCSV(AGENTS, agentWeights, agentHistory);
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `shoal_weights_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importWeights = (csvText) => {
+    const addToast = (type, text) => {
+      const t = { id: Date.now(), type, sym: 'CSV', text };
+      setToasts(prev => [...prev.slice(-4), t]);
+      setTimeout(() => setToasts(prev => prev.filter(x => x.id !== t.id)), 4500);
+    };
+    try {
+      const { weights, history } = parseWeightsCSV(csvText, AGENTS);
+      const imported = Object.keys(weights).length;
+      if (imported === 0) throw new Error('No valid agent rows found in file');
+      // Merge imported over current, then re-normalise across all agents
+      const merged = { ...agentWeights, ...weights };
+      const sum = Object.values(merged).reduce((s, v) => s + v, 0);
+      if (sum > 0) AGENTS.forEach(a => { merged[a.id] = (merged[a.id] || 0) / sum; });
+      setAgentWeights(merged);
+      setAgentHistory(h => ({ ...h, ...history }));
+      setAgentAccuracySeries({});
+      addToast('close-win', `Imported weights for ${imported} agent${imported !== 1 ? 's' : ''}`);
+    } catch (err) {
+      addToast('close-loss', 'Import failed: ' + err.message);
+    }
+  };
+
   // Global swarm execution — signal-driven trades with real TA, regardless of which screen is mounted.
   React.useEffect(() => {
     if (!running) return;
@@ -6423,7 +6525,7 @@ const App = () => {
     agentperf:   <ScreenAgentPerf mode={mode} ctx={ctx}/>,
     pnltrend:    <ScreenPnlTrend mode={mode} ctx={ctx}/>,
     agentconfig: <ScreenAgentConfig agentParams={agentParams} setAgentParams={setAgentParams} enabledAgents={enabledAgents} setEnabledAgents={setEnabledAgents} agentWeights={agentWeights} agentHistory={agentHistory}/>,
-    settings:    <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} onResetWeights={()=>setShowWeightReset(true)} backendOk={backendOk}/>,
+    settings:    <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} onResetWeights={()=>setShowWeightReset(true)} onExportWeights={exportWeights} onImportWeights={importWeights} backendOk={backendOk}/>,
   };
 
   const navItem = NAV.find(n => n.id === route);
