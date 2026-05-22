@@ -2202,6 +2202,38 @@ function genHeat() {
 }
 const HEATMAP = genHeat();
 
+// Classify a closed trade into one regime row and one outcome column.
+// Regimes are checked in priority order (vol → trend/chop → directional bias)
+// so every trade falls into exactly one row.
+function classifyRegime(trade) {
+  const vol = rollingVol(PRICE_HISTORY[trade.sym] || []);
+  if (vol > 0.40) return 'High vol';
+  if (vol > 0 && vol < 0.18) return 'Low vol';
+  const dis = trade.disagreement ?? 0.4;
+  if (dis < 0.30) return 'Trending';
+  if (dis > 0.55) return 'Choppy';
+  return trade.side === 'SELL' ? 'Risk-off' : 'Risk-on';
+}
+function classifyOutcome(trade) {
+  const p = trade.pnlPct ?? 0;
+  if (p >  0.03)  return 'Strong win';
+  if (p >  0.003) return 'Win';
+  if (p < -0.03)  return 'Strong loss';
+  if (p < -0.003) return 'Loss';
+  return 'Flat';
+}
+function computeRegimeHeatmap(closedTrades, regimes, outcomes) {
+  const grid = regimes.map(() => outcomes.map(() => 0));
+  for (const t of closedTrades) {
+    const r = classifyRegime(t);
+    const o = classifyOutcome(t);
+    const ri = regimes.indexOf(r);
+    const oi = outcomes.indexOf(o);
+    if (ri >= 0 && oi >= 0) grid[ri][oi]++;
+  }
+  return grid;
+}
+
 // predicted vs actual (last 60 days) — per-symbol
 function genPredVsActual(sym = 'NVDA') {
   const seedMix = Array.from(sym).reduce((a,c) => a + c.charCodeAt(0) * 17, 0);
@@ -2622,8 +2654,9 @@ function swarmTally(agents, decision, confidence) {
   return tally;
 }
 
-const Heatmap = ({ data, rows, cols }) => {
-  const max = Math.max(...data.flat());
+const Heatmap = ({ data, rows, cols, cellTitle }) => {
+  const flat = data.flat();
+  const max  = Math.max(1, ...flat);
   return (
     <div>
       <div className="heat" style={{gridTemplateColumns: `90px repeat(${cols.length}, 1fr)`}}>
@@ -2635,12 +2668,16 @@ const Heatmap = ({ data, rows, cols }) => {
             {cols.map((c, ci) => {
               const v = data[ri][ci];
               const t = v / max;
-              // diverge: left = wins (green), right = losses (red)
-              const isWin = ci < cols.length / 2;
-              const bg = isWin
-                ? `rgba(125, 216, 125, ${0.1 + t * 0.5})`
-                : `rgba(255, 107, 107, ${0.1 + t * 0.5})`;
-              return <div key={ci} className="heat-cell" style={{background: bg}}>{v}</div>;
+              // Middle column ("Flat") is neutral; left half = wins (green); right half = losses (red)
+              const isFlat = /flat/i.test(c) || ci === Math.floor(cols.length / 2);
+              const isWin  = !isFlat && ci < cols.length / 2;
+              const bg = isFlat
+                ? `rgba(170, 170, 180, ${0.05 + t * 0.18})`
+                : isWin
+                  ? `rgba(125, 216, 125, ${0.1 + t * 0.5})`
+                  : `rgba(255, 107, 107, ${0.1 + t * 0.5})`;
+              const title = cellTitle ? cellTitle(r, c, v) : `${r} × ${c}: ${v} trade${v === 1 ? '' : 's'}`;
+              return <div key={ci} className="heat-cell" style={{background: bg, cursor: 'help'}} title={title}>{v}</div>;
             })}
           </React.Fragment>
         ))}
@@ -2725,8 +2762,8 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
   const activeSymbol  = ctx?.activeSymbol || 'NVDA';
   const direction     = ctx?.direction || 'BOTH';
   const equityNow     = ctx?.balance ?? EQUITY.bot[EQUITY.bot.length - 1];
-  const equityStart   = EQUITY.bot[0];
-  const totalRet      = (equityNow - equityStart) / equityStart;
+  const equityStart   = ctx?.startingBalance ?? EQUITY.bot[0];
+  const totalRet      = equityStart > 0 ? (equityNow - equityStart) / equityStart : 0;
   const benchRet      = (EQUITY.bench[EQUITY.bench.length-1] - EQUITY.bench[0]) / EQUITY.bench[0];
   const visibleTrades = ctx?.trades || [];
   const wins   = visibleTrades.filter(t => t.status === 'WIN').length;
@@ -2785,7 +2822,12 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
     const wts = ctx?.agentWeights || {};
     const excl = ctx?.dynamicExcluded || new Set();
     const enabledSet = new Set(AGENTS.map(a => a.id).filter(id => !excl.has(id)));
+    const balanceNow = ctx?.balance ?? 0;
+    const openExposure = openTrades.reduce((s, t) => s + t.qty * t.price, 0);
+    const freeCash = balanceNow - openExposure;
+    const accountDepleted = balanceNow <= 100 || freeCash < 1;
     return TICKERS.map(tk => {
+      if (accountDepleted) return { sym: tk.sym, filter: 'NO FREE CASH', sector: tk.sector };
       if (blacklist.has(tk.sym)) return { sym: tk.sym, filter: 'BLACKLISTED', sector: tk.sector };
       const sigs = (ctx?.liveSignals || SIGNALS_ALL)[tk.sym];
       if (!sigs) return { sym: tk.sym, filter: 'NO SIGNALS', sector: tk.sector };
@@ -2857,7 +2899,8 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
             </span>
           </div>
           <div key={flashKey} className="kpi-value mono equity-live">{fmtMoney(equityNow, 0)}</div>
-          <div className={'kpi-delta ' + (totalRet >= 0 ? 'up' : 'dn')}>{fmtPct(totalRet)} · {Math.round(EQUITY.bot.length)}d</div>
+          <div className="mono tiny muted" style={{marginTop:2,letterSpacing:'0.04em'}}>start {fmtMoney(equityStart, 0)} → Δ {(equityNow - equityStart) >= 0 ? '+' : ''}{fmtMoney(equityNow - equityStart, 0)}</div>
+          <div className={'kpi-delta ' + (totalRet >= 0 ? 'up' : 'dn')}>{fmtPct(totalRet)} since reset</div>
         </div>
         <div className="kpi">
           <div className="kpi-label">vs S&P 500</div>
@@ -3656,10 +3699,25 @@ const ScreenLearning = ({ mode, ctx }) => {
 
         <div className="card">
           <div className="card-head">
-            <div className="card-title">Win/loss heatmap by regime</div>
-            <div className="card-meta">all closed trades</div>
+            <div className="card-title" style={{display:'flex',alignItems:'center',gap:6}}>
+              Win/loss heatmap by regime
+              <span title={'Each closed trade is bucketed into one market regime (rows) and one outcome (columns).\n\nRegime rules (checked in order):\n  • High vol  — annualised vol of the symbol > 40%\n  • Low vol   — annualised vol < 18%\n  • Trending  — swarm disagreement < 30%\n  • Choppy    — swarm disagreement > 55%\n  • Risk-on   — otherwise, BUY trades\n  • Risk-off  — otherwise, SELL trades\n\nOutcome rules (by realised return on the trade):\n  • Strong win  > +3%\n  • Win         +0.3% to +3%\n  • Flat        −0.3% to +0.3%\n  • Loss        −3% to −0.3%\n  • Strong loss < −3%\n\nGreen cells = wins, red = losses, grey = flat. Cell intensity scales with count. Hover any cell for the exact count.'}
+                style={{cursor:'help',color:'var(--ink-3)',fontSize:11,lineHeight:1}}>ⓘ</span>
+            </div>
+            {(() => {
+              const real = (ctx?.trades || []).filter(t => t.pnl != null);
+              return <div className="card-meta">{real.length > 0 ? `${real.length} closed trade${real.length === 1 ? '' : 's'}` : 'demo data · no closed trades yet'}</div>;
+            })()}
           </div>
-          <Heatmap data={HEATMAP} rows={REGIMES} cols={OUTCOMES}/>
+          {(() => {
+            const closed   = (ctx?.trades || []).filter(t => t.pnl != null);
+            const useReal  = closed.length >= 1;
+            const heatData = useReal ? computeRegimeHeatmap(closed, REGIMES, OUTCOMES) : HEATMAP;
+            const cellTitle = (r, c, v) => useReal
+              ? `${r} × ${c}: ${v} trade${v === 1 ? '' : 's'} out of ${closed.length} closed`
+              : `${r} × ${c}: ${v} (demo)`;
+            return <Heatmap data={heatData} rows={REGIMES} cols={OUTCOMES} cellTitle={cellTitle}/>;
+          })()}
           <div className="mono tiny muted" style={{marginTop:10}}>
             Bot performs strongly in <span className="up">trending / risk-on</span> regimes; struggles in <span className="dn">choppy</span> markets — explains the recent uptick in mean-reverter weight.
           </div>
@@ -5552,6 +5610,27 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
 const ScreenPnlTrend = ({ mode, ctx }) => {
   const { trades, tradesResetAt } = ctx || {};
   const resetAt = tradesResetAt || 0;
+  const startEquity = ctx?.startingBalance ?? EQUITY.bot[0];
+  const currentEquity = ctx?.balance ?? startEquity;
+  const equityDelta = currentEquity - startEquity;
+  const equityPct = startEquity > 0 ? equityDelta / startEquity : 0;
+
+  const EquityHeader = () => (
+    <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12,marginBottom:16}}>
+      <div className="card" style={{padding:'14px 16px'}}>
+        <div className="mono tiny muted" style={{letterSpacing:'0.1em',marginBottom:6}}>STARTING EQUITY</div>
+        <div className="mono" style={{fontSize:18}}>{fmtMoney(startEquity, 0)}</div>
+      </div>
+      <div className="card" style={{padding:'14px 16px'}}>
+        <div className="mono tiny muted" style={{letterSpacing:'0.1em',marginBottom:6}}>CURRENT EQUITY</div>
+        <div className="mono" style={{fontSize:18}}>{fmtMoney(currentEquity, 0)}</div>
+      </div>
+      <div className="card" style={{padding:'14px 16px'}}>
+        <div className="mono tiny muted" style={{letterSpacing:'0.1em',marginBottom:6}}>NET CHANGE</div>
+        <div className={'mono ' + (equityDelta >= 0 ? 'up' : 'dn')} style={{fontSize:18}}>{equityDelta >= 0 ? '+' : ''}{fmtMoney(equityDelta, 0)} <span style={{fontSize:12,opacity:0.7}}>({equityPct >= 0 ? '+' : ''}{(equityPct*100).toFixed(1)}%)</span></div>
+      </div>
+    </div>
+  );
 
   const closed = React.useMemo(() =>
     (trades || [])
@@ -5567,6 +5646,7 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
         <h1 className="page-title">P/L trend</h1>
         <p className="page-sub">No closed trades since last reset.</p>
       </div>
+      <EquityHeader/>
     </div>
   );
 
@@ -5596,6 +5676,8 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
           Cumulative <em className={totalPnl >= 0 ? 'up' : 'dn'}>{totalPnl >= 0 ? 'gain' : 'loss'}</em> across {closed.length} closed trade{closed.length !== 1 ? 's' : ''}
         </h1>
       </div>
+
+      <EquityHeader/>
 
       <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:12,marginBottom:16}}>
         {[
@@ -5931,6 +6013,10 @@ const App = () => {
     const s = localStorage.getItem('shoal_balance');
     return s ? +s : EQUITY.bot[EQUITY.bot.length-1];
   });
+  const [startingBalance, setStartingBalance] = React.useState(() => {
+    const s = localStorage.getItem('shoal_starting_balance');
+    return s ? +s : EQUITY.bot[0];
+  });
   const [pnl, setPnl] = React.useState(() => {
     const s = localStorage.getItem('shoal_pnl');
     return s ? +s : EQUITY.bot[EQUITY.bot.length-1] - EQUITY.bot[0];
@@ -6213,6 +6299,7 @@ const App = () => {
   React.useEffect(() => { localStorage.setItem('shoal_sym', activeSymbol); }, [activeSymbol]);
   React.useEffect(() => { localStorage.setItem('shoal_dir', direction); }, [direction]);
   React.useEffect(() => { localStorage.setItem('shoal_balance', balance); }, [balance]);
+  React.useEffect(() => { localStorage.setItem('shoal_starting_balance', startingBalance); }, [startingBalance]);
   React.useEffect(() => { localStorage.setItem('shoal_pnl', pnl); }, [pnl]);
   React.useEffect(() => { localStorage.setItem('shoal_trades_reset_at', tradesResetAt); }, [tradesResetAt]);
 
@@ -6229,6 +6316,7 @@ const App = () => {
 
   const resetAccount = (startingBal) => {
     setBalance(startingBal);
+    setStartingBalance(startingBal);
     setPnl(0);
     const now = Date.now();
     setTradesResetAt(now);
@@ -6396,6 +6484,16 @@ const App = () => {
         const minCons     = riskNow.minConsensus   ?? 5;
         const blacklist   = blacklistedSymbolsRef.current;
 
+        // Guard rail: never place a new trade if the account would be wiped.
+        // Skip the entire scan if free cash (balance − open exposure) is below
+        // a minimum threshold, or below the new trade's notional.
+        const balanceNow = balanceRef.current ?? 0;
+        const openExposure = tradesRef.current
+          .filter(t => t.status === 'OPEN')
+          .reduce((s, t) => s + t.qty * t.price, 0);
+        const freeCash = balanceNow - openExposure;
+        if (balanceNow <= 100 || freeCash <= 0) return;
+
         // [8] Half-Kelly sizing from cached decay-weighted accuracy
         const avgWinRate = AGENTS.reduce((s, a) => s + (accCache.get(a.id) ?? a.accuracy), 0) / AGENTS.length;
         const kellyFrac = Math.max(0.15, Math.min(0.5, 2 * (avgWinRate - 0.5)));
@@ -6473,10 +6571,13 @@ const App = () => {
           const { tk, sigs, ens: ensemble, side } = chosen;
           setSwarmFocus({ sym: tk.sym, votes: ensemble.votes, dir: ensemble.dir, confidence: ensemble.confidence, ts: Date.now() });
           const price = (livePricesRef.current[tk.sym] || tk.last) * (1 + (Math.random() - 0.5) * 0.001);
-          // [8] Kelly-adjusted notional — scales with historical win rate
-          const notional = parseFloat((maxVal * ensemble.confidence * (0.5 + kellyFrac)).toFixed(2));
+          // [8] Kelly-adjusted notional — scales with historical win rate, capped at free cash.
+          const rawNotional = maxVal * ensemble.confidence * (0.5 + kellyFrac);
+          const notional = parseFloat(Math.min(rawNotional, freeCash).toFixed(2));
           const qty = parseFloat((notional / price).toFixed(4));
 
+          // Skip if free cash can't even cover a minimum-meaningful position.
+          if (notional < 1) return;
           if (qty >= 0.001) {
             const voteHistory = Array.from({length:3}, (_, i) => {
               const perturbedSigs = {};
@@ -6685,7 +6786,7 @@ const App = () => {
     return trades.filter(t => t.pnl != null && (t.exitTs || 0) >= midnight).reduce((s, t) => s + t.pnl, 0);
   }, [trades]);
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
