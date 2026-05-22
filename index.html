@@ -5700,6 +5700,8 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
   // Prepend startEquity so the chart starts at the reset baseline.
   const equitySeries = [startEquity, ...closed.map(t => { cum += t.pnl; return startEquity + cum; })];
   const totalPnl  = cum;
+  let cumRun = 0;
+  const cumPnlSeries = [0, ...closed.map(t => { cumRun += t.pnl; return cumRun; })];
   const timeLabels = ['start', ...closed.map(t => {
     const utc = new Date(t.exitTs || t.ts);
     const et = new Date(utc.toLocaleString('en-US', { timeZone: 'America/New_York' }));
@@ -5742,22 +5744,41 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
         ))}
       </div>
 
-      <div className="card" style={{marginBottom:16}}>
-        <div className="card-head">
-          <div className="card-title">Equity after each trade</div>
-          <div className="card-meta">{closed.length} trades · starting at {fmtMoney(startEquity, 0)}</div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Equity after each trade</div>
+            <div className="card-meta">{closed.length} trades · starting at {fmtMoney(startEquity, 0)}</div>
+          </div>
+          <LineChart
+            series={[equitySeries]}
+            zeroCrossColors={['var(--up)', 'var(--down)']}
+            crossValue={startEquity}
+            labels={['Equity']}
+            height={220}
+            yFmt={v => fmtMoney(v, 0)}
+            fillFirst={true}
+            xLabels={timeLabels}
+            hLines={[{value: startEquity, color: 'var(--ink-4)', label: 'start ' + fmtMoney(startEquity, 0)}]}
+          />
         </div>
-        <LineChart
-          series={[equitySeries]}
-          zeroCrossColors={['var(--up)', 'var(--down)']}
-          crossValue={startEquity}
-          labels={['Equity']}
-          height={240}
-          yFmt={v => fmtMoney(v, 0)}
-          fillFirst={true}
-          xLabels={timeLabels}
-          hLines={[{value: startEquity, color: 'var(--ink-4)', label: 'start ' + fmtMoney(startEquity, 0)}]}
-        />
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Cumulative P&amp;L after each trade</div>
+            <div className="card-meta">{closed.length} closed trades · realized only</div>
+          </div>
+          <LineChart
+            series={[cumPnlSeries]}
+            zeroCrossColors={['var(--up)', 'var(--down)']}
+            crossValue={0}
+            labels={['Cum P&L']}
+            height={220}
+            yFmt={v => (v >= 0 ? '+' : '') + fmtMoney(v, 0)}
+            fillFirst={true}
+            xLabels={timeLabels}
+            hLines={[{value: 0, color: 'var(--ink-4)', label: 'breakeven'}]}
+          />
+        </div>
       </div>
 
       <div className="card" style={{marginBottom:16}}>
