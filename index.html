@@ -5748,7 +5748,7 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
         </div>
         <LineChart
           series={[equitySeries]}
-          colors={[totalPnl >= 0 ? 'var(--up)' : 'var(--down)']}
+          colors={[currentEquity >= startEquity ? 'var(--up)' : 'var(--down)']}
           labels={['Equity']}
           height={240}
           yFmt={v => fmtMoney(v, 0)}
@@ -6073,7 +6073,7 @@ const App = () => {
     const saved = localStorage.getItem('shoal_alpaca');
     return saved ? JSON.parse(saved) : { connected: false, balance: 0, account: null, broker: 'Alpaca Markets' };
   });
-  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 50, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, autoDisableAgents: true, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48 });
+  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 50, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, autoDisableAgents: false, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48 });
   const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(() => new Set());
   const [slippageLog, setSlippageLog] = React.useState([]);
 
