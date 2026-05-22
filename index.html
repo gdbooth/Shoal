@@ -1836,6 +1836,27 @@ function rollingVol(prices, window = 10) {
   return Math.sqrt(variance * 252); // annualized
 }
 
+// Deterministic mark price for an open trade — matches the swarm tick's
+// exit-gate model so the displayed unrealized P&L lines up with what the
+// gate sees. Live Alpaca prices override when available.
+function computeMark(trade, livePrices) {
+  const live = livePrices && livePrices[trade.sym];
+  if (live && live > 0) return live;
+  const elapsedMs = Date.now() - trade.ts;
+  const symSeed = trade.sym.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
+  const drift = Math.sin(symSeed * 0.07 + elapsedMs * 0.000002) * 0.03;
+  const elapsedH = elapsedMs / 3600000;
+  const noise = Math.sin(elapsedH * 1.7 + symSeed * 0.031) * 0.012;
+  return trade.price * (1 + drift + noise);
+}
+function unrealizedPnl(trade, livePrices) {
+  if (typeof trade._upnl === 'number') return trade._upnl; // real Alpaca position
+  const mark = computeMark(trade, livePrices);
+  return (mark - trade.price) * trade.qty * (trade.side === 'BUY' ? 1 : -1);
+}
+window.computeMark = computeMark;
+window.unrealizedPnl = unrealizedPnl;
+
 // Narrative reason from top-3 agents supporting the ensemble direction
 function buildReason(signals, ensemble) {
   if (!ensemble.dir || !signals) return '–';
@@ -3042,8 +3063,8 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
             <thead><tr><th>Sym</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th style={{textAlign:'right'}}>Unreal P&L</th></tr></thead>
             <tbody>
               {openP.slice(0,5).map(t => {
-                const mark = t.price * (1 + (Math.sin(tick*0.3 + t.sym.charCodeAt(0)) * 0.008));
-                const upnl = (mark - t.price) * t.qty * (t.side === 'BUY' ? 1 : -1);
+                const mark = computeMark(t, ctx?.livePrices);
+                const upnl = unrealizedPnl(t, ctx?.livePrices);
                 return (
                   <tr key={t.id} onClick={()=>onTradeClick(t)}>
                     <td className="mono">{t.sym}</td>
@@ -6066,6 +6087,8 @@ const App = () => {
   const activeSymbolRef  = React.useRef(activeSymbol);
   const blacklistedSymbolsRef = React.useRef(blacklistedSymbols);
   const balanceRef       = React.useRef(balance);
+  const startingBalanceRef = React.useRef(startingBalance);
+  React.useEffect(() => { startingBalanceRef.current = startingBalance; }, [startingBalance]);
   React.useEffect(() => { agentWeightsRef.current  = agentWeights;  }, [agentWeights]);
   React.useEffect(() => { agentHistoryRef.current   = agentHistory;   }, [agentHistory]);
   React.useEffect(() => { riskRef.current = risk; }, [risk]);
@@ -6654,22 +6677,29 @@ const App = () => {
     return () => clearInterval(ivl);
   }, [running, mode, direction, risk]);
 
-  // Live equity pulse — faster when a directional bias is active.
-  // Each tick: small drift + jitter. BOTH = slow & balanced, LONG/SHORT = faster with directional drift.
+  // Live equity = startingBalance + Σ realized P&L + Σ unrealized P&L on open positions.
+  // Recomputed on every tick so the dashboard equity, P/L trend, and the swarm tick's
+  // zero-balance guard all read the same number. Bypassed when an Alpaca account is
+  // connected — SSE pushes the real account equity directly via setBalance().
   React.useEffect(() => {
     if (!running) return;
-    const hz = direction === 'BOTH' ? 1400 : 600; // ms between updates
-    const driftBias = direction === 'LONG' ? 0.0008 : direction === 'SHORT' ? 0.0007 : 0.0004;
-    const vol = direction === 'BOTH' ? 0.0008 : 0.0018;
-    const ivl = setInterval(() => {
-      // Don't overwrite real balance when SSE is streaming live account data
-      if (alpacaRef.current?.token && mode === 'LIVE') return;
-      const r = (Math.random() - 0.5) * vol * 2 + driftBias;
-      setBalance(b => Math.max(1000, b * (1 + r)));
-      setPnl(p => p + (Math.random() - 0.48) * 140 * (direction === 'BOTH' ? 0.6 : 1.4));
-    }, hz);
+    const recompute = () => {
+      if (alpacaRef.current?.token && (mode === 'LIVE' || mode === 'VIRTUAL')) return;
+      const ts = tradesRef.current || [];
+      const lp = livePricesRef.current || {};
+      let realized = 0, unrealized = 0;
+      for (const t of ts) {
+        if (t.pnl != null) realized += t.pnl;
+        else if (t.status === 'OPEN') unrealized += unrealizedPnl(t, lp);
+      }
+      const equity = startingBalanceRef.current + realized + unrealized;
+      setBalance(equity);
+      setPnl(realized + unrealized);
+    };
+    recompute();
+    const ivl = setInterval(recompute, 800);
     return () => clearInterval(ivl);
-  }, [running, direction]);
+  }, [running, mode]);
 
   // Theme: apply/remove .light class on <html>
   React.useEffect(() => {
