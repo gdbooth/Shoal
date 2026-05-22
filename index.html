@@ -2909,18 +2909,20 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
           {(() => {
             const sigs = ctx?.lastSignals;
             const wts  = ctx?.agentWeights || {};
-            const ens  = sigs ? computeEnsemble(sigs, wts) : null;
+            const excl = ctx?.dynamicExcluded || new Set();
+            const enabledSet = new Set(AGENTS.map(a => a.id).filter(id => !excl.has(id)));
+            const ens  = sigs ? computeEnsemble(sigs, wts, enabledSet) : null;
             const dec  = ens?.dir || (direction === 'SHORT' ? 'SELL' : 'BUY');
             const conf = ens?.confidence || 0.71;
             const tally = { buy: 0, sell: 0, hold: 0 };
             AGENTS.forEach(a => { const v = ens?.votes?.[a.id]; tally[v === 1 ? 'buy' : v === -1 ? 'sell' : 'hold']++; });
             return (<>
-              <SwarmViz agents={AGENTS} decision={dec} confidence={conf} tick={tick} agentVotes={ens?.votes || null} excludedSet={ctx?.dynamicExcluded || null}/>
+              <SwarmViz agents={AGENTS} decision={dec} confidence={conf} tick={tick} agentVotes={ens?.votes || null} excludedSet={excl}/>
               <div style={{marginTop:12,display:'flex',justifyContent:'space-between',fontFamily:'var(--mono)',fontSize:11}}>
                 <span className="muted">{tally.buy} BUY · {tally.sell} SELL · {tally.hold} HOLD</span>
                 <span className={dec === 'BUY' ? 'up' : 'dn'}>{dec === 'BUY' ? 'conviction rising →' : 'conviction falling →'}</span>
               </div>
-              {ctx?.dynamicExcluded?.size > 0 && <div style={{marginTop:6,fontFamily:'var(--mono)',fontSize:10,color:'var(--warn)'}}>⚠ {ctx.dynamicExcluded.size} agent{ctx.dynamicExcluded.size>1?'s':''} manually disabled — shown greyed out</div>}
+              {excl.size > 0 && <div style={{marginTop:6,fontFamily:'var(--mono)',fontSize:10,color:'var(--warn)'}}>⚠ {excl.size} agent{excl.size>1?'s':''} excluded — shown greyed out</div>}
             </>);
           })()}
         </div>
