@@ -2401,7 +2401,7 @@ Object.assign(window, { Icon, Sparkline, ModeBadge, TickerStrip });
 // Charts — all hand-rolled SVG. Equity, stacked area weights, scatter pred-vs-actual,
 // price chart, swarm visualization, heatmap, donut, etc.
 
-const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--ink-3)'], labels = [], yFmt = v => v.toFixed(0), fillFirst = true, solidLines = false, xLabels = null, zeroCrossColors = null, endLabels = null, hLines = null }) => {
+const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--ink-3)'], labels = [], yFmt = v => v.toFixed(0), fillFirst = true, solidLines = false, xLabels = null, zeroCrossColors = null, crossValue = 0, endLabels = null, hLines = null }) => {
   const [hover, setHover] = React.useState(null);
   const hasEnd = endLabels && endLabels.some(Boolean);
   const W = 700, H = height, pad = { l: 50, r: hasEnd ? 68 : 12, t: 14, b: 22 };
@@ -2417,9 +2417,10 @@ const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--in
   const x = i => pad.l + (i / Math.max(1, len - 1)) * innerW;
   const y = v => pad.t + innerH - ((v - min) / range) * innerH;
 
-  // Zero-crossing gradient: green above y=0, red below
+  // Cross-line gradient: positive colour above `crossValue`, negative colour below.
+  // Default crossValue=0 → classic green-above-zero / red-below-zero behaviour.
   const useZeroCross = zeroCrossColors && series.length >= 1;
-  const zeroY = y(0);
+  const zeroY = y(crossValue);
   const zeroFrac = Math.max(0.001, Math.min(0.999, (zeroY - pad.t) / innerH));
   const [posCol, negCol] = zeroCrossColors || ['var(--up)', 'var(--down)'];
 
@@ -2464,8 +2465,8 @@ const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--in
             <text x={pad.l - 6} y={pad.t + innerH * t + 3} textAnchor="end" className="axis-text">{yFmt(max - range * t)}</text>
           </g>
         ))}
-        {/* Zero baseline when chart spans positive and negative */}
-        {useZeroCross && rawMin < 0 && rawMax > 0 && (
+        {/* Baseline at crossValue when the chart spans both sides of it */}
+        {useZeroCross && rawMin < crossValue && rawMax > crossValue && (
           <line x1={pad.l} x2={W - pad.r} y1={zeroY} y2={zeroY} stroke="var(--ink-2)" strokeWidth="0.6" opacity="0.4"/>
         )}
         {/* Horizontal reference lines (e.g. confidence threshold) */}
@@ -2492,7 +2493,7 @@ const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--in
           return (
             <g key={idx}>
               {idx === 0 && fillFirst && (() => {
-                const base = (useZeroCross && rawMin <= 0 && rawMax >= 0) ? y(0) : pad.t + innerH;
+                const base = (useZeroCross && rawMin <= crossValue && rawMax >= crossValue) ? y(crossValue) : pad.t + innerH;
                 const validPts = s.map((v, i) => v != null ? `${x(i)},${y(v)}` : null).filter(Boolean);
                 if (!validPts.length) return null;
                 const fi = s.findIndex(v => v != null), li = s.length - 1 - [...s].reverse().findIndex(v => v != null);
@@ -5748,7 +5749,8 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
         </div>
         <LineChart
           series={[equitySeries]}
-          colors={[currentEquity >= startEquity ? 'var(--up)' : 'var(--down)']}
+          zeroCrossColors={['var(--up)', 'var(--down)']}
+          crossValue={startEquity}
           labels={['Equity']}
           height={240}
           yFmt={v => fmtMoney(v, 0)}
