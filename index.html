@@ -3546,6 +3546,29 @@ const ScreenLearning = ({ mode, ctx }) => {
   const setWeightHistory = ctx?.setWeightHistory;
   const whImportRef   = React.useRef(null);
   const [whStatus, setWhStatus] = React.useState(null); // { ok: bool, msg: string }
+  const [whView,   setWhView]   = React.useState('days'); // 'days' | 'trades'
+
+  // Last-90-trades weight evolution: replay updateAgentWeights over the last ≤90 closed trades
+  const tradeWeightSeries = React.useMemo(() => {
+    const closed = (ctx?.trades || []).filter(t => t.pnl != null && t.votes);
+    const slice  = closed.slice(-90);
+    if (slice.length === 0) return null;
+    const total = AGENTS.reduce((s, a) => s + a.weight, 0);
+    let w = {};
+    AGENTS.forEach(a => { w[a.id] = a.weight / total; });
+    const series = {};
+    AGENTS.forEach(a => { series[a.id] = []; });
+    for (const trade of slice) {
+      w = updateAgentWeights(w, trade);
+      AGENTS.forEach(a => { series[a.id].push(w[a.id]); });
+    }
+    return series;
+  }, [ctx?.trades]);
+
+  const activeSeries = whView === 'trades' && tradeWeightSeries ? tradeWeightSeries : weightHistory;
+  const activeLabel  = whView === 'trades'
+    ? `last ${tradeWeightSeries ? Math.max(...AGENTS.map(a => (tradeWeightSeries[a.id]||[]).length)) : 0} trades`
+    : '90 days';
 
   const handleExportWH = () => {
     const csv = serializeWeightHistoryCSV(AGENTS, weightHistory);
@@ -3599,10 +3622,13 @@ const ScreenLearning = ({ mode, ctx }) => {
       <div className="grid-2" style={{marginBottom:16}}>
         <div className="card">
           <div className="card-head">
-            <div className="card-title">Agent weights · 90 days</div>
-            <div className="card-meta">stacked, 100% normalized</div>
+            <div className="card-title">Agent weights · {activeLabel}</div>
+            <div style={{display:'flex',alignItems:'center',gap:4}}>
+              <button className={'btn' + (whView==='days'   ? ' primary' : '')} style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setWhView('days')}>90 DAYS</button>
+              <button className={'btn' + (whView==='trades' ? ' primary' : '')} style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setWhView('trades')}>90 TRADES</button>
+            </div>
           </div>
-          <StackedArea series={weightHistory} keys={AGENTS.map(a=>a.id)} colors={colors}/>
+          <StackedArea series={activeSeries} keys={AGENTS.map(a=>a.id)} colors={colors}/>
           <div className="legend" style={{marginTop:10}}>
             {AGENTS.map((a, i) => (
               <span key={a.id}><span className="legend-dot" style={{background:colors[i]}}></span>{a.name.split(' ')[0]}</span>
