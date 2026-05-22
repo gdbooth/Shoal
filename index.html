@@ -2709,13 +2709,11 @@ const ToastOverlay = ({ toasts, onRemove }) => (
   <div className="toast-container">
     {toasts.map(t => (
       <div key={t.id} className={'toast ' + t.type} onClick={() => onRemove(t.id)}>
-        <span style={{fontSize:16,lineHeight:1}}>
+        <span style={{fontSize:11,lineHeight:1}}>
           {t.type === 'buy' ? '↑' : t.type === 'sell' ? '↓' : t.type === 'close-win' ? '✓' : '✗'}
         </span>
-        <div>
-          <div style={{color:'var(--ink)',marginBottom:2,fontWeight:500}}>{t.sym}</div>
-          <div style={{color:'var(--ink-3)',fontSize:10}}>{t.text}</div>
-        </div>
+        <span style={{fontWeight:500}}>{t.sym}</span>
+        <span style={{color:'var(--ink-3)'}}>{t.text}</span>
       </div>
     ))}
   </div>
