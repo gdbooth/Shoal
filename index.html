@@ -5636,22 +5636,45 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
   const equityDelta = currentEquity - startEquity;
   const equityPct = startEquity > 0 ? equityDelta / startEquity : 0;
 
-  const EquityHeader = () => (
-    <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12,marginBottom:16}}>
-      <div className="card" style={{padding:'14px 16px'}}>
-        <div className="mono tiny muted" style={{letterSpacing:'0.1em',marginBottom:6}}>STARTING EQUITY</div>
-        <div className="mono" style={{fontSize:18}}>{fmtMoney(startEquity, 0)}</div>
+  const EquityHeader = () => {
+    const lp = ctx?.livePrices;
+    const ts = trades || [];
+    const realized   = ts.filter(t => t.pnl != null && t.ts >= resetAt).reduce((s, t) => s + t.pnl, 0);
+    const unrealized = ts.filter(t => t.status === 'OPEN').reduce((s, t) => s + unrealizedPnl(t, lp), 0);
+
+    const Card = ({ label, value, valueClass = '', sub }) => (
+      <div className="card" style={{padding:'12px 14px'}}>
+        <div className="mono tiny muted" style={{letterSpacing:'0.1em',marginBottom:6}}>{label}</div>
+        <div className={'mono ' + valueClass} style={{fontSize:17}}>{value}</div>
+        <div className="mono tiny muted" style={{marginTop:6,lineHeight:1.4,fontSize:10,letterSpacing:'0.02em'}}>{sub}</div>
       </div>
-      <div className="card" style={{padding:'14px 16px'}}>
-        <div className="mono tiny muted" style={{letterSpacing:'0.1em',marginBottom:6}}>CURRENT EQUITY</div>
-        <div className="mono" style={{fontSize:18}}>{fmtMoney(currentEquity, 0)}</div>
+    );
+
+    const signed = (n) => (n >= 0 ? '+' : '') + fmtMoney(n, 0);
+
+    return (
+      <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10,marginBottom:16}}>
+        <Card label="STARTING EQUITY"
+              value={fmtMoney(startEquity, 0)}
+              sub="Account value at last reset"/>
+        <Card label="CURRENT EQUITY"
+              value={fmtMoney(currentEquity, 0)}
+              sub="Starting + realized + unrealized"/>
+        <Card label="REALIZED P&L"
+              value={signed(realized)}
+              valueClass={realized >= 0 ? 'up' : 'dn'}
+              sub="Σ P&L of closed trades since reset"/>
+        <Card label="UNREALIZED P&L"
+              value={signed(unrealized)}
+              valueClass={unrealized >= 0 ? 'up' : 'dn'}
+              sub="Open positions, marked-to-market"/>
+        <Card label="NET CHANGE"
+              value={<>{signed(equityDelta)} <span style={{fontSize:12,opacity:0.7}}>({equityPct >= 0 ? '+' : ''}{(equityPct*100).toFixed(1)}%)</span></>}
+              valueClass={equityDelta >= 0 ? 'up' : 'dn'}
+              sub="Realized + unrealized = current − starting"/>
       </div>
-      <div className="card" style={{padding:'14px 16px'}}>
-        <div className="mono tiny muted" style={{letterSpacing:'0.1em',marginBottom:6}}>NET CHANGE</div>
-        <div className={'mono ' + (equityDelta >= 0 ? 'up' : 'dn')} style={{fontSize:18}}>{equityDelta >= 0 ? '+' : ''}{fmtMoney(equityDelta, 0)} <span style={{fontSize:12,opacity:0.7}}>({equityPct >= 0 ? '+' : ''}{(equityPct*100).toFixed(1)}%)</span></div>
-      </div>
-    </div>
-  );
+    );
+  };
 
   const closed = React.useMemo(() =>
     (trades || [])
