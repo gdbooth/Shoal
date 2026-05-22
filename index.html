@@ -1762,6 +1762,48 @@ function parseWeightsCSV(csvText, agents) {
   return { weights, history };
 }
 
+function serializeWeightHistoryCSV(agents, weightHistory) {
+  const numDays = Math.max(0, ...agents.map(a => (weightHistory[a.id] || []).length));
+  const headers = ['day', ...agents.map(a => a.id)].join(',');
+  const rows = [];
+  for (let d = 0; d < numDays; d++) {
+    const vals = agents.map(a => (weightHistory[a.id]?.[d] ?? 0).toFixed(6));
+    rows.push([d, ...vals].join(','));
+  }
+  return [headers, ...rows].join('\n');
+}
+
+function parseWeightHistoryCSV(csvText, agents) {
+  const lines = csvText.trim().split(/\r?\n/);
+  if (lines.length < 2) throw new Error('CSV needs a header row and at least one data row');
+  const headers = lines[0].split(',');
+  const agentCols = {};
+  for (const a of agents) {
+    const idx = headers.indexOf(a.id);
+    if (idx !== -1) agentCols[a.id] = idx;
+  }
+  if (Object.keys(agentCols).length === 0) throw new Error('No recognised agent ID columns found');
+  const series = {};
+  agents.forEach(a => { series[a.id] = []; });
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(',');
+    agents.forEach(a => {
+      const idx = agentCols[a.id];
+      const v = idx !== undefined ? parseFloat(cols[idx]) : NaN;
+      series[a.id].push(isNaN(v) ? 0 : Math.max(0, v));
+    });
+  }
+  // Re-normalise each timestep so rows sum to 1
+  const numDays = Math.max(...agents.map(a => series[a.id].length));
+  for (let d = 0; d < numDays; d++) {
+    const sum = agents.reduce((s, a) => s + (series[a.id][d] || 0), 0);
+    if (sum > 0) agents.forEach(a => { series[a.id][d] /= sum; });
+  }
+  return series;
+}
+
 // Exponentially weighted accuracy — recent trades count more (decay factor 1.1x per store)
 function decayAccuracy(hist) {
   if (!hist || hist.length < 2) return null;
@@ -3492,6 +3534,41 @@ const ScreenLearning = ({ mode, ctx }) => {
   const colors        = AGENTS.map(a => a.color);
   const agentWeights  = ctx?.agentWeights || {};
   const agentHistory  = ctx?.agentHistory || {};
+  const weightHistory = ctx?.weightHistory || WEIGHT_HISTORY;
+  const setWeightHistory = ctx?.setWeightHistory;
+  const whImportRef   = React.useRef(null);
+  const [whStatus, setWhStatus] = React.useState(null); // { ok: bool, msg: string }
+
+  const handleExportWH = () => {
+    const csv = serializeWeightHistoryCSV(AGENTS, weightHistory);
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `shoal_weight_history_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportWH = (csvText) => {
+    try {
+      const series = parseWeightHistoryCSV(csvText, AGENTS);
+      const days = Math.max(...AGENTS.map(a => (series[a.id] || []).length));
+      if (days < 1) throw new Error('No data rows found');
+      setWeightHistory(series);
+      setWhStatus({ ok: true, msg: `Imported ${days}-day history` });
+    } catch (err) {
+      setWhStatus({ ok: false, msg: 'Import failed: ' + err.message });
+    }
+    setTimeout(() => setWhStatus(null), 4000);
+  };
+
+  const handleClearWH = () => {
+    setWeightHistory(genWeights());
+    localStorage.removeItem('shoal_weight_history');
+    setWhStatus({ ok: true, msg: 'History reset to defaults' });
+    setTimeout(() => setWhStatus(null), 3000);
+  };
   const closedReal    = (ctx?.trades || []).filter(t => t.pnl != null && t.votes);
   const dirAcc        = closedReal.length >= 3 ? closedReal.filter(t => t.pnl > 0).length / closedReal.length : 0.647;
   const avgConf       = closedReal.length >= 3 ? closedReal.reduce((s, t) => s + t.conf, 0) / closedReal.length : 0.71;
@@ -3514,11 +3591,29 @@ const ScreenLearning = ({ mode, ctx }) => {
             <div className="card-title">Agent weights · 90 days</div>
             <div className="card-meta">stacked, 100% normalized</div>
           </div>
-          <StackedArea series={WEIGHT_HISTORY} keys={AGENTS.map(a=>a.id)} colors={colors}/>
+          <StackedArea series={weightHistory} keys={AGENTS.map(a=>a.id)} colors={colors}/>
           <div className="legend" style={{marginTop:10}}>
             {AGENTS.map((a, i) => (
               <span key={a.id}><span className="legend-dot" style={{background:colors[i]}}></span>{a.name.split(' ')[0]}</span>
             ))}
+          </div>
+          <div style={{marginTop:12,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+            <button className="btn" style={{fontSize:11}} onClick={handleExportWH}>EXPORT CSV</button>
+            <button className="btn" style={{fontSize:11}} onClick={()=>whImportRef.current?.click()}>IMPORT CSV</button>
+            <button className="btn" style={{fontSize:11}} onClick={handleClearWH}>CLEAR</button>
+            <input ref={whImportRef} type="file" accept=".csv" style={{display:'none'}} onChange={e=>{
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const reader = new FileReader();
+              reader.onload = ev => handleImportWH(ev.target.result);
+              reader.readAsText(file);
+              e.target.value = '';
+            }}/>
+            {whStatus && (
+              <span className={'mono'} style={{fontSize:10,color:whStatus.ok?'var(--up)':'var(--down)',marginLeft:4}}>
+                {whStatus.ok ? '✓' : '✗'} {whStatus.msg}
+              </span>
+            )}
           </div>
         </div>
 
@@ -5825,6 +5920,13 @@ const App = () => {
   const [agentParams, setAgentParams] = React.useState({});
   const [enabledAgents, setEnabledAgents] = React.useState(() => new Set(AGENTS.map(a => a.id)));
   const [confHistory, setConfHistory] = React.useState(() => [...CONFIDENCE_HISTORY]);
+  const [weightHistory, setWeightHistory] = React.useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('shoal_weight_history') || 'null');
+      if (stored && typeof stored === 'object' && Object.keys(stored).length > 0) return stored;
+    } catch (_) {}
+    return WEIGHT_HISTORY;
+  });
   const agentWeightsRef  = React.useRef(agentWeights);
   const agentHistoryRef  = React.useRef(agentHistory);
   const enabledAgentsRef = React.useRef(enabledAgents);
@@ -6062,6 +6164,7 @@ const App = () => {
   }, [alpaca.connected, alpaca.token, streamRetry]);
 
   React.useEffect(() => { localStorage.setItem('shoal_agent_history', JSON.stringify(agentHistory)); }, [agentHistory]);
+  React.useEffect(() => { localStorage.setItem('shoal_weight_history', JSON.stringify(weightHistory)); }, [weightHistory]);
   React.useEffect(() => { localStorage.setItem('shoal_sym', activeSymbol); }, [activeSymbol]);
   React.useEffect(() => { localStorage.setItem('shoal_dir', direction); }, [direction]);
   React.useEffect(() => { localStorage.setItem('shoal_balance', balance); }, [balance]);
@@ -6533,7 +6636,7 @@ const App = () => {
     return trades.filter(t => t.pnl != null && (t.exitTs || 0) >= midnight).reduce((s, t) => s + t.pnl, 0);
   }, [trades]);
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
