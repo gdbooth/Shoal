@@ -3572,9 +3572,12 @@ const ScreenLearning = ({ mode, ctx }) => {
   };
 
   const handleClearWH = () => {
-    setWeightHistory(genWeights());
+    const uniform = 1 / AGENTS.length;
+    const cleared = {};
+    AGENTS.forEach(a => { cleared[a.id] = Array(90).fill(uniform); });
+    setWeightHistory(cleared);
     localStorage.removeItem('shoal_weight_history');
-    setWhStatus({ ok: true, msg: 'History reset to defaults' });
+    setWhStatus({ ok: true, msg: 'History cleared' });
     setTimeout(() => setWhStatus(null), 3000);
   };
   const closedReal    = (ctx?.trades || []).filter(t => t.pnl != null && t.votes);
