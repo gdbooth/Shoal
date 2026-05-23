@@ -1577,11 +1577,13 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
   const vol20  = Math.sqrt(rets20.reduce((s,r)=>s+(r-meanR)**2,0)/volPer * 252);
   const vol = { dir: vol20 < volThr*0.65 ? 1 : vol20 > volThr*1.35 ? -1 : 0, strength: Math.min(0.9, Math.abs(vol20-volThr)/volThr) };
 
-  // skew: short vs long vol direction-of-change
-  const skFast = gp('skew','fast',5), skThr = gp('skew','thr',0.2);
-  const retsF  = rets(prices.slice(n - skFast - 1));
-  const volF   = Math.sqrt(retsF.reduce((s,r)=>s+r*r,0)/skFast * 252);
-  const volChg = vol20 > 0 ? (volF - vol20)/vol20 : 0;
+  // skew: short-window vol vs its own longer window — independent of vol agent
+  const skFast = gp('skew','fast',5), skSlowPer = gp('skew','slow',15), skThr = gp('skew','thr',0.2);
+  const retsSkF = rets(prices.slice(n - skFast - 1));
+  const volSkF  = Math.sqrt(retsSkF.reduce((s,r)=>s+r*r,0)/skFast * 252);
+  const retsSkS = rets(prices.slice(n - skSlowPer - 1));
+  const volSkS  = Math.sqrt(retsSkS.reduce((s,r)=>s+r*r,0)/skSlowPer * 252);
+  const volChg  = volSkS > 0 ? (volSkF - volSkS)/volSkS : 0;
   const skew = { dir: volChg > skThr ? -1 : volChg < -skThr ? 1 : 0, strength: Math.min(0.9, Math.abs(volChg)) };
 
   // patt: cosine-similarity k-NN on N-day return pattern
@@ -1607,13 +1609,12 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
   const earnDrift = (maEF - maES)/maES;
   const earn = { dir: earnDrift > eThr ? 1 : earnDrift < -eThr ? -1 : 0, strength: Math.min(0.9, Math.abs(earnDrift)*20) };
 
-  // fund: annualized Sharpe ratio
-  const fPer = gp('fund','period',20), fThr = gp('fund','thr',0.5);
-  const retsFund = rets(prices.slice(n - fPer - 1));
-  const meanRF   = retsFund.reduce((s,r)=>s+r,0)/fPer;
-  const stdRF    = Math.sqrt(retsFund.reduce((s,r)=>s+(r-meanRF)**2,0)/fPer) + 1e-6;
-  const annuSharpe = (meanRF/stdRF) * Math.sqrt(252);
-  const fund = { dir: annuSharpe > fThr ? 1 : annuSharpe < -fThr ? -1 : 0, strength: Math.min(0.9, Math.abs(annuSharpe)/(fThr*4)) };
+  // fund: long-term value deviation — contrarian, fires against trend when price is extreme
+  const fPer = gp('fund','period',60), fThr = gp('fund','thr',0.04);
+  if (n < fPer) return null;
+  const maLong = prices.slice(n - fPer).reduce((s,p) => s + p, 0) / fPer;
+  const valDev = (last - maLong) / maLong;
+  const fund = { dir: valDev > fThr ? -1 : valDev < -fThr ? 1 : 0, strength: Math.min(0.9, Math.abs(valDev) / (fThr * 3)) };
 
   // corr: market breadth (fraction above 5d MA)
   const cHi = gp('corr','breadthHi',0.6), cLo = gp('corr','breadthLo',0.4);
@@ -1654,18 +1655,24 @@ function computeSignals(sym, priceHistory, agentParams = {}, endIdx = null) {
   const mktMu   = mktRets.reduce((a,v)=>a+v,0)/mktRets.length;
   const macr    = { dir: mktMu > mThrMacr ? 1 : mktMu < -mThrMacr ? -1 : 0, strength: Math.min(0.9, Math.abs(mktMu)*25) };
 
-  // news: fast vs slow velocity differential
-  const nFast = gp('news','fast',3), nSlow = gp('news','slow',10), nThr = gp('news','thresh',0.01);
-  if (n <= nSlow + 1) return null;
-  const velF   = (last-prices[n-nFast-1])/prices[n-nFast-1];
-  const velS   = (last-prices[n-nSlow-1])/prices[n-nSlow-1];
-  const newsSig = velF - velS;
-  const news = { dir: newsSig > nThr ? 1 : newsSig < -nThr ? -1 : 0, strength: Math.min(0.9, Math.abs(newsSig)*30) };
+  // news: volume-price divergence — price trending up but "volume" (range) shrinking = bearish
+  // divergence, or price down but range expanding = potential reversal (contrarian signal)
+  const nPer = gp('news','period',10);
+  if (n < nPer + 2) return null;
+  const priceChg10 = (last - prices[n - nPer - 1]) / prices[n - nPer - 1];
+  const ranges10 = [];
+  for (let ri = n - nPer; ri < n; ri++) ranges10.push(Math.abs(prices[ri] - prices[ri - 1]) / prices[ri - 1]);
+  const rangeSlope = ranges10.length >= 2 ? (ranges10[ranges10.length - 1] - ranges10[0]) / (ranges10.length - 1) : 0;
+  const vpDiv = priceChg10 > 0 ? -rangeSlope * 500 : rangeSlope * 500;
+  const news = { dir: vpDiv > 0.3 ? -1 : vpDiv < -0.3 ? 1 : 0, strength: Math.min(0.9, Math.abs(vpDiv)) };
 
-  // soc: N-day momentum as social-sentiment proxy
-  const sPer = gp('soc','period',3), sThr = gp('soc','thresh',0.006);
-  const socRet = (last-prices[n-sPer-1])/prices[n-sPer-1];
-  const soc    = { dir: socRet > sThr ? 1 : socRet < -sThr ? -1 : 0, strength: Math.min(0.9, Math.abs(socRet)*50) };
+  // soc: rate-of-change reversal — fires when ROC is extreme and mean-reverting
+  // contrarian to momo: buys after sharp drops, sells after sharp spikes
+  const sPer = gp('soc','period',5), sSlow = gp('soc','slow',20);
+  const rocFast = n > sPer + 1 ? (last - prices[n - sPer - 1]) / prices[n - sPer - 1] : 0;
+  const rocSlow = n > sSlow + 1 ? (last - prices[n - sSlow - 1]) / prices[n - sSlow - 1] : 0;
+  const rocDiff = rocFast - rocSlow;
+  const soc = { dir: rocDiff < -0.015 ? 1 : rocDiff > 0.015 ? -1 : 0, strength: Math.min(0.9, Math.abs(rocDiff) * 30) };
 
   return { momo, mean, brkt, vwap, vol, skew, patt, earn, fund, corr, pair, flow, mm, macr, news, soc };
 }
@@ -1897,17 +1904,17 @@ const AGENT_PARAMS_DEFAULT = {
   brkt: { period: 20 },
   vwap: { period: 10, thresh: 0.012 },
   vol:  { period: 20, thr: 0.28 },
-  skew: { fast: 5,  thr: 0.2 },
+  skew: { fast: 5,  slow: 15, thr: 0.2 },
   patt: { len: 20 },
   earn: { fast: 30, slow: 60, thresh: 0.015 },
-  fund: { period: 20, thr: 0.5 },
+  fund: { period: 60, thr: 0.04 },
   corr: { breadthHi: 0.6, breadthLo: 0.4 },
   pair: { thr: 1.5 },
   flow: {},
   mm:   { period: 5, loThr: 0.006, hiThr: 0.022 },
   macr: { period: 10, thr: 0.01 },
-  news: { fast: 3,  slow: 10, thresh: 0.01 },
-  soc:  { period: 3, thresh: 0.006 },
+  news: { period: 10 },
+  soc:  { period: 5, slow: 20 },
 };
 
 const AGENT_PARAM_DEFS = {
@@ -1956,8 +1963,10 @@ const AGENT_PARAM_DEFS = {
       hint: 'Minimum post-earnings cumulative drift required before signalling. Filters genuine earnings momentum from normal day-to-day noise. Default 1.5% is a moderate bar — lower for more signals, raise to only trade strong earnings moves.' },
   ],
   fund: [
-    { key: 'thr',    label: 'Sharpe thr',  min: 0.2, max: 1.0, step: 0.1, fmt: v => v.toFixed(1),
-      hint: 'Minimum rolling Sharpe ratio for the stock to pass the fundamentals filter. Sharpe < threshold = agent votes neutral/skip. Default 0.5 is a reasonable quality screen. Raise to 0.7–0.8 to only trade the highest-quality risk-adjusted movers.' },
+    { key: 'period', label: 'MA period',   min: 30,  max: 120, step: 10,  fmt: v => `${v}d`,
+      hint: 'Long-term moving average period for value deviation. This contrarian agent fires SELL when price is far above the long MA (overvalued) and BUY when far below (undervalued). Default 60d.' },
+    { key: 'thr',    label: 'Dev. thr',    min: 0.02, max: 0.10, step: 0.01, fmt: v => `${(v*100).toFixed(0)}%`,
+      hint: 'Minimum deviation from long-term MA to trigger a signal. Lower = more frequent contrarian signals. Default 4% is moderate.' },
   ],
   corr: [
     { key: 'breadthHi', label: 'Bull breadth', min: 0.50, max: 0.80, step: 0.05, fmt: v => `${(v*100).toFixed(0)}%`,
@@ -1983,16 +1992,14 @@ const AGENT_PARAM_DEFS = {
       hint: 'Minimum macro indicator shift required to register a new regime. Low = triggers on small macro moves; high = only acts on significant regime changes. Default 1.0% filters day-to-day noise while still catching meaningful macro turns.' },
   ],
   news: [
-    { key: 'fast',   label: 'Fast window',  min: 1,    max: 7,    step: 1,     fmt: v => `${v}d`,
-      hint: 'Short lookback (in days) for detecting recent news-driven price acceleration. 1–2d catches breaking news immediately; 5–7d smooths over short-lived spikes. Default 3d is responsive without being overly reactive.' },
-    { key: 'thresh', label: 'Threshold',    min: 0.003, max: 0.03, step: 0.002, fmt: v => `${(v*100).toFixed(1)}%`,
-      hint: 'Minimum sentiment-proxy change needed to generate a signal. Raise to filter minor news ripples and only act on headline-moving events. Default 1.0% is a moderate filter — lower for more active news trading.' },
+    { key: 'period', label: 'Lookback',     min: 5,    max: 20,   step: 1,     fmt: v => `${v}d`,
+      hint: 'Window for measuring price-range divergence. Shorter = detects divergences earlier but more noise. Default 10d provides a stable reading of whether price and range are trending in opposite directions.' },
   ],
   soc: [
-    { key: 'period', label: 'Momentum win', min: 1,    max: 7,    step: 1,     fmt: v => `${v}d`,
-      hint: 'Rolling window for measuring social/retail sentiment momentum. Very short (1–2d) reacts to viral events in real time; longer windows reduce false positives from brief spikes. Default 3d balances speed and reliability.' },
-    { key: 'thresh', label: 'Threshold',    min: 0.002, max: 0.015, step: 0.001, fmt: v => `${(v*100).toFixed(1)}%`,
-      hint: 'Minimum sentiment-proxy shift to generate a signal. Lower = more active trading on social trends; higher = only acts on strong crowd momentum. Default 0.6% is intentionally conservative given how noisy social signals can be.' },
+    { key: 'period', label: 'Fast ROC',     min: 2,    max: 10,   step: 1,     fmt: v => `${v}d`,
+      hint: 'Short-term rate-of-change window. This agent fires against the recent trend: buys after sharp drops, sells after sharp spikes. Shorter = faster reversal signals. Default 5d.' },
+    { key: 'slow',   label: 'Slow ROC',     min: 10,   max: 40,   step: 5,     fmt: v => `${v}d`,
+      hint: 'Longer-term rate-of-change baseline. The agent compares fast ROC vs slow ROC and fires when the difference is extreme. Default 20d.' },
   ],
 };
 
@@ -2005,14 +2012,14 @@ const AGENT_OPTIMIZE_KEYS = {
   skew: { id: 'thr',        values: [0.10, 0.15, 0.20, 0.30, 0.40] },
   patt: { id: 'len',        values: [10, 15, 20, 25, 30] },
   earn: { id: 'fast',       values: [15, 20, 25, 30, 40] },
-  fund: { id: 'thr',        values: [0.3, 0.4, 0.5, 0.6, 0.8] },
+  fund: { id: 'period',     values: [30, 45, 60, 80, 120] },
   corr: { id: 'breadthHi',  values: [0.55, 0.60, 0.65, 0.70, 0.75] },
   pair: { id: 'thr',        values: [0.75, 1.0, 1.5, 2.0, 2.5] },
   flow: { id: null,         values: [] },
   mm:   { id: 'period',     values: [3, 4, 5, 6, 8] },
   macr: { id: 'period',     values: [5, 8, 10, 14, 20] },
-  news: { id: 'fast',       values: [1, 2, 3, 5, 7] },
-  soc:  { id: 'period',     values: [1, 2, 3, 5, 7] },
+  news: { id: 'period',     values: [5, 8, 10, 15, 20] },
+  soc:  { id: 'period',     values: [3, 5, 8, 10, 15] },
 };
 
 // Walk-forward accuracy backtest: grid-search one param for one agent
@@ -2059,10 +2066,10 @@ const AGENTS = [
   { id: 'mean', name: 'Mean Reverter',      glyph: '~', desc: 'RSI extremes · Bollinger snap-back',           weight: 0.08, accuracy: 0.58, color: '#7ec0ee', family: 'Technical' },
   { id: 'brkt', name: 'Breakout Scout',     glyph: '⟰', desc: 'Donchian / range-compression breaks',          weight: 0.06, accuracy: 0.56, color: '#a8d8b9', family: 'Technical' },
   { id: 'vwap', name: 'VWAP Arbiter',       glyph: '⎯', desc: 'intraday VWAP pulls + anchored levels',        weight: 0.05, accuracy: 0.57, color: '#9dc4e8', family: 'Technical' },
-  { id: 'news', name: 'News Reactor',       glyph: '✦', desc: 'headline sentiment + topic clustering',        weight: 0.08, accuracy: 0.61, color: '#f0c674', family: 'Sentiment' },
-  { id: 'soc',  name: 'Social Sentiment',   glyph: '☉', desc: 'Reddit / X chatter velocity + polarity',       weight: 0.04, accuracy: 0.52, color: '#f4a87c', family: 'Sentiment' },
+  { id: 'news', name: 'Volume-Price Div.',   glyph: '✦', desc: 'price vs range-expansion divergence',          weight: 0.06, accuracy: 0.56, color: '#f0c674', family: 'Contrarian' },
+  { id: 'soc',  name: 'ROC Reversal',       glyph: '☉', desc: 'rate-of-change mean-reversion · buys drops',   weight: 0.06, accuracy: 0.54, color: '#f4a87c', family: 'Contrarian' },
   { id: 'earn', name: 'Earnings Drift',     glyph: '⌹', desc: 'post-earnings announcement drift (PEAD)',      weight: 0.07, accuracy: 0.64, color: '#ecc080', family: 'Fundamental' },
-  { id: 'fund', name: 'Quality Factor',     glyph: '◬', desc: 'ROE / FCF yield / accruals screener',          weight: 0.05, accuracy: 0.55, color: '#d4b070', family: 'Fundamental' },
+  { id: 'fund', name: 'Value Deviation',     glyph: '◬', desc: 'long-term MA deviation · contrarian value',    weight: 0.06, accuracy: 0.55, color: '#d4b070', family: 'Contrarian' },
   { id: 'corr', name: 'Correlation Hunter', glyph: '∴', desc: 'sector co-movement + lead-lag pairs',          weight: 0.06, accuracy: 0.55, color: '#c594c5', family: 'Cross-asset' },
   { id: 'pair', name: 'Pairs Cointegrator', glyph: '⇌', desc: 'stat-arb z-score on cointegrated baskets',     weight: 0.05, accuracy: 0.59, color: '#b888c4', family: 'Cross-asset' },
   { id: 'vol',  name: 'Volatility Gauge',   glyph: '⌇', desc: 'VIX term structure · realized vs implied',     weight: 0.06, accuracy: 0.54, color: '#ff8a3d', family: 'Volatility' },
@@ -2205,11 +2212,17 @@ function genTrades(n) {
     const qty = Math.floor(rng() * 80) + 5;
     const price = t.last * (1 + (rng() - 0.5) * 0.04);
     const conf = 0.55 + rng() * 0.35;
-    const pnl = (rng() - 0.42) * qty * price * 0.025;
+    const pnl = (rng() - 0.50) * qty * price * 0.025;
     const closed = i > 4;
     const holdMs = (1000 * 60 * (20 + rng() * 60 * 8));
-    // derive exit price so exit = entry + pnl/qty (sign-adjusted for side)
     const exit = closed ? price + (pnl / qty) * (side === 'BUY' ? 1 : -1) : null;
+    const sigs = computeSignals(t.sym, PRICE_HISTORY) || {};
+    const votes = {};
+    AGENTS.forEach(a => { votes[a.id] = sigs[a.id] ? sigs[a.id].dir : 0; });
+    const dis = 0.2 + rng() * 0.5;
+    const ph = PRICE_HISTORY[t.sym] || [];
+    const volIdx = Math.min(ph.length - 1, Math.floor(rng() * (ph.length - 12)) + 12);
+    const annVol = rollingVol(ph.slice(Math.max(0, volIdx - 11), volIdx + 1));
     out.push({
       id: 'TX-' + (10428 - i),
       ts: now - i * (1000 * 60 * (3 + rng() * 12)),
@@ -2217,8 +2230,8 @@ function genTrades(n) {
       sym: t.sym,
       side,
       qty,
-      price,           // entry
-      exit,            // exit (null if open)
+      price,
+      exit,
       conf,
       reason: REASONS[side === 'BUY' ? 'buy' : 'sell'][Math.floor(rng() * REASONS.buy.length)],
       pnl: closed ? pnl : null,
@@ -2226,6 +2239,10 @@ function genTrades(n) {
       status: closed ? (pnl > 0 ? 'WIN' : 'LOSS') : 'OPEN',
       mode: 'VIRTUAL',
       consensus: Math.floor(conf * 8),
+      votes,
+      signals: sigs,
+      disagreement: dis,
+      annVol,
     });
   }
   return out;
@@ -2888,9 +2905,7 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
       if (!sigs) return { sym: tk.sym, filter: 'NO SIGNALS', sector: tk.sector };
       const ens = computeEnsemble(sigs, wts, enabledSet);
       if (ens.disagreement > maxDisagree) return { sym: tk.sym, filter: 'HIGH DISAGREE', sector: tk.sector };
-      // Sector concentration cap only activates once enough positions exist for it
-      // to be mathematically achievable (e.g. 40% needs ≥5 positions: 2/5 = 40%).
-      if (totalOpen >= 5) {
+      if (totalOpen >= 1) {
         const sect = tk.sector || 'Other';
         const sectFrac = ((sectorCounts[sect] || 0) + 1) / (totalOpen + 1);
         if (sectFrac > maxSectPct) return { sym: tk.sym, filter: 'SECTOR LIMIT', sector: tk.sector };
@@ -4290,7 +4305,7 @@ window.ScreenTrade = ScreenTrade;
 
 // Strategy definitions: which agents are active and how they're weighted
 const STRAT_ENABLED = {
-  'Momentum only':    new Set(['momo', 'brkt', 'news', 'earn', 'patt']),
+  'Momentum only':    new Set(['momo', 'brkt', 'flow', 'earn', 'patt']),
   'Mean revert only': new Set(['mean', 'vwap', 'vol',  'skew', 'pair', 'corr']),
 };
 
@@ -6562,7 +6577,7 @@ const App = () => {
     const saved = localStorage.getItem('shoal_alpaca');
     return saved ? JSON.parse(saved) : { connected: false, balance: 0, account: null, broker: 'Alpaca Markets' };
   });
-  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 50, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradePct: 5, minAgentAccuracy: 35, autoDisableAgents: false, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48 });
+  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 15, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradePct: 5, minAgentAccuracy: 35, autoDisableAgents: false, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48 });
   const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(() => new Set());
   const [slippageLog, setSlippageLog] = React.useState([]);
 
@@ -6995,7 +7010,7 @@ const App = () => {
           }
           // Stochastic close — reduced from 22% to allow open positions to build up
           if (Math.random() < 0.06) {
-            const pnlAmt = (Math.random() - 0.42) * t.qty * t.price * 0.02;
+            const pnlAmt = (Math.random() - 0.50) * t.qty * t.price * 0.02;
             const exit   = t.price + (pnlAmt / t.qty) * (t.side === 'BUY' ? 1 : -1);
             if (t._brokerSent) closedSyms.add(t.sym);
             return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false };
@@ -7071,8 +7086,11 @@ const App = () => {
         if (balanceNow <= 100 || freeCash <= 0) return;
 
         // [8] Half-Kelly sizing from cached decay-weighted accuracy
+        // Uses correct asymmetric Kelly: f* = (p*TP - q*SL) / (TP*SL)
         const avgWinRate = AGENTS.reduce((s, a) => s + (accCache.get(a.id) ?? a.accuracy), 0) / AGENTS.length;
-        const kellyFrac = Math.max(0.15, Math.min(0.5, 2 * (avgWinRate - 0.5)));
+        const sl = riskNow.stopLoss ?? 2.5, tp = riskNow.takeProfit ?? 5.0;
+        const fullKelly = (avgWinRate * tp - (1 - avgWinRate) * sl) / (tp * sl);
+        const kellyFrac = Math.max(0.15, Math.min(0.5, fullKelly / 2));
 
         // Snapshot current open-position sector concentrations
         const openTrades = tradesRef.current.filter(t => t.status === 'OPEN');
@@ -7096,11 +7114,13 @@ const App = () => {
           if (recent.length >= 3) tickerEdge[tk.sym] = recent.filter(t => t.pnl > 0).length / recent.length;
         });
 
+        const openSyms = new Set(openTrades.map(t => t.sym));
         const signalSource = liveSignalsRef.current || SIGNALS_ALL;
         const candidates = [];
-        let scanBest = null; // highest-confidence ticker seen this scan (gate-independent)
+        let scanBest = null;
         for (const tk of TICKERS) {
           if (blacklist.has(tk.sym)) continue;
+          if (openSyms.has(tk.sym)) continue;
           const sigs = signalSource[tk.sym];
           if (!sigs) continue;
           const ens = computeEnsemble(sigs, agentWeightsRef.current, dynamicEnabled);
@@ -7118,17 +7138,22 @@ const App = () => {
           const wEnd = Math.min(ph.length - 1, swarmStepRef.current + 20);
           const tkVol = rollingVol(ph.slice(Math.max(0, wEnd - 11), wEnd + 1));
           if (tkVol > 0.25) continue; // filter only genuine high-vol outliers in the generator's distribution
-          // Sector concentration cap only activates once enough positions exist for it
-          // to be mathematically achievable (e.g. 40% needs ≥5 positions: 2/5 = 40%).
-          if (totalOpen >= 5) {
+          if (totalOpen >= 1) {
             const sect = tk.sector || 'Other';
             const sectFrac = ((sectorCounts[sect] || 0) + 1) / (totalOpen + 1);
             if (sectFrac > maxSectPct) continue;
           }
+          if (!ens.dir) continue;
           let side;
-          if (direction === 'LONG') side = 'BUY';
-          else if (direction === 'SHORT') side = 'SELL';
-          else { if (!ens.dir) continue; side = ens.dir; }
+          if (direction === 'LONG') {
+            if (ens.dir !== 'BUY') continue;
+            side = 'BUY';
+          } else if (direction === 'SHORT') {
+            if (ens.dir !== 'SELL') continue;
+            side = 'SELL';
+          } else {
+            side = ens.dir;
+          }
           candidates.push({ tk, sigs, ens, side, tkVol });
         }
 
