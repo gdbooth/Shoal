@@ -2247,9 +2247,14 @@ const HEATMAP = genHeat();
 // Regimes are checked in priority order (vol → trend/chop → directional bias)
 // so every trade falls into exactly one row.
 function classifyRegime(trade) {
-  const vol = rollingVol(PRICE_HISTORY[trade.sym] || []);
-  if (vol > 0.40) return 'High vol';
-  if (vol > 0 && vol < 0.18) return 'Low vol';
+  // Use the vol snapshot taken at trade entry time; fall back to current static tail for old trades.
+  // Thresholds are calibrated to the generator's actual distribution (median ~9.5% ann, max ~14%):
+  //   High vol > 0.13  ≈ p90 of the distribution
+  //   Low vol  < 0.07  ≈ p7  of the distribution
+  //   ~83% of trades fall in the middle and are classified by disagreement / direction
+  const vol = trade.annVol ?? rollingVol(PRICE_HISTORY[trade.sym] || []);
+  if (vol > 0.13) return 'High vol';
+  if (vol > 0 && vol < 0.07) return 'Low vol';
   const dis = trade.disagreement ?? 0.4;
   if (dis < 0.30) return 'Trending';
   if (dis > 0.55) return 'Choppy';
@@ -3772,7 +3777,7 @@ const ScreenLearning = ({ mode, ctx }) => {
           <div className="card-head">
             <div className="card-title" style={{display:'flex',alignItems:'center',gap:6}}>
               Win/loss heatmap by regime
-              <span title={'Each closed trade is bucketed into one market regime (rows) and one outcome (columns).\n\nRegime rules (checked in order):\n  • High vol  — annualised vol of the symbol > 40%\n  • Low vol   — annualised vol < 18%\n  • Trending  — swarm disagreement < 30%\n  • Choppy    — swarm disagreement > 55%\n  • Risk-on   — otherwise, BUY trades\n  • Risk-off  — otherwise, SELL trades\n\nOutcome rules (by realised return on the trade):\n  • Strong win  > +3%\n  • Win         +0.3% to +3%\n  • Flat        −0.3% to +0.3%\n  • Loss        −3% to −0.3%\n  • Strong loss < −3%\n\nGreen cells = wins, red = losses, grey = flat. Cell intensity scales with count. Hover any cell for the exact count.'}
+              <span title={'Each closed trade is bucketed into one market regime (rows) and one outcome (columns).\n\nRegime rules (checked in order):\n  • High vol  — annualised vol of the symbol > 13%  (≈ p90 of observed distribution)\n  • Low vol   — annualised vol < 7%   (≈ p7)\n  • Trending  — swarm disagreement < 30%\n  • Choppy    — swarm disagreement > 55%\n  • Risk-on   — otherwise, BUY trades\n  • Risk-off  — otherwise, SELL trades\n\nOutcome rules (by realised return on the trade):\n  • Strong win  > +3%\n  • Win         +0.3% to +3%\n  • Flat        −0.3% to +0.3%\n  • Loss        −3% to −0.3%\n  • Strong loss < −3%\n\nGreen cells = wins, red = losses, grey = flat. Cell intensity scales with count. Hover any cell for the exact count.'}
                 style={{cursor:'help',color:'var(--ink-3)',fontSize:11,lineHeight:1}}>ⓘ</span>
             </div>
             {(() => {
@@ -6612,6 +6617,9 @@ const App = () => {
   const blacklistedSymbolsRef = React.useRef(blacklistedSymbols);
   const balanceRef       = React.useRef(balance);
   const startingBalanceRef = React.useRef(startingBalance);
+  // Advances through PRICE_HISTORY so rolling vol varies trade-to-trade rather than
+  // being frozen at the static tail of the generated series.
+  const swarmStepRef = React.useRef(20);
   React.useEffect(() => { startingBalanceRef.current = startingBalance; }, [startingBalance]);
   React.useEffect(() => { agentWeightsRef.current  = agentWeights;  }, [agentWeights]);
   React.useEffect(() => { agentHistoryRef.current   = agentHistory;   }, [agentHistory]);
@@ -6933,6 +6941,8 @@ const App = () => {
   React.useEffect(() => {
     if (!running) return;
     const ivl = setInterval(() => {
+      // Advance the price-history window so vol readings vary trade-to-trade
+      swarmStepRef.current = (swarmStepRef.current + 1) % 756;
       const alpacaNow    = alpacaRef.current;
       const isLiveReal   = mode === 'LIVE'    && !!alpacaNow?.token && alpacaNow?.env === 'live';
       const isBrokerPaper= mode === 'VIRTUAL' && !!alpacaNow?.token && alpacaNow?.env === 'paper';
@@ -7100,9 +7110,13 @@ const App = () => {
           if (ens.consensus < minCons) continue;
           if (ens.dir === 'SELL' && !(riskNow.shorts ?? true)) continue;
           if (ens.disagreement > maxDisagree) continue;
-          // [7] Volatility regime filter — skip if annualized vol is >2× typical equity vol (>70%)
-          const tkVol = rollingVol(PRICE_HISTORY[tk.sym]);
-          if (tkVol > 0.70) continue;
+          // [7] Volatility regime filter — skip extreme outliers only
+          // Use a rolling window anchored to swarmStepRef so vol varies each tick
+          // rather than always reading the static tail of PRICE_HISTORY.
+          const ph = PRICE_HISTORY[tk.sym] || [];
+          const wEnd = Math.min(ph.length - 1, swarmStepRef.current + 20);
+          const tkVol = rollingVol(ph.slice(Math.max(0, wEnd - 11), wEnd + 1));
+          if (tkVol > 0.25) continue; // filter only genuine high-vol outliers in the generator's distribution
           // Sector concentration cap only activates once enough positions exist for it
           // to be mathematically achievable (e.g. 40% needs ≥5 positions: 2/5 = 40%).
           if (totalOpen >= 5) {
@@ -7177,6 +7191,7 @@ const App = () => {
               votes: ensemble.votes,
               signals: sigs,
               disagreement: ensemble.disagreement,
+              annVol: tkVol,
               voteHistory,
               isNew: true,
               _notional: notional,
