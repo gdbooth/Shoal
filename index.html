@@ -5816,6 +5816,215 @@ const ScreenPnlTrend = ({ mode, ctx }) => {
   );
 };
 
+// ── ScreenSectorUniverse ──────────────────────────────────────────────────────
+const ScreenSectorUniverse = ({ mode, ctx }) => {
+  const { trades = [], risk = {}, liveSignals, agentWeights = {}, dynamicExcluded } = ctx;
+
+  const allSectors = React.useMemo(() => [...new Set(TICKERS.map(t => t.sector))], []);
+
+  const symToSector = React.useMemo(() => Object.fromEntries(TICKERS.map(t => [t.sym, t.sector])), []);
+
+  const sectorStats = React.useMemo(() => {
+    return allSectors.map(sect => {
+      const sectTrades = trades.filter(t => symToSector[t.sym] === sect);
+      const open   = sectTrades.filter(t => t.status === 'OPEN').length;
+      const closed = sectTrades.filter(t => t.status !== 'OPEN');
+      const realizedPnl = closed.reduce((s, t) => s + (t.pnl || 0), 0);
+      return { sect, total: sectTrades.length, open, closed: closed.length, realizedPnl };
+    }).sort((a, b) => b.total - a.total);
+  }, [trades, allSectors, symToSector]);
+
+  const totalTrades  = trades.length;
+  const openCount    = trades.filter(t => t.status === 'OPEN').length;
+  const closedCount  = totalTrades - openCount;
+
+  const confThreshold = risk.confidence ?? 55;
+
+  const tickerConf = React.useMemo(() => {
+    const sigSrc = liveSignals || SIGNALS_ALL;
+    const wts    = agentWeights || {};
+    const enabledSet = (dynamicExcluded?.size > 0)
+      ? new Set(AGENTS.map(a => a.id).filter(id => !dynamicExcluded.has(id)))
+      : null;
+    const threshold = confThreshold / 100;
+
+    return TICKERS.map(tk => {
+      const sigs = sigSrc[tk.sym];
+      if (!sigs) {
+        return { ...tk, ens: null, low: true, buyCount: 0, sellCount: 0, holdCount: AGENTS.length, tradeCount: 0 };
+      }
+      const ens = computeEnsemble(sigs, wts, enabledSet);
+      const buyCount  = AGENTS.filter(a => ens.votes[a.id] ===  1).length;
+      const sellCount = AGENTS.filter(a => ens.votes[a.id] === -1).length;
+      const holdCount = AGENTS.length - buyCount - sellCount;
+      const tradeCount = trades.filter(t => t.sym === tk.sym).length;
+      return { ...tk, ens, buyCount, sellCount, holdCount, low: ens.confidence < threshold, tradeCount };
+    }).sort((a, b) => (b.ens?.confidence ?? 0) - (a.ens?.confidence ?? 0));
+  }, [liveSignals, agentWeights, dynamicExcluded, confThreshold, trades]);
+
+  const lowConfCount   = tickerConf.filter(t => t.low && t.ens).length;
+  const activeSectors  = sectorStats.filter(s => s.total > 0).length;
+
+  // Herfindahl concentration index — 0 = perfect spread, 1 = all one sector
+  const hhi = totalTrades > 0
+    ? sectorStats.reduce((s, x) => s + (x.total / totalTrades) ** 2, 0)
+    : 0;
+  const diversityScore = Math.round((1 - hhi) * 100);
+  const diversityLabel = hhi < 0.25 ? 'Well diversified' : hhi < 0.40 ? 'Moderate' : 'Concentrated';
+
+  return (
+    <div style={{ padding: '0 0 40px' }}>
+
+      {/* KPI strip */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        {[
+          { label: 'Total trades',    value: totalTrades,           sub: openCount + ' open · ' + closedCount + ' closed' },
+          { label: 'Active sectors',  value: activeSectors,          sub: 'of ' + allSectors.length + ' in universe' },
+          { label: 'Diversity score', value: diversityScore + '%',   sub: diversityLabel },
+          { label: 'Low confidence',  value: lowConfCount,           sub: 'tickers below ' + confThreshold + '% threshold' },
+        ].map(({ label, value, sub }) => (
+          <div key={label} className="card" style={{ flex: '1 1 130px', minWidth: 120, padding: '12px 16px' }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>{label}</div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 22, fontWeight: 700 }}>{value}</div>
+            <div style={{ fontSize: 11, color: 'var(--ink-4)', marginTop: 2 }}>{sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Sector distribution table */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-head">
+          <div className="card-title">Sector Distribution</div>
+          <div className="card-meta">Trade counts · sector cap {risk.maxSectorPct ?? 40}% · gate at ≥5 open positions</div>
+        </div>
+        {/* Header row */}
+        <div style={{ display: 'grid', gridTemplateColumns: '72px 1fr 60px 52px 90px 68px', gap: 8, alignItems: 'center', padding: '0 0 6px', borderBottom: '1px solid var(--bg-3)', marginBottom: 4 }}>
+          {['Sector', '', 'Trades', 'Open', 'Realized P&L', 'Avg Conf'].map((h, i) => (
+            <div key={i} style={{ fontSize: 10, color: 'var(--ink-4)', textAlign: i > 1 ? 'right' : 'left', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{h}</div>
+          ))}
+        </div>
+        {sectorStats.map(({ sect, total, open, closed, realizedPnl }) => {
+          const pct = totalTrades > 0 ? total / totalTrades : 0;
+          const sectConf = tickerConf.filter(tc => tc.sector === sect && tc.ens);
+          const avgConf  = sectConf.length > 0
+            ? sectConf.reduce((s, tc) => s + tc.ens.confidence, 0) / sectConf.length
+            : 0;
+          const confOk = avgConf * 100 >= confThreshold;
+          return (
+            <div key={sect} style={{ display: 'grid', gridTemplateColumns: '72px 1fr 60px 52px 90px 68px', gap: 8, alignItems: 'center', padding: '7px 0', borderBottom: '1px solid var(--bg-3)' }}>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 600 }}>{sect}</div>
+              <div style={{ position: 'relative', height: 6, background: 'var(--bg-3)', borderRadius: 3, overflow: 'hidden' }}>
+                <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', borderRadius: 3, transition: 'width 0.5s',
+                  width:      `${Math.max(total > 0 ? 2 : 0, pct * 100)}%`,
+                  background: total > 0 ? 'var(--accent)' : 'transparent',
+                }}/>
+              </div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, textAlign: 'right', color: total > 0 ? 'var(--ink-2)' : 'var(--ink-4)' }}>{total}</div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, textAlign: 'right' }}>
+                {open > 0 ? <span style={{ color: 'var(--accent)' }}>{open}</span> : <span style={{ color: 'var(--ink-4)' }}>—</span>}
+              </div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, textAlign: 'right', color: realizedPnl > 0 ? 'var(--up)' : realizedPnl < 0 ? 'var(--down)' : 'var(--ink-4)' }}>
+                {realizedPnl !== 0 ? (realizedPnl > 0 ? '+' : '') + fmtMoney(realizedPnl, 0) : '—'}
+              </div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, textAlign: 'right', color: total > 0 ? (confOk ? 'var(--up)' : 'var(--warn)') : 'var(--ink-4)' }}>
+                {total > 0 ? Math.round(avgConf * 100) + '%' : '—'}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Universe confidence map */}
+      <div className="card">
+        <div className="card-head">
+          <div className="card-title">Universe Confidence Map</div>
+          <div className="card-meta">
+            {lowConfCount} ticker{lowConfCount !== 1 ? 's' : ''} flagged below {confThreshold}% · sorted by confidence desc
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
+          {tickerConf.map(tc => {
+            const confPct  = tc.ens ? Math.round(tc.ens.confidence * 100) : 0;
+            const dir      = tc.ens?.dir;
+            const isLow    = tc.low && tc.ens;
+            const barColor = isLow
+              ? 'var(--warn)'
+              : dir === 'BUY'  ? 'var(--up)'
+              : dir === 'SELL' ? 'var(--down)'
+              : 'var(--accent)';
+            return (
+              <div key={tc.sym} style={{
+                background:   'var(--bg-2)',
+                border:       isLow ? '1px solid var(--warn)' : '1px solid var(--bg-3)',
+                borderRadius: 6,
+                padding:      '10px 12px',
+                position:     'relative',
+              }}>
+                {isLow && (
+                  <div style={{ position: 'absolute', top: 7, right: 8, fontSize: 8, color: 'var(--warn)', fontFamily: 'var(--mono)', fontWeight: 700, letterSpacing: '0.06em' }}>
+                    ⚠ LOW CONF
+                  </div>
+                )}
+                {/* Header */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 14 }}>{tc.sym}</div>
+                    <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 1 }}>{tc.name}</div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
+                    <span style={{ fontSize: 10, background: 'var(--bg-3)', padding: '1px 6px', borderRadius: 3, fontFamily: 'var(--mono)', color: 'var(--ink-3)' }}>{tc.sector}</span>
+                    {tc.tradeCount > 0 && (
+                      <span style={{ fontSize: 10, color: 'var(--ink-4)', fontFamily: 'var(--mono)' }}>{tc.tradeCount} trade{tc.tradeCount !== 1 ? 's' : ''}</span>
+                    )}
+                  </div>
+                </div>
+                {/* Confidence bar */}
+                <div style={{ marginBottom: 7 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                    <span style={{ fontSize: 10, color: 'var(--ink-4)' }}>Confidence</span>
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: barColor, fontWeight: 700 }}>
+                      {tc.ens ? confPct + '%' : 'no signal'}
+                    </span>
+                  </div>
+                  <div style={{ height: 4, background: 'var(--bg-3)', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: confPct + '%', background: barColor, borderRadius: 2, transition: 'width 0.4s' }}/>
+                  </div>
+                  {/* Threshold tick */}
+                  <div style={{ position: 'relative', height: 3 }}>
+                    <div style={{ position: 'absolute', left: confThreshold + '%', top: 0, width: 1, height: 3, background: 'var(--ink-4)', opacity: 0.5 }}/>
+                  </div>
+                </div>
+                {/* Direction + vote breakdown */}
+                {tc.ens ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{
+                      fontSize: 10, fontFamily: 'var(--mono)', fontWeight: 700,
+                      color: dir === 'BUY' ? 'var(--up)' : dir === 'SELL' ? 'var(--down)' : 'var(--ink-3)',
+                      minWidth: 28,
+                    }}>
+                      {dir || 'HOLD'}
+                    </span>
+                    <div style={{ display: 'flex', gap: 5, fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--ink-3)' }}>
+                      <span style={{ color: 'var(--up)' }}>{tc.buyCount}↑</span>
+                      <span style={{ color: 'var(--down)' }}>{tc.sellCount}↓</span>
+                      <span style={{ color: 'var(--ink-4)' }}>{tc.holdCount}–</span>
+                    </div>
+                    <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--ink-4)', fontFamily: 'var(--mono)' }}>
+                      {Math.round((tc.ens.disagreement ?? 0) * 100)}% split
+                    </span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 10, color: 'var(--ink-4)' }}>No signal data</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ── ScreenAgentConfig ─────────────────────────────────────────────────────────
 const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnabledAgents, agentWeights, agentHistory, agentParamPresets = {}, setAgentParamPresets = () => {} }) => {
   const [optimizing, setOptimizing] = React.useState({});
@@ -6204,6 +6413,7 @@ const NAV = [
   { id: 'market', label: 'Market map', icon: 'market' },
   { id: 'agentperf', label: 'Agent performance', icon: 'perf' },
   { id: 'pnltrend', label: 'P/L trend', icon: 'trend' },
+  { id: 'sectors', label: 'Sector / Universe', icon: 'market' },
   { id: 'agentconfig', label: 'Agent config', icon: 'gear' },
   { id: 'settings', label: 'Settings', icon: 'gear' },
 ];
@@ -7079,6 +7289,7 @@ const App = () => {
     market:      <ScreenMarket tick={tick} mode={mode} ctx={ctx}/>,
     agentperf:   <ScreenAgentPerf mode={mode} ctx={ctx}/>,
     pnltrend:    <ScreenPnlTrend mode={mode} ctx={ctx}/>,
+    sectors:     <ScreenSectorUniverse mode={mode} ctx={ctx}/>,
     agentconfig: <ScreenAgentConfig agentParams={agentParams} setAgentParams={setAgentParams} enabledAgents={enabledAgents} setEnabledAgents={setEnabledAgents} agentWeights={agentWeights} agentHistory={agentHistory} agentParamPresets={agentParamPresets} setAgentParamPresets={setAgentParamPresets}/>,
     settings:    <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} onResetWeights={()=>setShowWeightReset(true)} onExportWeights={exportWeights} onImportWeights={importWeights} backendOk={backendOk}/>,
   };
