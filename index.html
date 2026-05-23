@@ -2854,7 +2854,9 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
       if (!sigs) return { sym: tk.sym, filter: 'NO SIGNALS', sector: tk.sector };
       const ens = computeEnsemble(sigs, wts, enabledSet);
       if (ens.disagreement > maxDisagree) return { sym: tk.sym, filter: 'HIGH DISAGREE', sector: tk.sector };
-      if (totalOpen >= 3) {
+      // Sector concentration cap only activates once enough positions exist for it
+      // to be mathematically achievable (e.g. 40% needs ≥5 positions: 2/5 = 40%).
+      if (totalOpen >= 5) {
         const sect = tk.sector || 'Other';
         const sectFrac = ((sectorCounts[sect] || 0) + 1) / (totalOpen + 1);
         if (sectFrac > maxSectPct) return { sym: tk.sym, filter: 'SECTOR LIMIT', sector: tk.sector };
@@ -6800,7 +6802,9 @@ const App = () => {
           // [7] Volatility regime filter — skip if annualized vol is >2× typical equity vol (>70%)
           const tkVol = rollingVol(PRICE_HISTORY[tk.sym]);
           if (tkVol > 0.70) continue;
-          if (totalOpen >= 3) {
+          // Sector concentration cap only activates once enough positions exist for it
+          // to be mathematically achievable (e.g. 40% needs ≥5 positions: 2/5 = 40%).
+          if (totalOpen >= 5) {
             const sect = tk.sector || 'Other';
             const sectFrac = ((sectorCounts[sect] || 0) + 1) / (totalOpen + 1);
             if (sectFrac > maxSectPct) continue;
