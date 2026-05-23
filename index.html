@@ -1701,7 +1701,7 @@ function updateAgentWeights(weights, trade) {
   const tradeSide = trade.side === 'SELL' ? -1 : 1;
   const outcome   = trade.pnl > 0 ? 1 : -1;
   const conf      = Math.max(0.3, Math.min(1.0, trade.conf ?? 0.5));
-  const baseLr    = 0.015 + 0.015 * conf;
+  const baseLr    = 0.03 + 0.02 * conf;
   const N         = AGENTS.length;
   const uniform   = 1 / N;
   const next = { ...weights };
@@ -1713,18 +1713,19 @@ function updateAgentWeights(weights, trade) {
     const abstained = vote === 0;
     let delta;
     if (abstained) {
-      delta = -0.003;
+      delta = -0.005;
     } else {
-      delta = baseLr * Math.sqrt(strength) * (correct ? 0.45 : -0.45);
+      delta = baseLr * Math.sqrt(strength) * (correct ? 0.5 : -0.5);
     }
     next[a.id] = (next[a.id] ?? a.weight) * (1 + delta);
   }
-  // Entropy regularisation: blend 3% toward uniform each update to prevent degeneration
-  const regAlpha = 0.03;
+  // Light regularisation: 0.8% blend toward uniform — prevents collapse without
+  // overpowering the learning signal. Equilibrium spread at typical conf/strength:
+  //   30% acc → ~3.7%  |  50% → 6.25% (uniform)  |  60% → ~9.6%  |  70% → capped at 15%
+  const regAlpha = 0.008;
   for (const a of AGENTS) {
     next[a.id] = next[a.id] * (1 - regAlpha) + uniform * regAlpha;
   }
-  // Clamp after regularisation
   for (const a of AGENTS) {
     next[a.id] = Math.max(0.02, Math.min(0.15, next[a.id]));
   }
