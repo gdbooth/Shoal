@@ -1698,31 +1698,35 @@ function computeEnsemble(signals, weights, enabledSet = null) {
 // EW reinforcement with confidence + signal-strength weighting
 function updateAgentWeights(weights, trade) {
   if (!trade.votes || trade.pnl == null) return weights;
-  // tradeSide: what direction was actually traded (+1 BUY, -1 SELL/short)
   const tradeSide = trade.side === 'SELL' ? -1 : 1;
   const outcome   = trade.pnl > 0 ? 1 : -1;
   const conf      = Math.max(0.3, Math.min(1.0, trade.conf ?? 0.5));
-  // lr scales with conviction; higher confidence trades carry more learning signal
-  const baseLr    = 0.04 + 0.04 * conf;
+  const baseLr    = 0.015 + 0.015 * conf;
+  const N         = AGENTS.length;
+  const uniform   = 1 / N;
   const next = { ...weights };
   for (const a of AGENTS) {
     const vote = trade.votes[a.id];
     if (vote === undefined || vote === null) continue;
     const strength = trade.signals?.[a.id]?.strength ?? 0.5;
-    // An agent is correct when its vote aligns with the trade direction AND the trade won,
-    // OR when it disagreed with the trade direction AND the trade lost (it warned us).
-    // Formula: vote * tradeSide * outcome > 0 captures all four cases correctly.
     const correct  = vote !== 0 && (vote * tradeSide * outcome) > 0;
     const abstained = vote === 0;
     let delta;
     if (abstained) {
-      // Abstaining agents incur a tiny decay to prevent free-riding via renormalisation
-      delta = -0.005;
+      delta = -0.003;
     } else {
-      // Symmetric ±0.50 scaled by signal strength; correct calls rewarded, wrong ones penalised
-      delta = baseLr * Math.sqrt(strength) * (correct ? 0.50 : -0.50);
+      delta = baseLr * Math.sqrt(strength) * (correct ? 0.45 : -0.45);
     }
-    next[a.id] = Math.max(0.005, Math.min(0.35, (next[a.id] ?? a.weight) * (1 + delta)));
+    next[a.id] = (next[a.id] ?? a.weight) * (1 + delta);
+  }
+  // Entropy regularisation: blend 3% toward uniform each update to prevent degeneration
+  const regAlpha = 0.03;
+  for (const a of AGENTS) {
+    next[a.id] = next[a.id] * (1 - regAlpha) + uniform * regAlpha;
+  }
+  // Clamp after regularisation
+  for (const a of AGENTS) {
+    next[a.id] = Math.max(0.02, Math.min(0.15, next[a.id]));
   }
   const total = Object.values(next).reduce((s, v) => s + v, 0);
   for (const id of Object.keys(next)) next[id] /= total;
@@ -3686,7 +3690,7 @@ const ScreenLearning = ({ mode, ctx }) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `shoal_weight_history_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `shoal_weight_history_v2_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -3709,7 +3713,7 @@ const ScreenLearning = ({ mode, ctx }) => {
     const cleared = {};
     AGENTS.forEach(a => { cleared[a.id] = Array(90).fill(uniform); });
     setWeightHistory(cleared);
-    localStorage.removeItem('shoal_weight_history');
+    localStorage.removeItem('shoal_weight_history_v2');
     setWhStatus({ ok: true, msg: 'History cleared' });
     setTimeout(() => setWhStatus(null), 3000);
   };
@@ -6594,7 +6598,7 @@ const App = () => {
   const [confHistory, setConfHistory] = React.useState(() => [...CONFIDENCE_HISTORY]);
   const [weightHistory, setWeightHistory] = React.useState(() => {
     try {
-      const stored = JSON.parse(localStorage.getItem('shoal_weight_history') || 'null');
+      const stored = JSON.parse(localStorage.getItem('shoal_weight_history_v2') || 'null');
       if (stored && typeof stored === 'object') {
         // Discard data that looks like the fake seeded WEIGHT_HISTORY:
         // real snapshots are appended one-at-a-time so they grow from 0, whereas
@@ -6604,7 +6608,7 @@ const App = () => {
         const hasAnyData   = lens.some(l => l > 0);
         if (hasAnyData && !allExactly90) return stored; // real incremental history
         // If exactly 90 for every agent it's almost certainly the seed data — discard it
-        localStorage.removeItem('shoal_weight_history');
+        localStorage.removeItem('shoal_weight_history_v2');
       }
     } catch (_) {}
     return {};
@@ -6859,7 +6863,7 @@ const App = () => {
   }, [alpaca.connected, alpaca.token, streamRetry]);
 
   React.useEffect(() => { localStorage.setItem('shoal_agent_history_v2', JSON.stringify(agentHistory)); }, [agentHistory]);
-  React.useEffect(() => { localStorage.setItem('shoal_weight_history', JSON.stringify(weightHistory)); }, [weightHistory]);
+  React.useEffect(() => { localStorage.setItem('shoal_weight_history_v2', JSON.stringify(weightHistory)); }, [weightHistory]);
   React.useEffect(() => { localStorage.setItem('shoal_sym', activeSymbol); }, [activeSymbol]);
   React.useEffect(() => { localStorage.setItem('shoal_dir', direction); }, [direction]);
   React.useEffect(() => { localStorage.setItem('shoal_balance', balance); }, [balance]);
@@ -6895,7 +6899,9 @@ const App = () => {
     setAgentWeights(defaults);
     setAgentHistory({});
     setAgentAccuracySeries({});
+    setWeightHistory({});
     localStorage.removeItem('shoal_agent_history_v2');
+    localStorage.removeItem('shoal_weight_history_v2');
     setShowWeightReset(false);
   };
 
