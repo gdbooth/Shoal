@@ -1724,7 +1724,7 @@ function updateAgentHistory(history, trade) {
   for (const a of AGENTS) {
     const vote = trade.votes[a.id];
     if (!vote) continue;
-    next[a.id] = [...(next[a.id] || []), vote * outcome > 0].slice(-50);
+    next[a.id] = [...(next[a.id] || []), vote * outcome > 0].slice(-30);
   }
   return next;
 }
@@ -2093,11 +2093,11 @@ const SECTOR_TICKERS = {
   Mat: ['LIN','APD','SHW','FCX','ECL','NEM','DOW','PPG'],
 };
 
-// generate price history (252 trading days)
+// generate price history (756 trading days ≈ 3 years)
 function genSeries(seed, base, drift, vol) {
   const rng = mulberry32(seed);
   const out = [base];
-  for (let i = 1; i < 252; i++) {
+  for (let i = 1; i < 756; i++) {
     const r = (rng() - 0.5) * vol + drift;
     out.push(Math.max(1, out[i - 1] * (1 + r)));
   }
@@ -2786,7 +2786,6 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
   const equityNow     = ctx?.balance ?? EQUITY.bot[EQUITY.bot.length - 1];
   const equityStart   = ctx?.startingBalance ?? EQUITY.bot[0];
   const totalRet      = equityStart > 0 ? (equityNow - equityStart) / equityStart : 0;
-  const benchRet      = (EQUITY.bench[EQUITY.bench.length-1] - EQUITY.bench[0]) / EQUITY.bench[0];
   const visibleTrades = ctx?.trades || [];
   const wins   = visibleTrades.filter(t => t.status === 'WIN').length;
   const losses = visibleTrades.filter(t => t.status === 'LOSS').length;
@@ -2925,9 +2924,9 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
           <div className={'kpi-delta ' + (totalRet >= 0 ? 'up' : 'dn')}>{fmtPct(totalRet)} since reset</div>
         </div>
         <div className="kpi">
-          <div className="kpi-label">vs S&P 500</div>
-          <div className="kpi-value mono">{fmtPct(totalRet - benchRet)}</div>
-          <div className="kpi-delta muted">alpha · {fmtPct(benchRet)} bench</div>
+          <div className="kpi-label">Open positions</div>
+          <div className="kpi-value mono">{openP.length}</div>
+          <div className="kpi-delta muted">{fmtMoney(openP.reduce((s, t) => s + t.qty * t.price, 0), 0)} exposure</div>
         </div>
         <div className="kpi">
           <div className="kpi-label">Win rate · 30d</div>
@@ -2981,38 +2980,41 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
           <div className="card-head">
             <div>
               <div className="card-title">Equity curve</div>
-              <div className="mono tiny muted" style={{marginTop:4}}>Bot vs S&P 500 · 180 trading days</div>
+              <div className="mono tiny muted" style={{marginTop:4}}>Live equity · since reset</div>
             </div>
             <div className="legend">
-              <span><span className="legend-dot" style={{background:'var(--virtual)'}}></span>Bot equity</span>
-              <span><span className="legend-dot" style={{background:'var(--ink-3)'}}></span>S&P 500</span>
+              <span><span className="legend-dot" style={{background:'var(--virtual)'}}></span>Equity</span>
             </div>
           </div>
-          {/* OOS split: first 150 points = in-sample, last 30 = held-out */}
           {(() => {
-            const splitAt = 150;
-            const inSample = EQUITY.bot.slice(0, splitAt);
-            const oos      = [...Array(splitAt).fill(null), ...EQUITY.bot.slice(splitAt)];
-            const bench    = EQUITY.bench;
-            return (
-              <>
-                <LineChart
-                  series={[inSample, oos, bench]}
-                  colors={['var(--teal)','var(--up)','var(--ink-3)']}
-                  labels={['In-sample','Out-of-sample (30d)','S&P 500']}
-                  yFmt={v => '$' + Math.round(v/1000) + 'k'}
-                  solidLines={false}
-                />
-                <div style={{marginTop:6,display:'flex',gap:14,fontFamily:'var(--mono)',fontSize:10}}>
-                  <span><span style={{display:'inline-block',width:10,height:2,background:'var(--teal)',marginRight:4,verticalAlign:'middle'}}/>In-sample (150d)</span>
-                  <span><span style={{display:'inline-block',width:10,height:2,background:'var(--up)',marginRight:4,verticalAlign:'middle'}}/>Out-of-sample (30d held-out)</span>
-                  <span><span style={{display:'inline-block',width:10,height:2,background:'var(--ink-3)',marginRight:4,verticalAlign:'middle'}}/>S&P 500</span>
+            // Live equity series: start at equityStart, accumulate realized P&L after each closed trade.
+            const closed = (visibleTrades || [])
+              .filter(t => t.pnl != null)
+              .sort((a, b) => (a.exitTs || a.ts) - (b.exitTs || b.ts));
+            if (closed.length === 0) {
+              return (
+                <div style={{padding:'40px 0',textAlign:'center',color:'var(--ink-3)',fontFamily:'var(--mono)',fontSize:12}}>
+                  No closed trades yet — start the bot to populate the equity curve.
                 </div>
-              </>
+              );
+            }
+            let cum = 0;
+            const eqSeries = [equityStart, ...closed.map(t => { cum += t.pnl; return equityStart + cum; })];
+            return (
+              <LineChart
+                series={[eqSeries]}
+                zeroCrossColors={['var(--up)', 'var(--down)']}
+                crossValue={equityStart}
+                labels={['Equity']}
+                yFmt={v => '$' + Math.round(v/1000) + 'k'}
+                solidLines={true}
+                fillFirst={true}
+                hLines={[{value: equityStart, color: 'var(--ink-4)', label: 'start ' + fmtMoney(equityStart, 0)}]}
+              />
             );
           })()}
           <div style={{marginTop:8,padding:'8px 12px',background:'var(--bg-2)',borderRadius:4,fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)',lineHeight:1.5}}>
-            <strong style={{color:'var(--ink-2)'}}>What is this?</strong> <span style={{color:'var(--teal)'}}>Teal</span> = in-sample period used for agent learning. <span style={{color:'var(--up)'}}>Green</span> = 30-day held-out window excluded from weight updates — if the green line continues upward it confirms the strategy generalises rather than curve-fits. A flat or falling green line vs strong teal is an overfitting warning.
+            <strong style={{color:'var(--ink-2)'}}>What is this?</strong> Account equity after each closed trade since the last reset. Green above the start line means the swarm is net-positive; red below means it's in drawdown. No benchmark is shown here — see the Backtest screen for strategy-vs-NVDA comparisons.
           </div>
         </div>
 
@@ -3212,8 +3214,10 @@ const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
   const filtered = filter === 'ALL' ? feed : feed.filter(t => t.side === filter || t.status === filter);
 
   const marketStatus = ctx?.marketStatus;
-  // Show market-closed banner for LIVE and VIRTUAL modes when broker is connected and market is closed
-  const mktClosed = (mode === 'LIVE' || mode === 'VIRTUAL') && marketStatus && !marketStatus.isOpen;
+  const brokerConnected = !!ctx?.alpacaConnected;
+  // When broker is connected we pause trading entirely until market reopens.
+  // Without a broker, the swarm keeps running simulated trades regardless of market hours.
+  const mktClosed = brokerConnected && marketStatus && !marketStatus.isOpen;
 
   return (
     <div className="page" data-screen-label="02 Activity">
@@ -3221,9 +3225,9 @@ const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
         <div style={{display:'flex',alignItems:'center',gap:12,background:'rgba(255,171,0,0.08)',border:'1px solid rgba(255,171,0,0.3)',borderRadius:6,padding:'10px 16px',marginBottom:16,fontFamily:'var(--mono)',fontSize:12}}>
           <span style={{fontSize:16}}>🔕</span>
           <div>
-            <span style={{color:'var(--warn)',fontWeight:600,letterSpacing:'0.08em'}}>{mode === 'LIVE' ? 'MARKET CLOSED — LIVE ORDERS PAUSED' : 'MARKET CLOSED — SIGNALS SIMULATED'}</span>
+            <span style={{color:'var(--warn)',fontWeight:600,letterSpacing:'0.08em'}}>MARKET CLOSED — TRADING PAUSED</span>
             <span style={{color:'var(--ink-3)',marginLeft:12}}>
-              {mode === 'LIVE' ? 'Broker orders paused until market reopens.' : 'Trading signals are simulated (Market-Closed) until market reopens.'}
+              Broker is connected. Signals are still computed, but no orders (real or simulated) will be placed until the market reopens.
               {marketStatus.nextOpen && <span> Opens {marketStatus.nextOpen.toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}.</span>}
             </span>
           </div>
@@ -3631,9 +3635,10 @@ const ScreenLearning = ({ mode, ctx }) => {
   }, [ctx?.trades]);
 
   const activeSeries = whView === 'trades' && tradeWeightSeries ? tradeWeightSeries : weightHistory;
+  const whLen = Math.max(0, ...AGENTS.map(a => (weightHistory[a.id] || []).length));
   const activeLabel  = whView === 'trades'
     ? `last ${tradeWeightSeries ? Math.max(...AGENTS.map(a => (tradeWeightSeries[a.id]||[]).length)) : 0} trades`
-    : '90 days';
+    : `rolling ${whLen} snapshots`;
 
   const handleExportWH = () => {
     const csv = serializeWeightHistoryCSV(AGENTS, weightHistory);
@@ -4240,7 +4245,7 @@ const STRAT_ENABLED = {
 };
 
 function runBacktestSim(period, strategy) {
-  const periodDays = { '3M': 63, '6M': 126, '1Y': 252, '3Y': 252 }[period] || 252;
+  const periodDays = { '3M': 63, '6M': 126, '1Y': 252, '3Y': 756 }[period] || 252;
   const capital = 100000, slip = 0.0005, maxPos = 5;
 
   // Build weights for this strategy
@@ -5522,12 +5527,19 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
         return { ...a, hist, acc, w, excl };
       })
       .sort((a, b) => {
+        // String sorts honour sortDir consistently with numeric sorts:
+        // sortDir = -1 is "desc" (so for strings, that's reverse-alphabetical).
+        if (sortKey === 'name')   return -sortDir * a.name.localeCompare(b.name);
+        if (sortKey === 'family') return -sortDir * a.family.localeCompare(b.family);
+        if (sortKey === 'status') {
+          // ACTIVE (excl=false) ranks above DISABLED (excl=true) when descending.
+          const sa = a.excl ? 1 : 0, sb = b.excl ? 1 : 0;
+          return sortDir * (sb - sa);
+        }
         let va, vb;
-        if (sortKey === 'acc')    { va = a.acc ?? a.accuracy; vb = b.acc ?? b.accuracy; }
-        else if (sortKey === 'w') { va = a.w; vb = b.w; }
+        if (sortKey === 'acc')   { va = a.acc ?? a.accuracy; vb = b.acc ?? b.accuracy; }
+        else if (sortKey === 'w')     { va = a.w; vb = b.w; }
         else if (sortKey === 'calls') { va = a.hist.length; vb = b.hist.length; }
-        else if (sortKey === 'name') { return sortDir * a.name.localeCompare(b.name); }
-        else if (sortKey === 'family') { return sortDir * a.family.localeCompare(b.family); }
         else { va = a.acc ?? a.accuracy; vb = b.acc ?? b.accuracy; }
         return sortDir * ((vb ?? 0) - (va ?? 0));
       });
@@ -5599,7 +5611,7 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
               <SortTh col="calls" label="Calls"/>
               <SortTh col="acc" label="Accuracy"/>
               <SortTh col="w" label="Weight"/>
-              <th style={{textAlign:'right'}}>Status</th>
+              <SortTh col="status" label="Status"/>
             </tr>
           </thead>
           <tbody>
@@ -6326,7 +6338,8 @@ const App = () => {
     const newlyClosed = trades.filter(t => t.pnl != null && t.votes && !prevIds.has(t.id));
     if (newlyClosed.length > 0) {
       const newHistory = newlyClosed.reduce((acc, t) => updateAgentHistory(acc, t), agentHistoryRef.current);
-      setAgentWeights(w => newlyClosed.reduce(updateAgentWeights, w));
+      const newWeights = newlyClosed.reduce(updateAgentWeights, agentWeightsRef.current);
+      setAgentWeights(newWeights);
       setAgentHistory(newHistory);
       // Append one accuracy data-point per agent for every batch of closes (keeps series lengths in sync)
       setAgentAccuracySeries(series => {
@@ -6335,6 +6348,16 @@ const App = () => {
           const hist = newHistory[a.id] || [];
           const acc  = hist.length >= 2 ? hist.filter(Boolean).length / hist.length : a.accuracy;
           next[a.id] = [...(next[a.id] || []), acc];
+        }
+        return next;
+      });
+      // Append a snapshot of post-update weights to the rolling weight history (cap 90).
+      // This makes the "90-day" weight chart actually evolve as the swarm learns.
+      setWeightHistory(prev => {
+        const next = { ...prev };
+        for (const a of AGENTS) {
+          const series = next[a.id] || [];
+          next[a.id] = [...series, newWeights[a.id] ?? a.weight].slice(-90);
         }
         return next;
       });
@@ -6477,7 +6500,7 @@ const App = () => {
             mode: 'LIVE',
             consensus: 12, isNew: false, _real: true,
           }));
-          setTrades(mapped.slice(0, 200));
+          setTrades(mapped.slice(0, 5000));
         }
 
         // Real positions → merge with local fills in VIRTUAL mode; replace in LIVE mode
@@ -6503,12 +6526,12 @@ const App = () => {
           setTrades(prev => {
             if (isLiveEnv) {
               const closedHistory = prev.filter(t => t._real && t.status !== 'OPEN');
-              return [...realPos, ...closedHistory].slice(0, 200);
+              return [...realPos, ...closedHistory].slice(0, 5000);
             }
             // VIRTUAL: keep all local swarm fills; just merge in real positions without wiping
             const localFills = prev.filter(t => !t._real);
             const closedReal = prev.filter(t => t._real && t.status !== 'OPEN');
-            return [...realPos, ...localFills, ...closedReal].slice(0, 200);
+            return [...realPos, ...localFills, ...closedReal].slice(0, 5000);
           });
           if (account?.portfolio_value) setBalance(parseFloat(account.portfolio_value));
         }
@@ -6707,6 +6730,11 @@ const App = () => {
         if (confCnt > 0) setConfHistory(prev => [...prev.slice(-89), +(confSum / confCnt).toFixed(3)]);
       }
 
+      // Broker connected + market closed: pause new trades entirely (no simulated fallback).
+      // Real signals are still computed, but execution waits for the next session open.
+      const mktNowGate = marketStatusRef.current;
+      if ((isLiveReal || isBrokerPaper) && mktNowGate && !mktNowGate.isOpen) return;
+
       if (Math.random() < 0.55) {
         const maxVal      = riskNow.maxTradeValue ?? 5000;
         const maxDisagree = (riskNow.maxDisagreement ?? 65) / 100;
@@ -6863,7 +6891,7 @@ const App = () => {
                   setSlippageLog(prev => [...prev.slice(-49), { sym: tk.sym, side, expected: price, actual: filledPrice, slip, ts: Date.now() }]);
                 }
                 if (!isLiveReal) {
-                  setTrades(prev => [{ ...newTrade, _brokerSent: true }, ...prev].slice(0, 200));
+                  setTrades(prev => [{ ...newTrade, _brokerSent: true }, ...prev].slice(0, 5000));
                 }
               }).catch(err => {
                 console.warn('[Shoal] Order fetch error:', err.message);
@@ -6871,12 +6899,11 @@ const App = () => {
                 setToasts(prev => [...prev.slice(-4), errToast]);
                 setTimeout(() => setToasts(prev => prev.filter(t => t.id !== errToast.id)), 5000);
               });
-            } else {
-              // Market closed or not connected: simulate locally.
-              // _marketClosed=true when broker is connected but market is closed (signals are real but execution is deferred).
-              const _marketClosed = (isLiveReal || isBrokerPaper) && !mktNow.isOpen;
-              setTrades(prev => [{ ...newTrade, _marketClosed }, ...prev].slice(0, 200));
+            } else if (!(isLiveReal || isBrokerPaper)) {
+              // No broker connected — pure simulation mode, record the trade locally.
+              setTrades(prev => [{ ...newTrade }, ...prev].slice(0, 5000));
             }
+            // else: broker connected + market closed → skip (we don't fall back to simulated trades).
           }
         }
       }
@@ -7024,7 +7051,8 @@ const App = () => {
     return trades.filter(t => t.pnl != null && (t.exitTs || 0) >= midnight).reduce((s, t) => s + t.pnl, 0);
   }, [trades]);
 
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory };
+  const alpacaConnected = !!(alpaca?.connected && alpaca?.token);
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
