@@ -132,31 +132,31 @@ svg.chart { display: block; width: 100%; }
 
 /* ------- table ------- */
 .tbl { width: 100%; border-collapse: collapse; }
- .tbl th, .tbl td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
- .tbl th { font-family: var(--mono); font-size: 9px; color: var(--ink-3); letter-spacing: 0.14em; text-transform: uppercase; font-weight: 400; }
- .tbl td { color: var(--ink-2); }
- .tbl td.mono { font-family: var(--mono); color: var(--ink); }
- .tbl tbody tr { transition: background 120ms; cursor: pointer; }
- .tbl tbody tr:hover { background: var(--bg-2); }
- .tbl tbody tr.selected { background: var(--bg-2); }
+.tbl th, .tbl td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.tbl th { font-family: var(--mono); font-size: 9px; color: var(--ink-3); letter-spacing: 0.14em; text-transform: uppercase; font-weight: 400; }
+.tbl td { color: var(--ink-2); }
+.tbl td.mono { font-family: var(--mono); color: var(--ink); }
+.tbl tbody tr { transition: background 120ms; cursor: pointer; }
+.tbl tbody tr:hover { background: var(--bg-2); }
+.tbl tbody tr.selected { background: var(--bg-2); }
 
 .pill { font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; padding: 3px 8px; border-radius: 3px; border: 1px solid currentColor; display: inline-block; }
- .pill.buy { color: var(--up); }
- .pill.sell { color: var(--down); }
- .pill.hold { color: var(--ink-3); }
- .pill.virtual { color: var(--virtual); }
- .pill.live { color: var(--live); }
- .pill.solid { background: currentColor; border: none; }
- .pill.solid span { color: var(--bg); }
+.pill.buy { color: var(--up); }
+.pill.sell { color: var(--down); }
+.pill.hold { color: var(--ink-3); }
+.pill.virtual { color: var(--virtual); }
+.pill.live { color: var(--live); }
+.pill.solid { background: currentColor; border: none; }
+.pill.solid span { color: var(--bg); }
 
 /* ------- buttons ------- */
 .btn { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; padding: 8px 14px; border: 1px solid var(--line-2); border-radius: 4px; background: var(--bg-2); transition: all 120ms; }
- .btn:hover { border-color: var(--ink-3); color: var(--ink); }
- .btn.primary { background: var(--virtual); color: #0a1f0a; border-color: var(--virtual); font-weight: 500; }
- .btn.primary:hover { background: #95e095; }
- .btn.danger { background: var(--live); color: #1a0a00; border-color: var(--live); font-weight: 500; }
- .btn.danger:hover { background: #ff9c5c; }
- .btn.ghost { background: transparent; }
+.btn:hover { border-color: var(--ink-3); color: var(--ink); }
+.btn.primary { background: var(--virtual); color: #0a1f0a; border-color: var(--virtual); font-weight: 500; }
+.btn.primary:hover { background: #95e095; }
+.btn.danger { background: var(--live); color: #1a0a00; border-color: var(--live); font-weight: 500; }
+.btn.danger:hover { background: #ff9c5c; }
+.btn.ghost { background: transparent; }
 
 @keyframes equityFlash {
  0% { color: var(--virtual); text-shadow: 0 0 8px var(--virtual); }
@@ -171,14 +171,14 @@ svg.chart { display: block; width: 100%; }
 }
 
 .tick-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--virtual); margin-right: 6px; vertical-align: middle; animation: tickPulse 1.2s ease-in-out infinite; box-shadow: 0 0 4px currentColor; }
- .tick-dot.fast { animation-duration: 0.5s; background: var(--virtual); }
- .tick-dot.short { background: var(--down); }
+.tick-dot.fast { animation-duration: 0.5s; background: var(--virtual); }
+.tick-dot.short { background: var(--down); }
 
 /* ------- activity feed ------- */
 .feed { display: flex; flex-direction: column; }
 .feed-row { display: grid; grid-template-columns: 80px 60px 80px 1fr 100px 80px; gap: 14px; padding: 14px 16px; border-bottom: 1px solid var(--line); align-items: center; font-size: 13px; cursor: pointer; transition: background 120ms; }
- .feed-row:hover { background: var(--bg-2); }
- .feed-row.new { animation: flash 1s ease-out; }
+.feed-row:hover { background: var(--bg-2); }
+.feed-row.new { animation: flash 1s ease-out; }
 
 @keyframes flash {
  from { background: rgba(125, 216, 125, 0.15); }
@@ -196,8 +196,8 @@ svg.chart { display: block; width: 100%; }
 .feed-sym { font-family: var(--mono); font-weight: 500; color: var(--ink); }
 .feed-reason { color: var(--ink-2); font-size: 12px; font-style: italic; font-family: var(--serif); }
 .feed-pnl { font-family: var(--mono); text-align: right; }
- .feed-pnl.up { color: var(--up); }
- .feed-pnl.dn { color: var(--down); }
+.feed-pnl.up { color: var(--up); }
+.feed-pnl.dn { color: var(--down); }
 
 /* ------- modals ------- */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(5, 6, 8, 0.78); backdrop-filter: blur(4px); z-index: 200; display: flex; align-items: center; justify-content: center; padding: 40px; animation: fadein 200ms; }
@@ -207,7 +207,7 @@ svg.chart { display: block; width: 100%; }
 }
 
 .modal { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 8px; max-width: 540px; width: 100%; max-height: 90vh; overflow-y: auto; animation: rise 280ms cubic-bezier(0.2, 0.7, 0.2, 1); }
- .modal.wide { max-width: 820px; }
+.modal.wide { max-width: 820px; }
 
 @keyframes rise {
  from { transform: translateY(20px); opacity: 0; }
@@ -217,8 +217,10 @@ svg.chart { display: block; width: 100%; }
 .modal-title { font-family: var(--serif); font-size: 20px; font-weight: 400; }
 .modal-body { padding: 24px; }
 .modal-foot { padding: 16px 24px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 10px; }
+
 .danger-banner { background: linear-gradient(180deg, rgba(255, 138, 61, 0.12), rgba(255, 138, 61, 0.04)); border: 1px solid var(--live); border-radius: 6px; padding: 16px; margin-bottom: 18px; font-size: 13px; color: var(--ink); }
 .danger-banner b { color: var(--live); }
+
 .checklist { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
 .check-row { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; background: var(--bg-2); border-radius: 4px; cursor: pointer; font-size: 13px; color: var(--ink-2); border: 1px solid transparent; }
 .check-row:hover { color: var(--ink); }
