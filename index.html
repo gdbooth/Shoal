@@ -6599,17 +6599,7 @@ const App = () => {
   const [weightHistory, setWeightHistory] = React.useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('shoal_weight_history_v2') || 'null');
-      if (stored && typeof stored === 'object') {
-        // Discard data that looks like the fake seeded WEIGHT_HISTORY:
-        // real snapshots are appended one-at-a-time so they grow from 0, whereas
-        // the seed data starts at exactly 90 entries for every agent.
-        const lens = AGENTS.map(a => (stored[a.id] || []).length);
-        const allExactly90 = lens.every(l => l === 90);
-        const hasAnyData   = lens.some(l => l > 0);
-        if (hasAnyData && !allExactly90) return stored; // real incremental history
-        // If exactly 90 for every agent it's almost certainly the seed data — discard it
-        localStorage.removeItem('shoal_weight_history_v2');
-      }
+      if (stored && typeof stored === 'object') return stored;
     } catch (_) {}
     return {};
   });
