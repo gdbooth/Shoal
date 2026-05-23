@@ -1702,13 +1702,15 @@ function computeEnsemble(signals, weights, enabledSet = null) {
   return { dir, confidence, consensus, votes, disagreement };
 }
 
-// EW reinforcement with confidence + signal-strength weighting
+// EW reinforcement with confidence + signal-strength + magnitude weighting
 function updateAgentWeights(weights, trade) {
   if (!trade.votes || trade.pnl == null) return weights;
   const tradeSide = trade.side === 'SELL' ? -1 : 1;
   const outcome   = trade.pnl > 0 ? 1 : -1;
   const conf      = Math.max(0.3, Math.min(1.0, trade.conf ?? 0.5));
-  const baseLr    = 0.03 + 0.02 * conf;
+  // Scale learning rate by outcome magnitude: big wins/losses teach more than marginal ones
+  const magnitude = Math.min(3.0, Math.abs(trade.pnlPct ?? 0.01) / 0.01);
+  const baseLr    = (0.05 + 0.03 * conf) * Math.sqrt(magnitude);
   const N         = AGENTS.length;
   const uniform   = 1 / N;
   const next = { ...weights };
@@ -1726,22 +1728,21 @@ function updateAgentWeights(weights, trade) {
     }
     next[a.id] = (next[a.id] ?? a.weight) * (1 + delta);
   }
-  // Light regularisation: 0.8% blend toward uniform — prevents collapse without
-  // overpowering the learning signal. Equilibrium spread at typical conf/strength:
-  //   30% acc → ~3.7%  |  50% → 6.25% (uniform)  |  60% → ~9.6%  |  70% → capped at 15%
+  // Light regularisation: keeps weights from collapsing to a single agent
   const regAlpha = 0.008;
   for (const a of AGENTS) {
     next[a.id] = next[a.id] * (1 - regAlpha) + uniform * regAlpha;
   }
+  // Wider clamp allows the system to express stronger conviction in good agents
   for (const a of AGENTS) {
-    next[a.id] = Math.max(0.02, Math.min(0.15, next[a.id]));
+    next[a.id] = Math.max(0.01, Math.min(0.25, next[a.id]));
   }
   const total = Object.values(next).reduce((s, v) => s + v, 0);
   for (const id of Object.keys(next)) next[id] /= total;
   return next;
 }
 
-// Rolling per-agent accuracy buffer — last 50 closed votes
+// Rolling per-agent accuracy buffer — last 20 closed votes (shorter = faster adaptation)
 function updateAgentHistory(history, trade) {
   if (!trade.votes || trade.pnl == null) return history;
   const tradeSide = trade.side === 'SELL' ? -1 : 1;
@@ -1752,7 +1753,7 @@ function updateAgentHistory(history, trade) {
     if (vote === 0 || vote === undefined || vote === null) continue;
     // Same direction-aware correctness logic as updateAgentWeights
     const correct = (vote * tradeSide * outcome) > 0;
-    next[a.id] = [...(next[a.id] || []), correct].slice(-50);
+    next[a.id] = [...(next[a.id] || []), correct].slice(-20);
   }
   return next;
 }
@@ -7027,13 +7028,6 @@ const App = () => {
             const exit = t.price * (1 + takeProfitPct * (t.side === 'BUY' ? 1 : -1));
             if (t._brokerSent) closedSyms.add(t.sym);
             return { ...t, status: 'WIN', pnl: pnlAmt, pnlPct: takeProfitPct, exit, exitTs: Date.now(), isNew: false, closeReason: 'TAKE-PROFIT' };
-          }
-          // Stochastic close — reduced from 22% to allow open positions to build up
-          if (Math.random() < 0.06) {
-            const pnlAmt = (Math.random() - 0.50) * t.qty * t.price * 0.02;
-            const exit   = t.price + (pnlAmt / t.qty) * (t.side === 'BUY' ? 1 : -1);
-            if (t._brokerSent) closedSyms.add(t.sym);
-            return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false };
           }
           return t;
         });
