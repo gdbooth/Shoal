@@ -7654,6 +7654,10 @@
                 )}
               </div>
 
+{/*   // =====================================
+      // RISK PARAMETERS
+      // ===================================== 
+*/}
               <div className="card">
                 <div className="card-head">
                   <div className="card-title">Risk parameters</div>
@@ -7661,9 +7665,7 @@
                 </div>
 
                 <div className="field">
-                  <div
-                    style={{ display: "flex", justifyContent: "space-between" }}
-                  >
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <div className="field-label">Risk per trade</div>
                     <div className="mono" style={{ fontSize: 13 }}>
                       {risk.perTrade.toFixed(1)}%
@@ -7682,9 +7684,7 @@
                 </div>
 
                 <div className="field">
-                  <div
-                    style={{ display: "flex", justifyContent: "space-between" }}
-                  >
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <div className="field-label">Max concurrent positions</div>
                     <div className="mono" style={{ fontSize: 13 }}>
                       {risk.maxPos} positions
@@ -7696,16 +7696,12 @@
                     max="50"
                     step="1"
                     value={risk.maxPos}
-                    onChange={(e) =>
-                      setRisk({ ...risk, maxPos: +e.target.value })
-                    }
+                    onChange={(e) => setRisk({ ...risk, maxPos: +e.target.value })}
                   />
                 </div>
 
                 <div className="field">
-                  <div
-                    style={{ display: "flex", justifyContent: "space-between" }}
-                  >
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <div className="field-label">Daily loss limit</div>
                     <div className="mono" style={{ fontSize: 13 }}>
                       {risk.dailyLoss}% kill switch
@@ -7717,16 +7713,12 @@
                     max="10"
                     step="0.5"
                     value={risk.dailyLoss}
-                    onChange={(e) =>
-                      setRisk({ ...risk, dailyLoss: +e.target.value })
-                    }
+                    onChange={(e) => setRisk({ ...risk, dailyLoss: +e.target.value })}
                   />
                 </div>
 
                 <div className="field">
-                  <div
-                    style={{ display: "flex", justifyContent: "space-between" }}
-                  >
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <div className="field-label">Confidence threshold</div>
                     <div className="mono" style={{ fontSize: 13 }}>
                       ≥ {risk.confidence}%
@@ -7742,6 +7734,9 @@
                       setRisk({ ...risk, confidence: +e.target.value })
                     }
                   />
+                  <div className="mono tiny muted" style={{ marginTop: 4 }}>
+                    Select stock if confidence is greater than this value
+                  </div>
                 </div>
 
                 <div className="field">
@@ -11912,7 +11907,7 @@
         });
 
         // ==========================================
-        //    ALLOCATION OF CONSTACTS IN SETTINGS
+        //    ALLOCATION OF CONSTANTS IN SETTINGS
         // ==========================================
 
         const [risk, setRisk] = React.useState({
@@ -11933,7 +11928,9 @@
           maxHoldHours: 48,
         });
 
-        const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(  () => new Set(), );
+        const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(
+          () => new Set(),
+        );
         const [slippageLog, setSlippageLog] = React.useState([]);
 
         // Simulation speed multiplier (only affects SIMULATED mode)
