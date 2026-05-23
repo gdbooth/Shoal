@@ -1870,6 +1870,15 @@ function rollingVol(prices, window = 10) {
 function computeMark(trade, livePrices) {
   const live = livePrices && livePrices[trade.sym];
   if (live && live > 0) return live;
+  const ph = PRICE_HISTORY[trade.sym];
+  const entryStep = trade._phIdx;
+  if (ph && entryStep != null) {
+    const elapsedMs = Date.now() - trade.ts;
+    // Approximate step: swarm tick fires every ~3500ms at simSpeed=1
+    const stepsElapsed = Math.max(0, Math.round(elapsedMs / 3500));
+    const lookupIdx = Math.min(ph.length - 1, entryStep + stepsElapsed);
+    return trade.price * (ph[lookupIdx] / ph[entryStep]);
+  }
   const elapsedMs = Date.now() - trade.ts;
   const symSeed = trade.sym.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
   const drift = Math.sin(symSeed * 0.07 + elapsedMs * 0.000002) * 0.055;
@@ -6979,12 +6988,23 @@ const App = () => {
           if (t.status !== 'OPEN' || t._real) return t;
 
           const elapsedMs = Date.now() - t.ts;
-          // Simulate a mark price: symbol-seeded drift + time-varying noise
-          const symSeed = t.sym.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
-          const drift = Math.sin(symSeed * 0.07 + elapsedMs * 0.000002) * 0.055;
-          const elapsedH = elapsedMs / 3600000;
-          const noise = Math.sin(elapsedH * 1.7 + symSeed * 0.031) * 0.025;
-          const markPct = drift + noise; // simulated % move from entry
+          // Signal-correlated mark price: replay PRICE_HISTORY from the entry step so that
+          // agents that correctly read the price trend are rewarded with aligned mark moves.
+          let markPct;
+          const ph = PRICE_HISTORY[t.sym];
+          const entryStep = t._phIdx;
+          if (ph && entryStep != null) {
+            const curStep = swarmStepRef.current;
+            const stepsElapsed = curStep >= entryStep ? curStep - entryStep : 756 - entryStep + curStep;
+            const lookupIdx = Math.min(ph.length - 1, entryStep + stepsElapsed);
+            const phEntry = ph[entryStep];
+            markPct = phEntry > 0 ? (ph[lookupIdx] - phEntry) / phEntry : 0;
+          } else {
+            const symSeed = t.sym.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
+            const drift = Math.sin(symSeed * 0.07 + elapsedMs * 0.000002) * 0.055;
+            const elapsedH = elapsedMs / 3600000;
+            markPct = drift + Math.sin(elapsedH * 1.7 + symSeed * 0.031) * 0.025;
+          }
           const upnlPct = markPct * (t.side === 'BUY' ? 1 : -1); // from trade's perspective
 
           // [6] Max holding period: time-stop — close at near-breakeven after maxHoldHours
@@ -7221,6 +7241,7 @@ const App = () => {
               voteHistory,
               isNew: true,
               _notional: notional,
+              _phIdx: swarmStepRef.current,
             });
           }
 
