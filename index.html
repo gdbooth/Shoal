@@ -4516,25 +4516,46 @@ window.ScreenBacktest = ScreenBacktest;
 // Market analysis screen — sector / correlation map
 
 const ScreenMarket = ({ tick, mode, ctx }) => {
-  // build flattened universe with dynamic returns and real TA confidence where available
+  const lp = ctx?.livePrices || {};
   const universe = [];
   SECTORS.forEach((s, si) => {
     SECTOR_TICKERS[s].forEach((sym, ti) => {
-      const seed = (si * 8 + ti);
-      const chg = (Math.sin(seed + tick * 0.07) + Math.cos(seed * 1.7 + tick * 0.03)) * 1.8;
-      // Real TA confidence from live signals when connected, otherwise static fallback
+      const tk = TICKERS.find(t => t.sym === sym);
+      const basePrice = tk ? tk.last : 100;
+      // Use live price when connected, else derive from PRICE_HISTORY
+      let chg;
+      if (lp[sym]) {
+        chg = ((lp[sym] - basePrice) / basePrice) * 100;
+      } else if (PRICE_HISTORY[sym]) {
+        const ph = PRICE_HISTORY[sym];
+        const idx = Math.min(ph.length - 1, Math.max(1, Math.floor(tick * 0.3) % ph.length));
+        chg = ((ph[idx] - ph[Math.max(0, idx - 1)]) / ph[Math.max(0, idx - 1)]) * 100;
+      } else {
+        const seed = (si * 8 + ti);
+        chg = (Math.sin(seed + tick * 0.07) + Math.cos(seed * 1.7 + tick * 0.03)) * 1.8;
+      }
       const realSigs = (ctx?.liveSignals || SIGNALS_ALL)[sym];
       let conf;
       if (realSigs) {
         const ens = computeEnsemble(realSigs, {});
         conf = ens.confidence;
       } else {
+        const seed = (si * 8 + ti);
         conf = 0.38 + (Math.abs(Math.sin(seed * 2.3 + tick * 0.11)) * 0.52);
       }
-      // Sparkline: rolling 20-period mini price history
-      const spark = Array.from({length:20}, (_, i) =>
-        50 + Math.sin(i * 0.8 + seed + tick * 0.12) * 8 + Math.cos(i * 1.3 + seed * 0.7) * 4
-      );
+      // Sparkline from PRICE_HISTORY when available
+      let spark;
+      if (PRICE_HISTORY[sym]) {
+        const ph = PRICE_HISTORY[sym];
+        const end = Math.min(ph.length, Math.max(20, Math.floor(tick * 0.3) % ph.length));
+        spark = ph.slice(Math.max(0, end - 20), end);
+        if (spark.length < 20) spark = ph.slice(0, 20);
+      } else {
+        const seed = (si * 8 + ti);
+        spark = Array.from({length:20}, (_, i) =>
+          50 + Math.sin(i * 0.8 + seed + tick * 0.12) * 8 + Math.cos(i * 1.3 + seed * 0.7) * 4
+        );
+      }
       universe.push({ sym, sector: s, chg, conf, spark, watched: ['NVDA','AAPL','MSFT','TSLA','META','JPM'].includes(sym) });
     });
   });
@@ -6474,6 +6495,9 @@ const App = () => {
   const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(() => new Set());
   const [slippageLog, setSlippageLog] = React.useState([]);
 
+  // Simulation speed multiplier (only affects SIMULATED mode)
+  const [simSpeed, setSimSpeed] = React.useState(1);
+
   // UI state: toasts, theme, sidebar, nav group collapse
   const [toasts, setToasts] = React.useState([]);
   const [themeMode, setThemeMode] = React.useState(() => localStorage.getItem('shoal_theme') || 'dark');
@@ -6891,8 +6915,8 @@ const App = () => {
             if (t._brokerSent) closedSyms.add(t.sym);
             return { ...t, status: 'WIN', pnl: pnlAmt, pnlPct: takeProfitPct, exit, exitTs: Date.now(), isNew: false, closeReason: 'TAKE-PROFIT' };
           }
-          // Stochastic close (remaining probability)
-          if (Math.random() < 0.22) {
+          // Stochastic close — reduced from 22% to allow open positions to build up
+          if (Math.random() < 0.06) {
             const pnlAmt = (Math.random() - 0.42) * t.qty * t.price * 0.02;
             const exit   = t.price + (pnlAmt / t.qty) * (t.side === 'BUY' ? 1 : -1);
             if (t._brokerSent) closedSyms.add(t.sym);
@@ -7031,30 +7055,39 @@ const App = () => {
         }
 
         if (candidates.length > 0) {
-          // [10] Weighted selection: confidence² × ticker edge factor
-          const totalScore = candidates.reduce((s, c) => {
-            const edge = tickerEdge[c.tk.sym] ?? 0.5;
-            return s + c.ens.confidence ** 2 * (0.6 + edge * 0.8);
-          }, 0);
-          let rand = Math.random() * totalScore;
-          let chosen = candidates[0];
-          for (const c of candidates) {
-            const edge = tickerEdge[c.tk.sym] ?? 0.5;
-            rand -= c.ens.confidence ** 2 * (0.6 + edge * 0.8);
-            if (rand <= 0) { chosen = c; break; }
-          }
+          // Pick up to 3 trades per tick via weighted sampling without replacement
+          const maxPerTick = Math.min(3, candidates.length);
+          const pool = [...candidates];
+          let cashLeft = freeCash;
+          const batchTrades = [];
 
-          const { tk, sigs, ens: ensemble, side } = chosen;
-          setSwarmFocus({ sym: tk.sym, votes: ensemble.votes, dir: ensemble.dir, confidence: ensemble.confidence, ts: Date.now() });
-          const price = (livePricesRef.current[tk.sym] || tk.last) * (1 + (Math.random() - 0.5) * 0.001);
-          // [8] Kelly-adjusted notional — scales with historical win rate, capped at free cash.
-          const rawNotional = maxVal * ensemble.confidence * (0.5 + kellyFrac);
-          const notional = parseFloat(Math.min(rawNotional, freeCash).toFixed(2));
-          const qty = parseFloat((notional / price).toFixed(4));
+          for (let pick = 0; pick < maxPerTick && cashLeft > 1; pick++) {
+            const totalScore = pool.reduce((s, c) => {
+              const edge = tickerEdge[c.tk.sym] ?? 0.5;
+              return s + c.ens.confidence ** 2 * (0.6 + edge * 0.8);
+            }, 0);
+            if (totalScore <= 0) break;
 
-          // Skip if free cash can't even cover a minimum-meaningful position.
-          if (notional < 1) return;
-          if (qty >= 0.001) {
+            let rand = Math.random() * totalScore;
+            let chosenIdx = 0;
+            for (let ci = 0; ci < pool.length; ci++) {
+              const edge = tickerEdge[pool[ci].tk.sym] ?? 0.5;
+              rand -= pool[ci].ens.confidence ** 2 * (0.6 + edge * 0.8);
+              if (rand <= 0) { chosenIdx = ci; break; }
+            }
+
+            const chosen = pool.splice(chosenIdx, 1)[0];
+            const { tk, sigs, ens: ensemble, side } = chosen;
+            if (pick === 0) setSwarmFocus({ sym: tk.sym, votes: ensemble.votes, dir: ensemble.dir, confidence: ensemble.confidence, ts: Date.now() });
+
+            const price = (livePricesRef.current[tk.sym] || tk.last) * (1 + (Math.random() - 0.5) * 0.001);
+            const rawNotional = maxVal * ensemble.confidence * (0.5 + kellyFrac);
+            const notional = parseFloat(Math.min(rawNotional, cashLeft).toFixed(2));
+            const qty = parseFloat((notional / price).toFixed(4));
+
+            if (notional < 1 || qty < 0.001) continue;
+            cashLeft -= notional;
+
             const voteHistory = Array.from({length:3}, (_, i) => {
               const perturbedSigs = {};
               AGENTS.forEach(a => {
@@ -7066,9 +7099,9 @@ const App = () => {
               return computeEnsemble(perturbedSigs, agentWeightsRef.current, dynamicEnabled).votes;
             });
 
-            const newTrade = {
+            batchTrades.push({
               id: 'TX-' + Math.floor(11000 + Math.random() * 9999),
-              ts: Date.now(), exitTs: null,
+              ts: Date.now() + pick, exitTs: null,
               sym: tk.sym, side, qty, price, exit: null,
               conf: ensemble.confidence,
               reason: buildReason(sigs, ensemble),
@@ -7079,55 +7112,57 @@ const App = () => {
               disagreement: ensemble.disagreement,
               voteHistory,
               isNew: true,
-            };
+              _notional: notional,
+            });
+          }
 
+          if (batchTrades.length > 0) {
             const mktNow = marketStatusRef.current;
             if ((isLiveReal || isBrokerPaper) && mktNow.isOpen) {
-              // Market OPEN + broker connected: route live order to Alpaca API
-              const alpacaSide = side === 'BUY' ? 'buy' : 'sell';
-              const orderBody = { symbol: tk.sym, notional: String(notional), side: alpacaSide, type: 'market', time_in_force: 'day' };
-              console.log('[Shoal] → Alpaca order', orderBody);
-              fetch(`${BACKEND_URL}/api/orders`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaNow.token },
-                body: JSON.stringify(orderBody),
-              }).then(async r => {
-                const body = await r.json();
-                if (!r.ok) {
-                  const errMsg = body.message || `HTTP ${r.status}`;
-                  console.warn('[Shoal] Alpaca order rejected', tk.sym, errMsg, body);
-                  const errToast = { id: Date.now(), type: 'close-loss', sym: tk.sym, text: 'rejected: ' + errMsg };
+              for (const newTrade of batchTrades) {
+                const alpacaSide = newTrade.side === 'BUY' ? 'buy' : 'sell';
+                const orderBody = { symbol: newTrade.sym, notional: String(newTrade._notional), side: alpacaSide, type: 'market', time_in_force: 'day' };
+                console.log('[Shoal] → Alpaca order', orderBody);
+                fetch(`${BACKEND_URL}/api/orders`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaNow.token },
+                  body: JSON.stringify(orderBody),
+                }).then(async r => {
+                  const body = await r.json();
+                  if (!r.ok) {
+                    const errMsg = body.message || `HTTP ${r.status}`;
+                    console.warn('[Shoal] Alpaca order rejected', newTrade.sym, errMsg, body);
+                    const errToast = { id: Date.now(), type: 'close-loss', sym: newTrade.sym, text: 'rejected: ' + errMsg };
+                    setToasts(prev => [...prev.slice(-4), errToast]);
+                    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== errToast.id)), 5000);
+                    return;
+                  }
+                  console.log('[Shoal] ✓ Order confirmed', body.id, body.status, body.symbol);
+                  const filledPrice = parseFloat(body.filled_avg_price || 0);
+                  if (filledPrice > 0) {
+                    const slip = (filledPrice - newTrade.price) / newTrade.price;
+                    setSlippageLog(prev => [...prev.slice(-49), { sym: newTrade.sym, side: newTrade.side, expected: newTrade.price, actual: filledPrice, slip, ts: Date.now() }]);
+                  }
+                  if (!isLiveReal) {
+                    setTrades(prev => [{ ...newTrade, _brokerSent: true }, ...prev].slice(0, 5000));
+                  }
+                }).catch(err => {
+                  console.warn('[Shoal] Order fetch error:', err.message);
+                  const errToast = { id: Date.now(), type: 'close-loss', sym: newTrade.sym, text: 'network: ' + err.message };
                   setToasts(prev => [...prev.slice(-4), errToast]);
                   setTimeout(() => setToasts(prev => prev.filter(t => t.id !== errToast.id)), 5000);
-                  return;
-                }
-                console.log('[Shoal] ✓ Order confirmed', body.id, body.status, body.symbol);
-                const filledPrice = parseFloat(body.filled_avg_price || 0);
-                if (filledPrice > 0) {
-                  const slip = (filledPrice - price) / price;
-                  setSlippageLog(prev => [...prev.slice(-49), { sym: tk.sym, side, expected: price, actual: filledPrice, slip, ts: Date.now() }]);
-                }
-                if (!isLiveReal) {
-                  setTrades(prev => [{ ...newTrade, _brokerSent: true }, ...prev].slice(0, 5000));
-                }
-              }).catch(err => {
-                console.warn('[Shoal] Order fetch error:', err.message);
-                const errToast = { id: Date.now(), type: 'close-loss', sym: tk.sym, text: 'network: ' + err.message };
-                setToasts(prev => [...prev.slice(-4), errToast]);
-                setTimeout(() => setToasts(prev => prev.filter(t => t.id !== errToast.id)), 5000);
-              });
+                });
+              }
             } else if (!(isLiveReal || isBrokerPaper)) {
-              // No broker connected — pure simulation mode, record the trade locally.
-              setTrades(prev => [{ ...newTrade }, ...prev].slice(0, 5000));
+              setTrades(prev => [...batchTrades, ...prev].slice(0, 5000));
             }
-            // else: broker connected + market closed → skip (we don't fall back to simulated trades).
           }
         }
       }
 
-    }, 3500);
+    }, Math.max(35, Math.round(3500 / (mode === 'SIMULATED' ? simSpeed : 1))));
     return () => clearInterval(ivl);
-  }, [running, mode, direction, risk]);
+  }, [running, mode, direction, risk, simSpeed]);
 
   // Live equity = startingBalance + Σ realized P&L + Σ unrealized P&L on open positions.
   // Recomputed on every tick so the dashboard equity, P/L trend, and the swarm tick's
@@ -7195,9 +7230,10 @@ const App = () => {
 
   // global tick for animations
   React.useEffect(() => {
-    const ivl = setInterval(() => setTick(t => t + 1), 800);
+    const tickMs = Math.max(50, Math.round(800 / (mode === 'SIMULATED' ? simSpeed : 1)));
+    const ivl = setInterval(() => setTick(t => t + 1), tickMs);
     return () => clearInterval(ivl);
-  }, []);
+  }, [simSpeed, mode]);
 
   // edit mode protocol
   React.useEffect(() => {
@@ -7397,6 +7433,16 @@ const App = () => {
             Session {sessionPnl >= 0 ? '+' : ''}{fmtMoney(sessionPnl)}
           </div>
           {tweaks.animated && <TickerStrip tickers={TICKERS} tick={tick}/>}
+          {mode === 'SIMULATED' && (
+            <div className="tweak-opts" style={{marginRight:6}} title="Simulation speed multiplier">
+              {[1, 5, 10, 100].map(s => (
+                <div key={s} className={'tweak-opt ' + (simSpeed === s ? 'on' : '')}
+                     onClick={() => setSimSpeed(s)}>
+                  {s}x
+                </div>
+              ))}
+            </div>
+          )}
           <div className={'bot-status ' + (running ? '' : 'paused')}>
             <span className="led"></span>
             <span>{running ? 'BOT RUNNING' : 'BOT PAUSED'}</span>
