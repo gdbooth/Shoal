@@ -2836,7 +2836,8 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
   const [showWhyModal, setShowWhyModal] = React.useState(false);
   const whyReasons = React.useMemo(() => {
     const riskNow = ctx?.risk || {};
-    const maxVal = riskNow.maxTradeValue ?? 5000;
+    const bal = ctx?.balance ?? 100000;
+    const maxVal = bal * (riskNow.maxTradePct ?? 5) / 100;
     const maxDisagree = (riskNow.maxDisagreement ?? 65) / 100;
     const maxSectPct = (riskNow.maxSectorPct ?? 40) / 100;
     const blacklist = ctx?.blacklistedSymbols || new Set();
@@ -4856,11 +4857,11 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
 
           <div className="field">
             <div style={{display:'flex',justifyContent:'space-between'}}>
-              <div className="field-label">Max trade value</div>
-              <div className="mono" style={{fontSize:13}}>{fmtMoney(risk.maxTradeValue ?? 5000, 0)}</div>
+              <div className="field-label">% of equity as max trade</div>
+              <div className="mono" style={{fontSize:13}}>{(risk.maxTradePct ?? 5).toFixed(1)}%</div>
             </div>
-            <input type="range" min="1" max="50000" step="10" value={risk.maxTradeValue ?? 5000} onChange={e=>setRisk({...risk, maxTradeValue: +e.target.value})}/>
-            <div className="mono tiny muted" style={{marginTop:4}}>Maximum notional value (qty × price) for any single transaction</div>
+            <input type="range" min="0.5" max="25" step="0.5" value={risk.maxTradePct ?? 5} onChange={e=>setRisk({...risk, maxTradePct: +e.target.value})}/>
+            <div className="mono tiny muted" style={{marginTop:4}}>Maximum trade size as a percentage of current equity</div>
           </div>
 
           <div className="field">
@@ -6416,7 +6417,7 @@ const ScreenGuide = () => {
     },
     {
       title: 'Risk controls',
-      body: 'The Settings page lets you cap the maximum value per trade, set a daily loss limit, choose LONG/SHORT/BOTH bias, and raise or lower the confidence threshold. The bot will never place a trade larger than the max trade value, even if it means skipping a ticker entirely.',
+      body: 'The Settings page lets you cap the maximum trade size as a percentage of equity, set a daily loss limit, choose LONG/SHORT/BOTH bias, and raise or lower the confidence threshold. The bot will never place a trade larger than the configured equity percentage, even if it means skipping a ticker entirely.',
     },
     {
       title: 'Learning & adaptation',
@@ -6428,7 +6429,7 @@ const ScreenGuide = () => {
     },
     {
       title: 'Fractional shares',
-      body: 'In VIRTUAL and LIVE modes, orders are sent as notional (dollar) amounts, so the bot can trade any stock regardless of share price. A $500 max trade value will correctly buy 0.26 shares of a $1900 stock.',
+      body: 'In VIRTUAL and LIVE modes, orders are sent as notional (dollar) amounts, so the bot can trade any stock regardless of share price. A 5% max trade with $100k equity limits each trade to $5,000 notional — correctly buying 0.26 shares of a $1,900 stock.',
     },
   ];
 
@@ -6535,7 +6536,7 @@ const App = () => {
     const saved = localStorage.getItem('shoal_alpaca');
     return saved ? JSON.parse(saved) : { connected: false, balance: 0, account: null, broker: 'Alpaca Markets' };
   });
-  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 50, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradeValue: 5000, minAgentAccuracy: 35, autoDisableAgents: false, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48 });
+  const [risk, setRisk] = React.useState({ perTrade: 1.1, maxPos: 50, dailyLoss: 3, confidence: 55, shorts: true, ah: false, maxTradePct: 5, minAgentAccuracy: 35, autoDisableAgents: false, maxDisagreement: 65, maxSectorPct: 40, stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48 });
   const [blacklistedSymbols, setBlacklistedSymbols] = React.useState(() => new Set());
   const [slippageLog, setSlippageLog] = React.useState([]);
 
@@ -7029,7 +7030,6 @@ const App = () => {
       if ((isLiveReal || isBrokerPaper) && mktNowGate && !mktNowGate.isOpen) return;
 
       if (Math.random() < 0.55) {
-        const maxVal      = riskNow.maxTradeValue ?? 5000;
         const maxDisagree = (riskNow.maxDisagreement ?? 65) / 100;
         const maxSectPct  = (riskNow.maxSectorPct  ?? 40) / 100;
         const minConf     = (riskNow.confidence    ?? 55) / 100;
@@ -7040,6 +7040,7 @@ const App = () => {
         // Skip the entire scan if free cash (balance − open exposure) is below
         // a minimum threshold, or below the new trade's notional.
         const balanceNow = balanceRef.current ?? 0;
+        const maxVal     = balanceNow * (riskNow.maxTradePct ?? 5) / 100;
         const openExposure = tradesRef.current
           .filter(t => t.status === 'OPEN')
           .reduce((s, t) => s + t.qty * t.price, 0);
