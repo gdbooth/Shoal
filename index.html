@@ -7128,7 +7128,7 @@ const App = () => {
           if (direction === 'LONG') side = 'BUY';
           else if (direction === 'SHORT') side = 'SELL';
           else { if (!ens.dir) continue; side = ens.dir; }
-          candidates.push({ tk, sigs, ens, side });
+          candidates.push({ tk, sigs, ens, side, tkVol });
         }
 
         if (candidates.length === 0 && scanBest) {
@@ -7158,7 +7158,7 @@ const App = () => {
             }
 
             const chosen = pool.splice(chosenIdx, 1)[0];
-            const { tk, sigs, ens: ensemble, side } = chosen;
+            const { tk, sigs, ens: ensemble, side, tkVol } = chosen;
             if (pick === 0) setSwarmFocus({ sym: tk.sym, votes: ensemble.votes, dir: ensemble.dir, confidence: ensemble.confidence, ts: Date.now() });
 
             const price = (livePricesRef.current[tk.sym] || tk.last) * (1 + (Math.random() - 0.5) * 0.001);
