@@ -2924,6 +2924,14 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
           <div className={'kpi-delta ' + (totalRet >= 0 ? 'up' : 'dn')}>{fmtPct(totalRet)} since reset</div>
         </div>
         <div className="kpi">
+          <div className="kpi-label" style={{display:'flex',alignItems:'center',gap:5}}>
+            Available balance
+            <span title="Cash free to deploy on the next trade. Equals total equity minus the notional value locked in open positions." style={{cursor:'help',color:'var(--ink-3)',fontSize:11,lineHeight:1}}>ⓘ</span>
+          </div>
+          <div className="kpi-value mono">{fmtMoney(ctx?.availableBalance ?? equityNow, 0)}</div>
+          <div className="kpi-delta muted">{fmtMoney(ctx?.openExposure ?? 0, 0)} locked in {openP.length} position{openP.length === 1 ? '' : 's'}</div>
+        </div>
+        <div className="kpi">
           <div className="kpi-label">Open positions</div>
           <div className="kpi-value mono">{openP.length}</div>
           <div className="kpi-delta muted">{fmtMoney(openP.reduce((s, t) => s + t.qty * t.price, 0), 0)} exposure</div>
@@ -2939,11 +2947,6 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
             )}
           </div>
           <div className="kpi-delta up">{wins}W / {losses}L</div>
-        </div>
-        <div className="kpi">
-          <div className="kpi-label">Sharpe · trailing</div>
-          <div className="kpi-value mono">1.83</div>
-          <div className="kpi-delta up">+0.21 vs last cycle</div>
         </div>
       </div>
 
@@ -7051,8 +7054,16 @@ const App = () => {
     return trades.filter(t => t.pnl != null && (t.exitTs || 0) >= midnight).reduce((s, t) => s + t.pnl, 0);
   }, [trades]);
 
+  // Available balance = equity − notional locked in open positions.
+  // This is the free cash the swarm can deploy on the next trade. Matches the
+  // free-cash guard inside the swarm tick.
+  const openExposure = React.useMemo(() => (
+    trades.filter(t => t.status === 'OPEN').reduce((s, t) => s + t.qty * t.price, 0)
+  ), [trades]);
+  const availableBalance = Math.max(0, balance - openExposure);
+
   const alpacaConnected = !!(alpaca?.connected && alpaca?.token);
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
@@ -7161,6 +7172,11 @@ const App = () => {
             ))}
           </div>
           <div className="topbar-spacer"></div>
+          {/* Available balance badge */}
+          <div className="session-pnl" style={{color:'var(--ink-2)',background:'var(--bg-2)',cursor:'help'}}
+               title={`Free cash available for new trades.\nEquity ${fmtMoney(balance, 0)} − locked ${fmtMoney(openExposure, 0)} = available ${fmtMoney(availableBalance, 0)}`}>
+            Available {fmtMoney(availableBalance, 0)}
+          </div>
           {/* Session P&L badge */}
           <div className={'session-pnl ' + (sessionPnl >= 0 ? 'up' : 'dn')}>
             Session {sessionPnl >= 0 ? '+' : ''}{fmtMoney(sessionPnl)}
