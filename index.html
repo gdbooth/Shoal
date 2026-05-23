@@ -1872,9 +1872,9 @@ function computeMark(trade, livePrices) {
   if (live && live > 0) return live;
   const elapsedMs = Date.now() - trade.ts;
   const symSeed = trade.sym.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
-  const drift = Math.sin(symSeed * 0.07 + elapsedMs * 0.000002) * 0.03;
+  const drift = Math.sin(symSeed * 0.07 + elapsedMs * 0.000002) * 0.055;
   const elapsedH = elapsedMs / 3600000;
-  const noise = Math.sin(elapsedH * 1.7 + symSeed * 0.031) * 0.012;
+  const noise = Math.sin(elapsedH * 1.7 + symSeed * 0.031) * 0.025;
   return trade.price * (1 + drift + noise);
 }
 function unrealizedPnl(trade, livePrices) {
@@ -6981,9 +6981,9 @@ const App = () => {
           const elapsedMs = Date.now() - t.ts;
           // Simulate a mark price: symbol-seeded drift + time-varying noise
           const symSeed = t.sym.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
-          const drift = Math.sin(symSeed * 0.07 + elapsedMs * 0.000002) * 0.03;
+          const drift = Math.sin(symSeed * 0.07 + elapsedMs * 0.000002) * 0.055;
           const elapsedH = elapsedMs / 3600000;
-          const noise = Math.sin(elapsedH * 1.7 + symSeed * 0.031) * 0.012;
+          const noise = Math.sin(elapsedH * 1.7 + symSeed * 0.031) * 0.025;
           const markPct = drift + noise; // simulated % move from entry
           const upnlPct = markPct * (t.side === 'BUY' ? 1 : -1); // from trade's perspective
 
