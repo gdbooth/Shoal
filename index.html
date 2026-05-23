@@ -5912,48 +5912,74 @@ const ScreenSectorUniverse = ({ mode, ctx }) => {
         ))}
       </div>
 
-      {/* Sector distribution table */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-head">
-          <div className="card-title">Sector Distribution</div>
-          <div className="card-meta">Trade counts · sector cap {risk.maxSectorPct ?? 40}% · gate at ≥5 open positions</div>
-        </div>
-        {/* Header row */}
-        <div style={{ display: 'grid', gridTemplateColumns: '72px 1fr 60px 52px 90px 68px', gap: 8, alignItems: 'center', padding: '0 0 6px', borderBottom: '1px solid var(--bg-3)', marginBottom: 4 }}>
-          {['Sector', '', 'Trades', 'Open', 'Realized P&L', 'Avg Conf'].map((h, i) => (
-            <div key={i} style={{ fontSize: 10, color: 'var(--ink-4)', textAlign: i > 1 ? 'right' : 'left', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{h}</div>
-          ))}
-        </div>
-        {sectorStats.map(({ sect, total, open, closed, realizedPnl }) => {
-          const pct = totalTrades > 0 ? total / totalTrades : 0;
-          const sectConf = tickerConf.filter(tc => tc.sector === sect && tc.ens);
-          const avgConf  = sectConf.length > 0
-            ? sectConf.reduce((s, tc) => s + tc.ens.confidence, 0) / sectConf.length
-            : 0;
-          const confOk = avgConf * 100 >= confThreshold;
-          return (
-            <div key={sect} style={{ display: 'grid', gridTemplateColumns: '72px 1fr 60px 52px 90px 68px', gap: 8, alignItems: 'center', padding: '7px 0', borderBottom: '1px solid var(--bg-3)' }}>
-              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 600 }}>{sect}</div>
-              <div style={{ position: 'relative', height: 6, background: 'var(--bg-3)', borderRadius: 3, overflow: 'hidden' }}>
-                <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', borderRadius: 3, transition: 'width 0.5s',
-                  width:      `${Math.max(total > 0 ? 2 : 0, pct * 100)}%`,
-                  background: total > 0 ? 'var(--accent)' : 'transparent',
-                }}/>
-              </div>
-              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, textAlign: 'right', color: total > 0 ? 'var(--ink-2)' : 'var(--ink-4)' }}>{total}</div>
-              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, textAlign: 'right' }}>
-                {open > 0 ? <span style={{ color: 'var(--accent)' }}>{open}</span> : <span style={{ color: 'var(--ink-4)' }}>—</span>}
-              </div>
-              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, textAlign: 'right', color: realizedPnl > 0 ? 'var(--up)' : realizedPnl < 0 ? 'var(--down)' : 'var(--ink-4)' }}>
-                {realizedPnl !== 0 ? (realizedPnl > 0 ? '+' : '') + fmtMoney(realizedPnl, 0) : '—'}
-              </div>
-              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, textAlign: 'right', color: total > 0 ? (confOk ? 'var(--up)' : 'var(--warn)') : 'var(--ink-4)' }}>
-                {total > 0 ? Math.round(avgConf * 100) + '%' : '—'}
+      {/* Sector distribution — SVG bar chart + stats table */}
+      {(() => {
+        const maxTotal = Math.max(1, ...sectorStats.map(s => s.total));
+        const barH = 28, gap = 6, labelW = 56;
+        const chartH = sectorStats.length * (barH + gap);
+        const sectorColors = { Tech: '#7dd87d', Fin: '#7ec0ee', Energy: '#f0c674', Health: '#c594c5', Cons: '#f4a87c', Auto: '#ff8a3d', Indus: '#9dc4e8', Util: '#b0a8e0', Mat: '#e08a8a' };
+        return (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="card-head">
+              <div className="card-title">Sector Distribution</div>
+              <div className="card-meta">Trade counts · sector cap {risk.maxSectorPct ?? 40}% · gate at ≥5 open positions</div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'start' }}>
+              {/* Bar chart */}
+              <svg width="100%" viewBox={`0 0 400 ${chartH}`} style={{ overflow: 'visible' }}>
+                {sectorStats.map(({ sect, total, open }, idx) => {
+                  const y = idx * (barH + gap);
+                  const barW = total > 0 ? (total / maxTotal) * 300 : 0;
+                  const openW = open > 0 ? (open / maxTotal) * 300 : 0;
+                  const color = sectorColors[sect] || '#888';
+                  return (
+                    <g key={sect}>
+                      <text x={labelW - 6} y={y + barH / 2 + 4} textAnchor="end" fill="currentColor" fontSize="11" fontFamily="var(--mono)" fontWeight="600">{sect}</text>
+                      <rect x={labelW} y={y + 2} width="300" height={barH - 4} rx="3" fill="var(--bg-3)" opacity="0.5"/>
+                      {barW > 0 && <rect x={labelW} y={y + 2} width={barW} height={barH - 4} rx="3" fill={color} opacity="0.35"/>}
+                      {openW > 0 && <rect x={labelW} y={y + 2} width={openW} height={barH - 4} rx="3" fill={color} opacity="0.8"/>}
+                      <text x={labelW + Math.max(barW, 0) + 6} y={y + barH / 2 + 4} fill="currentColor" fontSize="11" fontFamily="var(--mono)" opacity={total > 0 ? 1 : 0.3}>{total}</text>
+                      {open > 0 && (
+                        <text x={labelW + openW + 6} y={y + barH / 2 + 4} fill={color} fontSize="9" fontFamily="var(--mono)" opacity="0.9">{open} open</text>
+                      )}
+                    </g>
+                  );
+                })}
+              </svg>
+              {/* Stats table */}
+              <div>
+                <div style={{ display: 'grid', gridTemplateColumns: '56px 50px 50px 80px 60px', gap: 4, padding: '0 0 6px', borderBottom: '1px solid var(--bg-3)', marginBottom: 4 }}>
+                  {['Sector', 'Total', 'Open', 'P&L', 'Conf'].map((h, i) => (
+                    <div key={i} style={{ fontSize: 9, color: 'var(--ink-4)', textAlign: i > 0 ? 'right' : 'left', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{h}</div>
+                  ))}
+                </div>
+                {sectorStats.map(({ sect, total, open, closed, realizedPnl }) => {
+                  const sectConf = tickerConf.filter(tc => tc.sector === sect && tc.ens);
+                  const avgConf  = sectConf.length > 0
+                    ? sectConf.reduce((s, tc) => s + tc.ens.confidence, 0) / sectConf.length
+                    : 0;
+                  const confOk = avgConf * 100 >= confThreshold;
+                  return (
+                    <div key={sect} style={{ display: 'grid', gridTemplateColumns: '56px 50px 50px 80px 60px', gap: 4, padding: '5px 0', borderBottom: '1px solid var(--bg-3)' }}>
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: 11, fontWeight: 600, color: sectorColors[sect] || 'var(--ink)' }}>{sect}</div>
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: 11, textAlign: 'right', color: total > 0 ? 'var(--ink-2)' : 'var(--ink-4)' }}>{total}</div>
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: 11, textAlign: 'right' }}>
+                        {open > 0 ? <span style={{ color: 'var(--accent)' }}>{open}</span> : <span style={{ color: 'var(--ink-4)' }}>0</span>}
+                      </div>
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: 11, textAlign: 'right', color: realizedPnl > 0 ? 'var(--up)' : realizedPnl < 0 ? 'var(--down)' : 'var(--ink-4)' }}>
+                        {realizedPnl !== 0 ? (realizedPnl > 0 ? '+' : '') + fmtMoney(realizedPnl, 0) : '—'}
+                      </div>
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: 11, textAlign: 'right', color: total > 0 ? (confOk ? 'var(--up)' : 'var(--warn)') : 'var(--ink-4)' }}>
+                        {total > 0 ? Math.round(avgConf * 100) + '%' : '—'}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
-          );
-        })}
-      </div>
+          </div>
+        );
+      })()}
 
       {/* Universe confidence map */}
       <div className="card">
