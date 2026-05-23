@@ -2536,17 +2536,23 @@ const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--in
   );
 };
 
-const StackedArea = ({ series, keys, colors, height = 240 }) => {
+const StackedArea = ({ series, keys, colors, height = 240, xSuffix = 'd' }) => {
   const W = 700, H = height, pad = { l: 40, r: 12, t: 12, b: 22 };
   const innerW = W - pad.l - pad.r, innerH = H - pad.t - pad.b;
-  const len = series[keys[0]].length;
-  const x = i => pad.l + (i / (len - 1)) * innerW;
+  const len = series && keys[0] && series[keys[0]] ? series[keys[0]].length : 0;
+  if (len === 0) return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="chart" preserveAspectRatio="none" style={{height: H}}>
+      <text x={W/2} y={H/2} textAnchor="middle" className="axis-text" opacity="0.5">No data yet — close some trades to see weight evolution</text>
+    </svg>
+  );
+  const safeLen = Math.max(len, 2);
+  const x = i => pad.l + (i / (safeLen - 1)) * innerW;
   // build stacked
   const stacks = [];
   for (let i = 0; i < len; i++) {
     let acc = 0;
     const col = {};
-    keys.forEach(k => { col[k] = [acc, acc + series[k][i]]; acc += series[k][i]; });
+    keys.forEach(k => { col[k] = [acc, acc + (series[k]?.[i] ?? 0)]; acc += (series[k]?.[i] ?? 0); });
     stacks.push(col);
   }
   const y = v => pad.t + innerH - v * innerH;
@@ -2563,9 +2569,10 @@ const StackedArea = ({ series, keys, colors, height = 240 }) => {
       {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
         <text key={i} x={pad.l - 6} y={pad.t + innerH * t + 3} textAnchor="end" className="axis-text">{Math.round((1-t)*100)}%</text>
       ))}
-      {[0, 0.5, 1].map((t, i) => (
-        <text key={i} x={x((len - 1) * t)} y={H - 6} textAnchor={i === 0 ? 'start' : i === 1 ? 'middle' : 'end'} className="axis-text">−{Math.floor((len - 1) * (1 - t))}d</text>
-      ))}
+      {/* x-axis: left = oldest, right = most recent (now) */}
+      <text x={x(0)}       y={H - 6} textAnchor="start"  className="axis-text">−{len - 1}{xSuffix}</text>
+      {len > 2 && <text x={x(Math.floor((len-1)/2))} y={H - 6} textAnchor="middle" className="axis-text">−{Math.floor((len-1)/2)}{xSuffix}</text>}
+      <text x={x(len - 1)} y={H - 6} textAnchor="end"    className="axis-text">now</text>
     </svg>
   );
 };
@@ -3622,28 +3629,39 @@ const ScreenLearning = ({ mode, ctx }) => {
   const [whStatus, setWhStatus] = React.useState(null); // { ok: bool, msg: string }
   const [whView,   setWhView]   = React.useState('days'); // 'days' | 'trades'
 
-  // Last-90-trades weight evolution: replay updateAgentWeights over the last ≤90 closed trades
+  // Last-90-trades weight evolution: replay updateAgentWeights over the last ≤90 closed trades,
+  // starting from the weights BEFORE those trades (i.e. roll back from current weights using
+  // the 91st-oldest trade as the start state, which approximates the pre-window weights).
   const tradeWeightSeries = React.useMemo(() => {
     const closed = (ctx?.trades || []).filter(t => t.pnl != null && t.votes);
-    const slice  = closed.slice(-90);
-    if (slice.length === 0) return null;
+    if (closed.length === 0) return null;
+    // Use the full closed history to find the weight state just before the last-90 window.
+    // We replay from defaults over everything before the window so the window itself starts
+    // from a realistic state rather than uniform weights.
+    const beforeWindow = closed.slice(0, Math.max(0, closed.length - 90));
     const total = AGENTS.reduce((s, a) => s + a.weight, 0);
     let w = {};
     AGENTS.forEach(a => { w[a.id] = a.weight / total; });
+    for (const trade of beforeWindow) w = updateAgentWeights(w, trade);
+
+    const window90 = closed.slice(-90);
     const series = {};
-    AGENTS.forEach(a => { series[a.id] = []; });
-    for (const trade of slice) {
+    AGENTS.forEach(a => { series[a.id] = [w[a.id]]; }); // start point before first window trade
+    for (const trade of window90) {
       w = updateAgentWeights(w, trade);
       AGENTS.forEach(a => { series[a.id].push(w[a.id]); });
     }
     return series;
   }, [ctx?.trades]);
 
-  const activeSeries = whView === 'trades' && tradeWeightSeries ? tradeWeightSeries : weightHistory;
   const whLen = Math.max(0, ...AGENTS.map(a => (weightHistory[a.id] || []).length));
+  const trLen = tradeWeightSeries ? Math.max(0, ...AGENTS.map(a => (tradeWeightSeries[a.id]||[]).length)) : 0;
+
+  const activeSeries = whView === 'trades' && tradeWeightSeries ? tradeWeightSeries : weightHistory;
+  const activeXSuffix = whView === 'trades' ? 't' : ' snap';
   const activeLabel  = whView === 'trades'
-    ? `last ${tradeWeightSeries ? Math.max(...AGENTS.map(a => (tradeWeightSeries[a.id]||[]).length)) : 0} trades`
-    : `rolling ${whLen} snapshots`;
+    ? (trLen > 0 ? `last ${trLen - 1} trades` : 'no closed trades yet')
+    : (whLen > 0 ? `${whLen} snapshots (last ${whLen} trade-close batches)` : 'no snapshots yet');
 
   const handleExportWH = () => {
     const csv = serializeWeightHistoryCSV(AGENTS, weightHistory);
@@ -3703,7 +3721,7 @@ const ScreenLearning = ({ mode, ctx }) => {
               <button className={'btn' + (whView==='trades' ? ' primary' : '')} style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setWhView('trades')}>90 TRADES</button>
             </div>
           </div>
-          <StackedArea series={activeSeries} keys={AGENTS.map(a=>a.id)} colors={colors}/>
+          <StackedArea series={activeSeries} keys={AGENTS.map(a=>a.id)} colors={colors} xSuffix={activeXSuffix}/>
           <div className="legend" style={{marginTop:10}}>
             {AGENTS.map((a, i) => (
               <span key={a.id}><span className="legend-dot" style={{background:colors[i]}}></span>{a.name.split(' ')[0]}</span>
@@ -6560,9 +6578,19 @@ const App = () => {
   const [weightHistory, setWeightHistory] = React.useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('shoal_weight_history') || 'null');
-      if (stored && typeof stored === 'object' && Object.keys(stored).length > 0) return stored;
+      if (stored && typeof stored === 'object') {
+        // Discard data that looks like the fake seeded WEIGHT_HISTORY:
+        // real snapshots are appended one-at-a-time so they grow from 0, whereas
+        // the seed data starts at exactly 90 entries for every agent.
+        const lens = AGENTS.map(a => (stored[a.id] || []).length);
+        const allExactly90 = lens.every(l => l === 90);
+        const hasAnyData   = lens.some(l => l > 0);
+        if (hasAnyData && !allExactly90) return stored; // real incremental history
+        // If exactly 90 for every agent it's almost certainly the seed data — discard it
+        localStorage.removeItem('shoal_weight_history');
+      }
     } catch (_) {}
-    return WEIGHT_HISTORY;
+    return {};
   });
   const agentWeightsRef  = React.useRef(agentWeights);
   const agentHistoryRef  = React.useRef(agentHistory);
