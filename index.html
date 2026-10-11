@@ -7360,10 +7360,6 @@ const App = () => {
     setPendingMode(null);
   };
 
-  if (showOnboarding) {
-    return <ScreenOnboarding onDone={() => { localStorage.setItem('shoal_onboarded', '1'); setShowOnboarding(false); }}/>;
-  }
-
   // Agents excluded from consensus: manually toggled off OR (when auto-disable is on) below accuracy threshold (≥ 5 trades required)
   const dynamicExcluded = React.useMemo(() => {
     const minAcc = (risk.minAgentAccuracy ?? 35) / 100;
@@ -7394,6 +7390,11 @@ const App = () => {
     trades.filter(t => t.status === 'OPEN').reduce((s, t) => s + t.qty * t.price, 0)
   ), [trades]);
   const availableBalance = Math.max(0, balance - openExposure);
+
+  // After every hook above — returning earlier changes the hook count when onboarding ends.
+  if (showOnboarding) {
+    return <ScreenOnboarding onDone={() => { localStorage.setItem('shoal_onboarded', '1'); setShowOnboarding(false); }}/>;
+  }
 
   const alpacaConnected = !!(alpaca?.connected && alpaca?.token);
   const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected };
