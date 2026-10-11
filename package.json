@@ -1,16 +1,18 @@
 {
   "name": "shoal-backend",
   "version": "1.0.0",
-  "description": "Shoal trading bot backend — Alpaca API proxy with SSE data push",
+  "description": "Shoal trading bot backend — broker API proxy (Alpaca, IG) with SSE data push",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
+    "lightstreamer-client-node": "9.2.2",
     "node-fetch": "^3.3.2"
   },
   "engines": {

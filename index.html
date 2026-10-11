@@ -1489,6 +1489,21 @@ const SEED = 1337;
 
 // Backend URL — override by setting window.SHOAL_BACKEND_URL before this script loads.
 const BACKEND_URL = (typeof window !== 'undefined' && window.SHOAL_BACKEND_URL) || 'http://localhost:3001';
+
+// Brokers the backend can connect to. env stays 'paper' | 'live' everywhere; for IG 'paper' is the demo environment.
+const BROKERS = {
+  alpaca: {
+    name: 'Alpaca Markets', short: 'Alpaca', paperLabel: 'PAPER', liveLabel: 'LIVE',
+    hosts: { paper: 'paper-api.alpaca.markets', live: 'api.alpaca.markets' },
+    dashboard: 'https://app.alpaca.markets/paper/dashboard/overview', dashboardLabel: 'app.alpaca.markets',
+  },
+  ig: {
+    name: 'IG', short: 'IG', paperLabel: 'DEMO', liveLabel: 'LIVE',
+    hosts: { paper: 'demo-api.ig.com', live: 'api.ig.com' },
+    dashboard: 'https://labs.ig.com/', dashboardLabel: 'labs.ig.com',
+  },
+};
+const brokerShort = (a) => (BROKERS[a?.brokerId] || BROKERS.alpaca).short;
 Object.assign(window, { BACKEND_URL });
 
 function getMarketStatus() {
@@ -4220,7 +4235,7 @@ const ScreenTrade = ({ trade, onBack, mode, ctx }) => {
                 <span className="reason-label" style={{fontWeight:500}}>EXECUTE</span>
                 <span className="reason-value" style={{color: t.side==='BUY'?'var(--up)':'var(--down)'}}>{t.side} {t.qty} @ market</span>
               </div>
-              <div className="reason-meta">{t._marketClosed ? 'market closed · simulated locally' : `routed via Alpaca · ${t.mode === 'LIVE' ? 'live order' : 'paper account'}`}</div>
+              <div className="reason-meta">{t._marketClosed ? 'market closed · simulated locally' : `routed via broker · ${t.mode === 'LIVE' ? 'live order' : 'paper account'}`}</div>
             </div>
           </div>
         </div>
@@ -4704,22 +4719,21 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
   const [connecting, setConnecting] = React.useState(false);
   const [connectErr, setConnectErr] = React.useState('');
   const importCsvRef = React.useRef(null);
-  const [form, setForm] = React.useState({
-    env: 'paper',   // 'paper' | 'live'
-    keyId: '',
-    secret: '',
-    showSecret: false,
-  });
+  const blankForm = { broker: 'alpaca', env: 'paper', keyId: '', secret: '', apiKey: '', username: '', password: '', accountId: '', showSecret: false };
+  const [form, setForm] = React.useState(blankForm);
+  const fb = BROKERS[form.broker];
+  const formReady = form.broker === 'ig' ? !!(form.apiKey && form.username && form.password) : !!(form.keyId && form.secret);
 
   const startConnect = () => {
     setConnectErr('');
     setConnecting(false);
-    setForm({ env: 'paper', keyId: '', secret: '', showSecret: false });
+    setForm(blankForm);
     setShowConnect(true);
   };
 
   const submitConnect = async () => {
     setConnectErr('');
+    if (form.broker === 'ig') return submitConnectIG();
     const id = form.keyId.trim();
     const sec = form.secret.trim();
     if (id.length < 16) { setConnectErr('Key ID looks too short. Check you copied the whole value.'); return; }
@@ -4735,7 +4749,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
       const resp = await fetch(`${BACKEND_URL}/api/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyId: id, secret: sec, env: form.env }),
+        body: JSON.stringify({ broker: 'alpaca', keyId: id, secret: sec, env: form.env }),
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -4754,8 +4768,48 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
         keyMasked: masked,
         account: acc.id,
         balance: acc.equity || acc.buyingPower || 0,
+        brokerId: 'alpaca',
         broker: 'Alpaca Markets',
         endpoint: form.env === 'paper' ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets',
+      });
+    } catch (err) {
+      setConnectErr(`Cannot reach Shoal backend at ${BACKEND_URL}. Is it running? (npm install && npm start)`);
+    }
+    setConnecting(false);
+  };
+
+  // IG: API key + login. The backend logs in, switches to the spread betting account and keeps the session.
+  const submitConnectIG = async () => {
+    const apiKey = form.apiKey.trim();
+    const username = form.username.trim();
+    const accountId = form.accountId.trim();
+    if (apiKey.length < 20) { setConnectErr('API key looks too short. Copy it from My IG → Settings → API keys.'); return; }
+    setConnecting(true);
+    try {
+      const resp = await fetch(`${BACKEND_URL}/api/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ broker: 'ig', env: form.env, apiKey, username, password: form.password, accountId: accountId || undefined, symbols: TICKERS.map(t => t.sym) }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setConnectErr(data.error || 'Connection failed — check your IG API key and login.');
+        setConnecting(false);
+        return;
+      }
+      const { token, account: acc, broker } = data;
+      setAlpaca({
+        connected: true,
+        env: form.env,
+        token,
+        keyMasked: apiKey.slice(0, 4) + '····' + apiKey.slice(-4),
+        secretMasked: username,
+        account: acc.id,
+        currency: acc.currency,
+        balance: acc.equity || acc.buyingPower || 0,
+        brokerId: 'ig',
+        broker: broker?.name || 'IG',
+        endpoint: broker?.endpoint,
       });
     } catch (err) {
       setConnectErr(`Cannot reach Shoal backend at ${BACKEND_URL}. Is it running? (npm install && npm start)`);
@@ -4772,7 +4826,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
 
       <div className="grid-2" style={{marginBottom:16}}>
         <div className="card">
-          <div className="card-head"><div className="card-title">Broker connection</div><div className="card-meta">Alpaca Markets API</div></div>
+          <div className="card-head"><div className="card-title">Broker connection</div><div className="card-meta">{alpaca.connected ? alpaca.broker : 'Alpaca · IG'}</div></div>
 
           {backendOk === true && (
             <div style={{display:'flex',gap:10,padding:'10px 12px',background:'rgba(125,216,125,0.06)',border:'1px solid rgba(125,216,125,0.3)',borderRadius:4,marginBottom:14,alignItems:'flex-start'}}>
@@ -4780,7 +4834,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
               <div style={{lineHeight:1.5}}>
                 <div className="mono tiny" style={{color:'var(--virtual)',letterSpacing:'0.1em',marginBottom:3}}>BACKEND ONLINE</div>
                 <div className="tiny" style={{color:'var(--ink-2)'}}>
-                  Shoal backend is running. Your keys are sent to the backend, validated against Alpaca, and held in server memory only — never written to disk or logged. The backend proxies all order and account requests.
+                  Shoal backend is running. Your credentials are sent to the backend, validated against your broker, and held in server memory only — never written to disk or logged. The backend proxies all order and account requests.
                 </div>
               </div>
             </div>
@@ -4791,7 +4845,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
               <div style={{lineHeight:1.5}}>
                 <div className="mono tiny" style={{color:'var(--warn)',letterSpacing:'0.1em',marginBottom:3}}>BACKEND OFFLINE · SIMULATED</div>
                 <div className="tiny" style={{color:'var(--ink-2)'}}>
-                  Backend not reachable at <span className="mono" style={{fontSize:11}}>{BACKEND_URL}</span>. Start it with <span className="mono" style={{fontSize:11}}>npm install &amp;&amp; npm start</span> to enable real Alpaca trading. Until then, trades and P&amp;L are simulated locally.
+                  Backend not reachable at <span className="mono" style={{fontSize:11}}>{BACKEND_URL}</span>. Start it with <span className="mono" style={{fontSize:11}}>npm install &amp;&amp; npm start</span> to enable real broker trading. Until then, trades and P&amp;L are simulated locally.
                 </div>
               </div>
             </div>
@@ -4810,8 +4864,8 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
                 <div className="serif" style={{fontSize:18,marginBottom:6}}>No broker connected</div>
                 <div className="tiny muted">Live trading is disabled until you connect an account.</div>
               </div>
-              <button className="btn primary" style={{width:'100%'}} onClick={startConnect}>CONNECT ALPACA →</button>
-              <div className="mono tiny muted" style={{marginTop:10,textAlign:'center'}}>You'll be redirected to alpaca.markets to authorize.</div>
+              <button className="btn primary" style={{width:'100%'}} onClick={startConnect}>CONNECT BROKER →</button>
+              <div className="mono tiny muted" style={{marginTop:10,textAlign:'center'}}>Alpaca (US equities) or IG (spread betting).</div>
             </div>
           ) : (
             <div>
@@ -4822,7 +4876,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
                     <span className="mono" style={{fontSize:12,letterSpacing:'0.06em'}}>{alpaca.broker}</span>
                   </div>
                   <div className="mono tiny muted" style={{marginTop:6}}>
-                    {alpaca.env === 'live' ? 'LIVE' : 'PAPER'} · Account {alpaca.account}
+                    {alpaca.env === 'live' ? 'LIVE' : alpaca.brokerId === 'ig' ? 'DEMO' : 'PAPER'} · Account {alpaca.account}
                   </div>
                 </div>
                 <button className="btn ghost" onClick={async () => {
@@ -4833,13 +4887,18 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
                 }}>DISCONNECT</button>
               </div>
               <div className="dialog-list">
-                <div className="dialog-row"><span className="l">Environment</span><span className="v" style={{color: alpaca.env === 'live' ? 'var(--live)' : 'var(--virtual)'}}>{alpaca.env === 'live' ? 'Live' : 'Paper'} · {alpaca.endpoint ? alpaca.endpoint.replace('https://','') : 'paper-api.alpaca.markets'}</span></div>
-                <div className="dialog-row"><span className="l">API key ID</span><span className="v mono">{alpaca.keyMasked || '—'}</span></div>
-                <div className="dialog-row"><span className="l">Secret</span><span className="v mono">{alpaca.secretMasked || '—'}</span></div>
+                <div className="dialog-row"><span className="l">Environment</span><span className="v" style={{color: alpaca.env === 'live' ? 'var(--live)' : 'var(--virtual)'}}>{alpaca.env === 'live' ? 'Live' : alpaca.brokerId === 'ig' ? 'Demo' : 'Paper'} · {alpaca.endpoint ? alpaca.endpoint.replace('https://','') : 'paper-api.alpaca.markets'}</span></div>
+                <div className="dialog-row"><span className="l">{alpaca.brokerId === 'ig' ? 'API key' : 'API key ID'}</span><span className="v mono">{alpaca.keyMasked || '—'}</span></div>
+                <div className="dialog-row"><span className="l">{alpaca.brokerId === 'ig' ? 'Username' : 'Secret'}</span><span className="v mono">{alpaca.secretMasked || '—'}</span></div>
                 <div className="dialog-row"><span className="l">Buying power</span><span className="v">{fmtMoney(alpaca.balance)}</span></div>
+                {alpaca.brokerId === 'ig' ? (<>
+                <div className="dialog-row"><span className="l">Account type</span><span className="v">Spread bet · {alpaca.currency || 'GBP'} per point · DFB</span></div>
+                <div className="dialog-row"><span className="l">Data feed</span><span className="v">IG Lightstreamer · daily bars via REST</span></div>
+                </>) : (<>
                 <div className="dialog-row"><span className="l">Account type</span><span className="v">Margin · individual</span></div>
                 <div className="dialog-row"><span className="l">Day trades used</span><span className="v">2 / 3</span></div>
                 <div className="dialog-row"><span className="l">Data feed</span><span className="v">IEX (free) · upgrade for SIP</span></div>
+                </>)}
                 <div className="dialog-row"><span className="l">API permission</span><span className="v" style={{color:'var(--virtual)'}}>READ + TRADE</span></div>
               </div>
             </div>
@@ -5041,7 +5100,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
             <div className="mono tiny" style={{color:'var(--info)',letterSpacing:'0.14em'}}>◑ VIRTUAL</div>
             <div className="serif" style={{fontSize:19,marginTop:8,marginBottom:6}}>Broker paper</div>
             <div className="tiny" style={{color:'var(--ink-2)',lineHeight:1.5,marginBottom:10}}>
-              Connected to Alpaca paper account. Orders are sent to Alpaca paper trading via the API when the market is open — real order flow, no real capital at risk.
+              Connected to your broker's paper/demo account (Alpaca paper or IG demo). Orders are sent to it via the API when the market is open — real order flow, no real capital at risk.
             </div>
             <div className="mono tiny" style={{color: alpaca.connected && alpaca.env === 'paper' ? 'var(--info)' : 'var(--ink-4)'}}>{alpaca.connected && alpaca.env === 'paper' ? '● Paper account ready' : 'Requires paper account connection'}</div>
           </div>
@@ -5049,7 +5108,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
             <div className="mono tiny" style={{color:'var(--live)',letterSpacing:'0.14em'}}>◉ LIVE</div>
             <div className="serif" style={{fontSize:19,marginTop:8,marginBottom:6}}>Real trading</div>
             <div className="tiny" style={{color:'var(--ink-2)',lineHeight:1.5,marginBottom:10}}>
-              Orders route to your Alpaca live account. Real capital. Real fills. Real losses. The chrome turns orange so you'll never confuse the two.
+              Orders route to your live broker account. Real capital. Real fills. Real losses. The chrome turns orange so you'll never confuse the two.
             </div>
             <div className="mono tiny" style={{color: alpaca.connected && alpaca.env === 'live' ? 'var(--live)' : 'var(--ink-4)'}}>{alpaca.connected && alpaca.env === 'live' ? '● Live account ready · use header toggle' : 'Requires live account connection'}</div>
           </div>
@@ -5060,7 +5119,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
         <div className="modal-backdrop" onClick={()=>!connecting && setShowConnect(false)}>
           <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
             <div className="modal-head">
-              <div className="modal-title">Connect Alpaca</div>
+              <div className="modal-title">Connect {fb.short}</div>
               <button className="btn ghost" onClick={()=>!connecting && setShowConnect(false)}>×</button>
             </div>
             <div className="modal-body">
@@ -5077,25 +5136,64 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
                 <div style={{textAlign:'center',padding:'28px 0'}}>
                   <div style={{margin:'0 auto 16px',width:44,height:44,border:'2px solid var(--line-2)',borderTopColor:'var(--virtual)',borderRadius:'50%',animation:'rotate 0.9s linear infinite'}}></div>
                   <div className="serif" style={{fontSize:18}}>Validating credentials…</div>
-                  <div className="mono tiny muted" style={{marginTop:6}}>POST {BACKEND_URL}/api/connect → Alpaca /v2/account</div>
+                  <div className="mono tiny muted" style={{marginTop:6}}>POST {BACKEND_URL}/api/connect → {form.broker === 'ig' ? 'IG /session' : 'Alpaca /v2/account'}</div>
                 </div>
               ) : (
                 <div>
+                  <div className="field-label" style={{marginBottom:8}}>Broker</div>
+                  <div className="tweak-opts" style={{marginBottom:18}}>
+                    {Object.entries(BROKERS).map(([id, b]) => (
+                      <div key={id} className={'tweak-opt '+(form.broker===id?'on':'')} onClick={()=>{ setConnectErr(''); setForm(f=>({...f,broker:id})); }}>
+                        {b.short.toUpperCase()} <span className="tiny muted" style={{marginLeft:4}}>{id === 'ig' ? 'spread betting' : 'US equities'}</span>
+                      </div>
+                    ))}
+                  </div>
+
                   <div className="tiny" style={{color:'var(--ink-2)',lineHeight:1.55,marginBottom:16}}>
-                    Paste an API key pair from your Alpaca dashboard. Keys are stored locally in this browser and never transmitted to Shoal's servers. You can revoke them anytime from{' '}
-                    <a href="https://app.alpaca.markets/paper/dashboard/overview" target="_blank" rel="noreferrer" style={{color:'var(--ink)'}}>app.alpaca.markets</a>.
+                    {form.broker === 'ig'
+                      ? <>Enter your IG API key and login. Shoal trades your <b>spread betting</b> account (daily funded bets, £ per point). </>
+                      : <>Paste an API key pair from your Alpaca dashboard. </>}
+                    Credentials go to your Shoal backend, which checks them with {fb.short} and holds them in memory only, never on disk. You can revoke access anytime from{' '}
+                    <a href={fb.dashboard} target="_blank" rel="noreferrer" style={{color:'var(--ink)'}}>{fb.dashboardLabel}</a>.
                   </div>
 
                   <div className="field-label" style={{marginBottom:8}}>Environment</div>
                   <div className="tweak-opts" style={{marginBottom:18}}>
                     <div className={'tweak-opt '+(form.env==='paper'?'on':'')} onClick={()=>setForm(f=>({...f,env:'paper'}))}>
-                      PAPER <span className="tiny muted" style={{marginLeft:4}}>paper-api.alpaca.markets</span>
+                      {fb.paperLabel} <span className="tiny muted" style={{marginLeft:4}}>{fb.hosts.paper}</span>
                     </div>
                     <div className={'tweak-opt '+(form.env==='live'?'on':'')} onClick={()=>setForm(f=>({...f,env:'live'}))} style={form.env==='live'?{color:'var(--live)',borderColor:'var(--live)'}:{}}>
-                      LIVE <span className="tiny muted" style={{marginLeft:4}}>api.alpaca.markets</span>
+                      LIVE <span className="tiny muted" style={{marginLeft:4}}>{fb.hosts.live}</span>
                     </div>
                   </div>
 
+                  {form.broker === 'ig' ? (<>
+                  <div className="field">
+                    <div className="field-label">API key</div>
+                    <input className="field-input mono" placeholder="IG API key" value={form.apiKey}
+                      onChange={e=>setForm(f=>({...f,apiKey:e.target.value}))} spellCheck={false} autoComplete="off"/>
+                  </div>
+                  <div className="field">
+                    <div className="field-label">Username</div>
+                    <input className="field-input mono" placeholder="IG username" value={form.username}
+                      onChange={e=>setForm(f=>({...f,username:e.target.value}))} spellCheck={false} autoComplete="username"/>
+                  </div>
+                  <div className="field">
+                    <div className="field-label" style={{display:'flex',justifyContent:'space-between'}}>
+                      <span>Password</span>
+                      <span className="tiny muted" style={{cursor:'pointer',letterSpacing:'0.08em'}} onClick={()=>setForm(f=>({...f,showSecret:!f.showSecret}))}>
+                        {form.showSecret ? '◉ HIDE' : '○ SHOW'}
+                      </span>
+                    </div>
+                    <input className="field-input mono" type={form.showSecret ? 'text' : 'password'} placeholder="IG password" value={form.password}
+                      onChange={e=>setForm(f=>({...f,password:e.target.value}))} spellCheck={false} autoComplete="current-password"/>
+                  </div>
+                  <div className="field">
+                    <div className="field-label">Spread betting account ID <span className="tiny muted">(optional)</span></div>
+                    <input className="field-input mono" placeholder="Picked automatically if blank" value={form.accountId}
+                      onChange={e=>setForm(f=>({...f,accountId:e.target.value}))} spellCheck={false} autoComplete="off"/>
+                  </div>
+                  </>) : (<>
                   <div className="field">
                     <div className="field-label">API Key ID</div>
                     <input
@@ -5125,10 +5223,11 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
                       autoComplete="off"
                     />
                   </div>
+                  </>)}
 
                   {form.env === 'live' && (
                     <div className="tiny" style={{color:'var(--live)',padding:'10px 12px',background:'rgba(230,110,60,0.08)',border:'1px solid rgba(230,110,60,0.35)',borderRadius:3,marginTop:4,lineHeight:1.5}}>
-                      <b style={{letterSpacing:'0.06em'}}>LIVE ACCOUNT:</b> Orders placed from this session will execute with real capital. Double-check you're pasting the correct key pair.
+                      <b style={{letterSpacing:'0.06em'}}>LIVE ACCOUNT:</b> Orders placed from this session will execute with real capital. {form.broker === 'ig' ? 'Double-check you are logging in to the right IG account.' : "Double-check you're pasting the correct key pair."}
                     </div>
                   )}
 
@@ -5143,8 +5242,8 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
             {!alpaca.connected && !connecting && (
               <div className="modal-foot">
                 <button className="btn ghost" onClick={()=>setShowConnect(false)}>CANCEL</button>
-                <button className="btn primary" onClick={submitConnect} disabled={!form.keyId || !form.secret}>
-                  CONNECT {form.env === 'paper' ? 'PAPER' : 'LIVE'} →
+                <button className="btn primary" onClick={submitConnect} disabled={!formReady}>
+                  CONNECT {form.env === 'paper' ? fb.paperLabel : 'LIVE'} →
                 </button>
               </div>
             )}
@@ -5280,7 +5379,7 @@ const ModeSwitchModal = ({ targetMode, alpaca, onConfirm, onCancel }) => {
     { id: 'c', text: 'I accept that the bot can lose money — past performance is not indicative.' },
     { id: 'd', text: 'I have a daily loss kill-switch configured.' },
   ] : targetMode === 'VIRTUAL' ? [
-    { id: 'a', text: 'I have a connected Alpaca paper account. Orders will be sent to Alpaca paper trading via the API — real order flow, no real capital at risk.' },
+    { id: 'a', text: 'I have a connected broker paper/demo account. Orders will be sent to it via the API — real order flow, no real capital at risk.' },
   ] : [
     { id: 'a', text: 'I want to switch to simulated mode. No broker connection required, all fills are local.' },
   ];
@@ -5303,12 +5402,12 @@ const ModeSwitchModal = ({ targetMode, alpaca, onConfirm, onCancel }) => {
           )}
           {blocked && targetMode === 'LIVE' && (
             <div className="danger-banner" style={{borderColor:'var(--warn)',color:'var(--warn)'}}>
-              No <b>live</b> Alpaca account connected. Go to <b>Settings → Connect Alpaca</b> with a live key first.
+              No <b>live</b> broker account connected. Go to <b>Settings → Connect broker</b> with a live account first.
             </div>
           )}
           {blocked && targetMode === 'VIRTUAL' && (
             <div className="danger-banner" style={{borderColor:'var(--info)',color:'var(--info)'}}>
-              No <b>paper</b> Alpaca account connected. Go to <b>Settings → Connect Alpaca</b> with a paper key first.
+              No <b>paper/demo</b> broker account connected. Go to <b>Settings → Connect broker</b> with a paper or demo account first.
             </div>
           )}
           <div className="checklist">
@@ -6716,7 +6815,8 @@ const App = () => {
       try {
         const r = await fetch(
           `${BACKEND_URL}/api/bars?symbols=${encodeURIComponent(symbols)}`,
-          { headers: { 'Authorization': 'Bearer ' + alpaca.token }, signal: AbortSignal.timeout(15000) }
+          // IG's first load resolves ticker→epic and fetches history under tight rate limits (~2 min); later loads hit the backend's cache
+          { headers: { 'Authorization': 'Bearer ' + alpaca.token }, signal: AbortSignal.timeout(alpaca.brokerId === 'ig' ? 180000 : 15000) }
         );
         if (!r.ok) return;
         const data = await r.json();
@@ -6770,15 +6870,18 @@ const App = () => {
     streamRef.current = es;
     es.onmessage = (e) => {
       try {
-        const { account, positions, orders, clock, error } = JSON.parse(e.data);
+        const { account, positions, orders, clock, prices, error } = JSON.parse(e.data);
         if (error) return;
+
+        // IG streams prices (Lightstreamer) through the backend; merge them over the daily-bar closes
+        if (prices && Object.keys(prices).length) setLivePrices(p => ({ ...p, ...prices }));
 
         if (clock) {
           setMarketStatus(s => ({
             ...s,
             isOpen: clock.is_open,
             nextOpen: clock.next_open ? new Date(clock.next_open) : s.nextOpen,
-            source: 'alpaca',
+            source: alpacaRef.current?.brokerId || 'alpaca',
           }));
         }
 
@@ -6806,7 +6909,7 @@ const App = () => {
             price:  parseFloat(o.filled_avg_price) || parseFloat(o.limit_price) || 0,
             exit:   o.filled_at && o.filled_avg_price ? parseFloat(o.filled_avg_price) : null,
             conf:   0.75,
-            reason: `${o.type || 'market'} · ${o.time_in_force} · ${o.status} via Alpaca`,
+            reason: `${o.type || 'market'} · ${o.time_in_force} · ${o.status} via ${brokerShort(alpacaRef.current)}`,
             pnl: null, pnlPct: null,
             status: ['filled','partially_filled'].includes(o.status) ? 'OPEN'
                   : ['canceled','expired','replaced','rejected'].includes(o.status) ? 'LOSS' : 'OPEN',
@@ -7205,7 +7308,7 @@ const App = () => {
               for (const newTrade of batchTrades) {
                 const alpacaSide = newTrade.side === 'BUY' ? 'buy' : 'sell';
                 const orderBody = { symbol: newTrade.sym, notional: String(newTrade._notional), side: alpacaSide, type: 'market', time_in_force: 'day' };
-                console.log('[Shoal] → Alpaca order', orderBody);
+                console.log(`[Shoal] → ${brokerShort(alpacaNow)} order`, orderBody);
                 fetch(`${BACKEND_URL}/api/orders`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + alpacaNow.token },
@@ -7213,8 +7316,8 @@ const App = () => {
                 }).then(async r => {
                   const body = await r.json();
                   if (!r.ok) {
-                    const errMsg = body.message || `HTTP ${r.status}`;
-                    console.warn('[Shoal] Alpaca order rejected', newTrade.sym, errMsg, body);
+                    const errMsg = body.message || body.error || `HTTP ${r.status}`;
+                    console.warn(`[Shoal] ${brokerShort(alpacaNow)} order rejected`, newTrade.sym, errMsg, body);
                     const errToast = { id: Date.now(), type: 'close-loss', sym: newTrade.sym, text: 'rejected: ' + errMsg };
                     setToasts(prev => [...prev.slice(-4), errToast]);
                     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== errToast.id)), 5000);
@@ -7476,7 +7579,7 @@ const App = () => {
         <div className="sidebar-foot">
           <div className="row"><span>Engine</span><span className="ok">● online</span></div>
           <div className="row"><span>Backend</span><span className={backendOk===true?'ok':backendOk===false?'dn':'muted'}>{backendOk===true?'● online':backendOk===false?'○ offline':'○ …'}</span></div>
-          <div className="row"><span>Broker</span><span className={alpaca.connected ? 'ok' : ''}>{alpaca.connected ? '● Alpaca' + (alpaca.token ? ' ⟳' : '') : '○ none'}</span></div>
+          <div className="row"><span>Broker</span><span className={alpaca.connected ? 'ok' : ''}>{alpaca.connected ? '● ' + brokerShort(alpaca) + (alpaca.token ? ' ⟳' : '') : '○ none'}</span></div>
           <div className="row"><span>Market</span><span className={!alpaca.connected ? '' : marketStatus.isOpen ? 'ok' : ''} style={!alpaca.connected ? {color:'var(--ink-4)'} : !marketStatus.isOpen ? {color:'var(--warn)'} : {}}>{!alpaca.connected ? '— not connected' : marketStatus.isOpen ? '● open' : '○ closed'}</span></div>
           <div className="row"><span>Latency</span><span>{42 + (tick % 8)}ms</span></div>
           <div className="theme-toggle" onClick={()=>setThemeMode(m=>m==='dark'?'light':'dark')}>

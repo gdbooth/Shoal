@@ -1,36 +1,23 @@
 import express from 'express';
 import cors from 'cors';
 import { randomBytes } from 'crypto';
-import nodeFetch from 'node-fetch';
-
-// Use native fetch (Node 18+) when available, otherwise fall back to node-fetch.
-const fetch = globalThis.fetch ?? nodeFetch;
+import { alpaca } from './brokers/alpaca.js';
+import { ig } from './brokers/ig.js';
 
 // Surface unhandled rejections instead of letting them silently crash the process.
 process.on('unhandledRejection', (err) => {
   console.error('[unhandledRejection]', err);
 });
 
+const BROKERS = { alpaca, ig };
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// In-memory session store: token -> { keyId, secret, env }
-// Keys are never written to disk; sessions survive only until the process restarts.
+// In-memory session store: token → broker session (holds that broker's credentials).
+// Credentials are never written to disk; sessions survive only until the process restarts.
 const sessions = new Map();
-
-const BASE = {
-  paper: 'https://paper-api.alpaca.markets',
-  live:  'https://api.alpaca.markets',
-};
-
-function alpacaHeaders(session) {
-  return {
-    'APCA-API-KEY-ID':     session.keyId,
-    'APCA-API-SECRET-KEY': session.secret,
-    'Content-Type':        'application/json',
-  };
-}
 
 // Middleware: validate Bearer token from Authorization header or ?token= query param
 function auth(req, res, next) {
@@ -43,149 +30,81 @@ function auth(req, res, next) {
   next();
 }
 
-// ── Health check ────────────────────────────────────────────────────────────
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
+const SYMBOL_RE = /^[A-Za-z0-9.\-]{1,20}$/;
 
-// ── Connect: validate keys against Alpaca, create session ───────────────────
-app.post('/api/connect', async (req, res) => {
-  const { keyId, secret, env } = req.body || {};
-  if (!keyId || !secret || !['paper', 'live'].includes(env)) {
-    return res.status(400).json({ error: 'Missing or invalid fields (keyId, secret, env)' });
-  }
-
-  const base = BASE[env];
-  let accountData;
+// Wrap a handler that returns { status, body } from a broker session.
+const proxy = (fn) => async (req, res) => {
   try {
-    const r = await fetch(`${base}/v2/account`, {
-      headers: { 'APCA-API-KEY-ID': keyId, 'APCA-API-SECRET-KEY': secret },
-    });
-    if (!r.ok) {
-      const body = await r.text();
-      return res.status(401).json({ error: 'Alpaca rejected these credentials', detail: body });
-    }
-    accountData = await r.json();
+    const { status, body } = await fn(req);
+    res.status(status).json(body);
   } catch (err) {
-    return res.status(502).json({ error: 'Could not reach Alpaca', detail: err.message });
+    res.status(err.status || 502).json({ error: err.message, message: err.message, detail: err.detail });
   }
+};
 
-  const token = randomBytes(28).toString('hex');
-  sessions.set(token, { keyId, secret, env });
+// ── Health check ────────────────────────────────────────────────────────────
+app.get('/api/health', (_req, res) => res.json({ ok: true, brokers: Object.keys(BROKERS) }));
 
-  res.json({
-    token,
-    account: {
-      id:              accountData.id,
-      status:          accountData.status,
-      equity:          parseFloat(accountData.equity          || 0),
-      buyingPower:     parseFloat(accountData.buying_power    || 0),
-      cash:            parseFloat(accountData.cash            || 0),
-      portfolioValue:  parseFloat(accountData.portfolio_value || 0),
-      patternDayTrader: accountData.pattern_day_trader,
-      tradingBlocked:   accountData.trading_blocked,
-      daytradingBuyingPower: parseFloat(accountData.daytrading_buying_power || 0),
-    },
-  });
+// ── Connect: validate credentials with the broker, create session ───────────
+// Body: { broker: 'alpaca' | 'ig', env: 'paper' | 'live', ...credentials, symbols? }
+//   alpaca: keyId, secret
+//   ig:     apiKey, username, password, accountId? ('paper' maps to IG's demo environment)
+app.post('/api/connect', async (req, res) => {
+  const { broker: brokerId = 'alpaca', symbols, ...creds } = req.body || {};
+  const broker = BROKERS[brokerId];
+  if (!broker) return res.status(400).json({ error: `Unknown broker "${brokerId}"` });
+
+  const universe = Array.isArray(symbols) ? symbols.filter(s => SYMBOL_RE.test(s)).slice(0, 50) : [];
+  try {
+    const { session, account } = await broker.connect(creds, { universe });
+    const token = randomBytes(28).toString('hex');
+    sessions.set(token, session);
+    res.json({
+      token,
+      broker: { id: broker.id, name: broker.name, endpoint: broker.endpoints[creds.env] },
+      account,
+    });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message, detail: err.detail });
+  }
 });
 
 // ── Disconnect: drop session ─────────────────────────────────────────────────
 app.delete('/api/disconnect', auth, (req, res) => {
+  req.session.close();
   sessions.delete(req.token);
   res.json({ ok: true });
 });
 
-// ── Account ──────────────────────────────────────────────────────────────────
-app.get('/api/account', auth, async (req, res) => {
-  try {
-    const r = await fetch(`${BASE[req.session.env]}/v2/account`, { headers: alpacaHeaders(req.session) });
-    res.status(r.status).json(await r.json());
-  } catch (err) {
-    res.status(502).json({ error: err.message });
-  }
-});
+// ── Account / positions / orders ─────────────────────────────────────────────
+app.get('/api/account',   auth, proxy(req => req.session.account()));
+app.get('/api/positions', auth, proxy(req => req.session.positions()));
 
-// ── Positions ────────────────────────────────────────────────────────────────
-app.get('/api/positions', auth, async (req, res) => {
-  try {
-    const r = await fetch(`${BASE[req.session.env]}/v2/positions`, { headers: alpacaHeaders(req.session) });
-    res.status(r.status).json(await r.json());
-  } catch (err) {
-    res.status(502).json({ error: err.message });
-  }
-});
+app.get('/api/orders', auth, proxy(req => {
+  const { token, ...query } = req.query; // strip our internal auth param
+  return req.session.orders(query);
+}));
 
-// ── Orders: list ─────────────────────────────────────────────────────────────
-app.get('/api/orders', auth, async (req, res) => {
-  try {
-    const qs = new URLSearchParams({ status: 'all', limit: '100', ...req.query });
-    qs.delete('token'); // strip our internal auth param
-    const r = await fetch(`${BASE[req.session.env]}/v2/orders?${qs}`, { headers: alpacaHeaders(req.session) });
-    res.status(r.status).json(await r.json());
-  } catch (err) {
-    res.status(502).json({ error: err.message });
-  }
-});
+app.post('/api/orders', auth, proxy(req => req.session.placeOrder(req.body)));
 
-// ── Orders: place ────────────────────────────────────────────────────────────
-app.post('/api/orders', auth, async (req, res) => {
-  try {
-    const r = await fetch(`${BASE[req.session.env]}/v2/orders`, {
-      method:  'POST',
-      headers: alpacaHeaders(req.session),
-      body:    JSON.stringify(req.body),
-    });
-    const data = await r.json();
-    res.status(r.status).json(data);
-  } catch (err) {
-    res.status(502).json({ error: err.message });
-  }
-});
+// Close (flatten) a symbol position
+app.delete('/api/positions/:symbol', auth, proxy(req => {
+  if (!SYMBOL_RE.test(req.params.symbol)) return { status: 400, body: { error: 'Invalid symbol' } };
+  return req.session.closePosition(req.params.symbol);
+}));
 
-// ── Positions: close (flatten) a symbol position ────────────────────────────
-app.delete('/api/positions/:symbol', auth, async (req, res) => {
-  try {
-    const r = await fetch(`${BASE[req.session.env]}/v2/positions/${req.params.symbol}`, {
-      method:  'DELETE',
-      headers: alpacaHeaders(req.session),
-    });
-    if (r.status === 204) return res.json({ ok: true });
-    if (r.status === 404) return res.json({ ok: true, notFound: true }); // no position, that's fine
-    res.status(r.status).json(await r.json());
-  } catch (err) {
-    res.status(502).json({ error: err.message });
-  }
-});
-
-// ── Orders: cancel ───────────────────────────────────────────────────────────
-app.delete('/api/orders/:id', auth, async (req, res) => {
-  try {
-    const r = await fetch(`${BASE[req.session.env]}/v2/orders/${req.params.id}`, {
-      method:  'DELETE',
-      headers: alpacaHeaders(req.session),
-    });
-    if (r.status === 204) return res.json({ ok: true });
-    res.status(r.status).json(await r.json());
-  } catch (err) {
-    res.status(502).json({ error: err.message });
-  }
-});
+app.delete('/api/orders/:id', auth, proxy(req => req.session.cancelOrder(req.params.id)));
 
 // ── Market data: daily bars for live signal computation ───────────────────────
 // Returns up to 252 daily closes per symbol so the client can recompute all
 // 16 agent signals from real prices instead of the synthetic seed data.
-app.get('/api/bars', auth, async (req, res) => {
-  try {
-    const symbols = (req.query.symbols || '').split(',').filter(Boolean).slice(0, 30).join(',');
-    if (!symbols) return res.status(400).json({ error: 'symbols required' });
-    const url = `https://data.alpaca.markets/v2/stocks/bars?symbols=${encodeURIComponent(symbols)}&timeframe=1Day&limit=252&feed=iex&adjustment=raw`;
-    const r = await fetch(url, { headers: alpacaHeaders(req.session) });
-    const data = await r.json();
-    res.status(r.status).json(data);
-  } catch (err) {
-    res.status(502).json({ error: err.message });
-  }
-});
+app.get('/api/bars', auth, proxy(req => {
+  const symbols = (req.query.symbols || '').split(',').filter(s => SYMBOL_RE.test(s)).slice(0, 30);
+  if (!symbols.length) return { status: 400, body: { error: 'symbols required' } };
+  return req.session.bars(symbols);
+}));
 
-// ── SSE stream: polls account + positions + orders every 3 s ─────────────────
+// ── SSE stream: pushes account + positions + orders + clock (+ prices for IG) ─
 // Token is read from ?token= because EventSource does not support custom headers.
 app.get('/api/stream', auth, (req, res) => {
   res.setHeader('Content-Type',  'text/event-stream');
@@ -198,30 +117,24 @@ app.get('/api/stream', auth, (req, res) => {
 
   const push = async () => {
     try {
-      const [rAcc, rPos, rOrd, rClk] = await Promise.all([
-        fetch(`${BASE[session.env]}/v2/account`,           { headers: alpacaHeaders(session) }),
-        fetch(`${BASE[session.env]}/v2/positions`,         { headers: alpacaHeaders(session) }),
-        fetch(`${BASE[session.env]}/v2/orders?status=all&limit=50`, { headers: alpacaHeaders(session) }),
-        fetch(`${BASE[session.env]}/v2/clock`,             { headers: alpacaHeaders(session) }),
-      ]);
-      const [account, positions, orders, clock] = await Promise.all([rAcc.json(), rPos.json(), rOrd.json(), rClk.json()]);
-      res.write(`data: ${JSON.stringify({ account, positions, orders, clock })}\n\n`);
+      res.write(`data: ${JSON.stringify(await session.snapshot())}\n\n`);
     } catch (err) {
       res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
     }
   };
 
   push(); // immediate first update
-  const interval = setInterval(push, 3000);
+  const interval = setInterval(push, session.streamIntervalMs);
   req.on('close', () => clearInterval(interval));
 });
 
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => {
   console.log(`Shoal backend  →  http://localhost:${PORT}`);
-  console.log(`Paper API      →  ${BASE.paper}`);
-  console.log(`Live API       →  ${BASE.live}`);
-  console.log('Sessions are held in memory — no keys written to disk.\n');
+  for (const b of Object.values(BROKERS)) {
+    console.log(`${b.name.padEnd(15)}→  paper/demo ${b.endpoints.paper}  ·  live ${b.endpoints.live}`);
+  }
+  console.log('Sessions are held in memory — no credentials written to disk.\n');
 });
 
 server.on('error', (err) => {
@@ -233,3 +146,5 @@ server.on('error', (err) => {
   }
   process.exit(1);
 });
+
+export { app, server };
