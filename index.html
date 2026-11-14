@@ -1488,7 +1488,9 @@ window.addEventListener('unhandledrejection', function(e) {
 const SEED = 1337;
 
 // Backend URL — override by setting window.SHOAL_BACKEND_URL before this script loads.
-const BACKEND_URL = (typeof window !== 'undefined' && window.SHOAL_BACKEND_URL) || 'http://localhost:3001';
+// Local: page on localhost or file:// talks to the backend on :3001. Hosted (e.g. Vercel): same origin.
+const BACKEND_URL = (typeof window !== 'undefined' && window.SHOAL_BACKEND_URL)
+  || (location.protocol === 'file:' || /^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? 'http://localhost:3001' : '');
 
 // Brokers the backend can connect to. env stays 'paper' | 'live' everywhere; for IG 'paper' is the demo environment.
 const BROKERS = {

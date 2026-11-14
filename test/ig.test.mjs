@@ -5,7 +5,7 @@ import os from 'os';
 import path from 'path';
 import { startMockIG, MOCK_API_KEY } from './mock-ig.mjs';
 
-let mock, server, base, token;
+let mock, server, base, token, sessions;
 const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shoal-ig-'));
 
 before(async () => {
@@ -13,7 +13,9 @@ before(async () => {
   process.env.IG_DEMO_URL = mock.url;
   process.env.SHOAL_CACHE_DIR = cacheDir;
   process.env.PORT = '0';
+  process.env.SHOAL_SESSION_SECRET = 'test-secret'; // exercise sealed tokens, as deployed on Vercel
   ({ server } = await import('../server.js'));
+  ({ sessions } = await import('../app.js'));
   if (!server.listening) await new Promise(r => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -136,6 +138,26 @@ test('expired tokens trigger one re-login, then the request succeeds', async () 
   const r = await api('/api/positions/MSFT', { method: 'DELETE' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(logins(), n + 1);
+});
+
+test('sealed token survives a cold start (new instance, empty session store)', async () => {
+  assert.match(token, /^s1\./);
+  const logins = () => mock.state.calls.filter(c => c === 'POST /session v2').length;
+  const n = logins();
+  sessions.clear();
+  const [a, b] = await Promise.all([api('/api/account'), api('/api/positions')]);
+  assert.equal(a.status, 200);
+  assert.equal(a.body.id, 'SB1');
+  assert.equal(b.status, 200);
+  assert.equal(logins(), n + 1, 'concurrent requests share one re-login');
+});
+
+test('tampered token is rejected', async () => {
+  const saved = token;
+  token = saved.slice(0, -4) + (saved.endsWith('AAAA') ? 'BBBB' : 'AAAA');
+  sessions.clear();
+  assert.equal((await api('/api/account')).status, 401);
+  token = saved;
 });
 
 test('disconnect drops the session', async () => {

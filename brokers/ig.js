@@ -17,7 +17,8 @@ const BASE = {
   live:  process.env.IG_LIVE_URL || 'https://api.ig.com/gateway/deal',
 };
 
-const CACHE_DIR      = process.env.SHOAL_CACHE_DIR || path.resolve('.cache');
+// Vercel's filesystem is read-only apart from /tmp
+const CACHE_DIR      = process.env.SHOAL_CACHE_DIR || (process.env.VERCEL ? '/tmp/shoal-cache' : path.resolve('.cache'));
 const OVERRIDES_FILE = path.resolve('ig-epics.json');
 const SNAPSHOT_TTL_MS = 15_000;
 const MARKET_REFRESH_MS = 60_000;

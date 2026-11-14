@@ -4,3 +4,5 @@ node_modules/
 /.vs
 .cache/
 ig-epics.json
+public/
+.vercel/
