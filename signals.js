@@ -956,7 +956,7 @@
         if (voteRows.length > 600) voteRows.shift();
         const reg = regimeAt(f, i).key;
         const rm = o.regimeAware === false ? null : regimeMultipliers(regimeHist[reg], ids);
-        const ens = ensemble(sigs, weights, { ids, enabled: o.enabled, regimeMult: rm, corrAdj });
+        const ens = ensemble(sigs, o.weightsAt ? o.weightsAt(g) : weights, { ids, enabled: o.enabled, regimeMult: rm, corrAdj });
         if (!ens.dir || ens.confidence < minConf || ens.consensus < minCons) continue;
         const side = ens.dir === 'BUY' ? 1 : -1;
         if (side === -1 && o.allowShort === false) continue;
@@ -1051,7 +1051,273 @@
     return { agents: out, corr, avgAbsCorr: n ? s / n : 0, samples: voteRows.length };
   }
 
-  // ── Synthetic market (SIMULATED mode) ──────────────────────────────────────
+  // ── Autopilot: shadow scoring, automatic weights, tested tuning ────────────
+  // Every agent's call on every ticker is scored once its outcome is known: the return from the next
+  // open to the close `h` days later, in the call's direction. One observation per agent per day (the
+  // average over the tickers it called), so the t-statistic is over days, not correlated tickers.
+  // Days are global universe indices; a call made on day g matures on day g + h.
+  const TUNE_KEYS = {
+    momo: { id: 'adxMin',   values: [15, 18, 20, 23, 25, 30] },
+    mean: { id: 'k',        values: [1.6, 1.8, 2.0, 2.2, 2.5] },
+    brkt: { id: 'kcMult',   values: [1.0, 1.25, 1.5, 1.75, 2.0] },
+    vwap: { id: 'devThr',   values: [1.0, 1.25, 1.5, 2.0, 2.5] },
+    vol:  { id: 'expand',   values: [1.1, 1.2, 1.25, 1.35, 1.5] },
+    skew: { id: 'thr',      values: [0.3, 0.5, 0.7, 0.9, 1.2] },
+    flow: { id: 'cmfThr',   values: [0.05, 0.08, 0.1, 0.15, 0.2] },
+    mm:   { id: 'atrRank',  values: [0.15, 0.2, 0.3, 0.4, 0.5] },
+    corr: { id: 'rsThr',    values: [0.015, 0.02, 0.03, 0.04, 0.06] },
+    pair: { id: 'zEntry',   values: [1.5, 1.75, 2.0, 2.5, 3.0] },
+    macr: { id: 'hi',       values: [0.55, 0.6, 0.65, 0.7, 0.75] },
+    earn: { id: 'lookback', values: [63, 84, 126, 168, 210] },
+    fund: { id: 'thr',      values: [0.5, 0.75, 1.0, 1.5, 2.0] },
+    news: { id: 'gapThr',   values: [0.5, 0.75, 1.0, 1.25, 1.5] },
+    soc:  { id: 'volThr',   values: [1.5, 1.75, 2.0, 2.5, 3.0] },
+    patt: { id: 'k',        values: [5, 8, 10, 15, 20] },
+  };
+
+  const AUTOPILOT = { h: 5, window: 120, minDays: 20, smooth: 5, tFloor: 0.5, testDays: 60 };
+
+  // fwd return for a call on local bar i (next open → close h days later); null if not matured by local bar `upto`
+  const fwdRet = (F, i, h, upto) => (i + h <= upto && i + 1 < F.n ? F.c[i + h] / F.o[i + 1] - 1 : null);
+
+  // opts.side 'sell' scores only SELL calls — for the stay-invested style, where selling is the only
+  // decision: a SELL call scores well when the stock then fell, badly when it rose.
+  function createScoreBook(U, params, opts = {}) {
+    const o = { ...AUTOPILOT, ...opts };
+    const P = mergeParams(params);
+    const sigCache = new Map();
+    const dayCache = new Map(); // g → { id: mean signed return } for calls made on day g (all tickers)
+    const signalsAt = (sym, i) => {
+      const k = sym + ':' + i;
+      if (!sigCache.has(k)) sigCache.set(k, agentSignals(U, sym, i, P));
+      return sigCache.get(k);
+    };
+    // per-agent average signed outcome of the calls made on day g; requires g + h ≤ last bar
+    const day = (g) => {
+      if (dayCache.has(g)) return dayCache.get(g);
+      const sum = {}, n = {};
+      for (const sym of U.syms) {
+        const F = U.F[sym], i = g - U.off[sym];
+        if (i < 60) continue;
+        const r = fwdRet(F, i, o.h, F.n - 1);
+        if (r == null || !fin(r)) continue;
+        const sg = signalsAt(sym, i);
+        if (!sg) continue;
+        for (const id of AGENT_IDS) {
+          const s = sg[id];
+          if (!s || !s.dir || (o.side === 'sell' && s.dir !== -1)) continue;
+          sum[id] = (sum[id] || 0) + s.dir * r; n[id] = (n[id] || 0) + 1;
+        }
+      }
+      const out = {};
+      for (const id of Object.keys(sum)) out[id] = sum[id] / n[id];
+      dayCache.set(g, out);
+      return out;
+    };
+    // stats over calls made on days [from, to]
+    const stats = (from, to) => {
+      const acc = {};
+      AGENT_IDS.forEach(id => { acc[id] = { days: 0, sum: 0, sum2: 0 }; });
+      for (let g = Math.max(60, from); g <= to; g++) {
+        const d = day(g);
+        for (const id of Object.keys(d)) { const a = acc[id]; a.days++; a.sum += d[id]; a.sum2 += d[id] ** 2; }
+      }
+      const out = {};
+      for (const id of AGENT_IDS) {
+        const a = acc[id], m = a.days ? a.sum / a.days : 0;
+        const sd = a.days > 1 ? Math.sqrt(Math.max(1e-12, a.sum2 / a.days - m * m)) : 0;
+        out[id] = { days: a.days, mean: m, t: sd > 0 ? m / (sd / Math.sqrt(a.days)) : 0 };
+      }
+      return out;
+    };
+    // raw target weights using only outcomes matured by `asOf` (calls up to asOf − h)
+    const target = (asOf) => {
+      const st = stats(asOf - o.h - o.window + 1, asOf - o.h);
+      const w = {};
+      let tot = 0, evidence = false;
+      for (const id of AGENT_IDS) {
+        if (st[id].days >= o.minDays) evidence = true;
+        w[id] = st[id].days >= o.minDays ? Math.max(0, st[id].t - o.tFloor) : 0;
+        tot += w[id];
+      }
+      if (!evidence) { AGENT_IDS.forEach(id => { w[id] = 1 / AGENT_IDS.length; }); return { w, status: 'warming-up', stats: st }; }
+      if (tot <= 0) return { w, status: 'no-edge', stats: st };
+      AGENT_IDS.forEach(id => { w[id] /= tot; });
+      return { w, status: 'ok', stats: st };
+    };
+    // smoothed: average of the last `smooth` days' targets, so weights move gradually
+    const weightsAt = (asOf) => {
+      const w = {};
+      AGENT_IDS.forEach(id => { w[id] = 0; });
+      let last;
+      for (let k = 0; k < o.smooth; k++) {
+        last = k === 0 ? target(asOf) : last;
+        const t = k === 0 ? last : target(asOf - k);
+        AGENT_IDS.forEach(id => { w[id] += t.w[id] / o.smooth; });
+      }
+      return { w, status: last.status, stats: last.stats };
+    };
+    // Paper result of a weight set on calls made in [from, to]: average per-day return of the ensemble's
+    // acted-on calls. style 'invested' scores only SELL calls (the stock is avoided), 'both' scores both.
+    const paper = (weights, from, to, { minConf = 0.55, style = 'both' } = {}) => {
+      let sum = 0, days = 0, calls = 0;
+      for (let g = Math.max(60, from); g <= to; g++) {
+        let s = 0, n = 0;
+        for (const sym of U.syms) {
+          const F = U.F[sym], i = g - U.off[sym];
+          if (i < 60) continue;
+          const r = fwdRet(F, i, o.h, F.n - 1);
+          if (r == null || !fin(r)) continue;
+          const e = ensemble(signalsAt(sym, i), weights);
+          if (!e.dir || e.confidence < minConf) continue;
+          if (style === 'invested' && e.dir !== 'SELL') continue;
+          s += (e.dir === 'BUY' ? 1 : -1) * r; n++;
+        }
+        if (n) { sum += s / n; days++; calls += n; }
+      }
+      return { mean: days ? sum / days : 0, days, calls };
+    };
+    return { U, params: P, opts: o, signalsAt, day, stats, target, weightsAt, paper };
+  }
+
+  // Watch-it-first: a challenger fitted only on outcomes known `testDays` ago must beat the current
+  // weights on the calls made since (which it never saw) before it replaces them.
+  function proposeWeights(book, asOf, current, opts = {}) {
+    const { h, testDays } = book.opts;
+    const fitAsOf = asOf - testDays;
+    const challenger = book.weightsAt(fitAsOf);
+    const from = fitAsOf - h + 1, to = asOf - h;
+    const cur = current || Object.fromEntries(AGENT_IDS.map(id => [id, 1 / AGENT_IDS.length]));
+    const a = book.paper(challenger.w, from, to, opts), b = book.paper(cur, from, to, opts);
+    const noEdge = challenger.status === 'no-edge';
+    return {
+      challenger: challenger.w, status: challenger.status, stats: challenger.stats,
+      challengerScore: a, currentScore: b,
+      // with no edge anywhere, standing aside always beats trading noise
+      promote: noEdge || (challenger.status === 'ok' && a.days >= 5 && a.mean > b.mean),
+    };
+  }
+
+  // Tested tuning of one agent's main parameter: best value on older data [fit window], accepted only if it
+  // also beats the current value on the newer `testDays` it wasn't chosen on, with enough signals in both.
+  function tuneParam(U, agentId, asOf, params = {}, opts = {}) {
+    const o = { ...AUTOPILOT, ...opts };
+    const key = TUNE_KEYS[agentId];
+    if (!key) return null;
+    const cur = mergeParams(params)[agentId][key.id];
+    const fitTo = asOf - o.testDays - o.h, fitFrom = fitTo - o.window + 1;
+    const testFrom = fitTo + 1, testTo = asOf - o.h;
+    const score = (val, from, to) => {
+      const P = mergeParams({ ...params, [agentId]: { ...(params[agentId] || {}), [key.id]: val } })[agentId];
+      let sum = 0, n = 0;
+      for (const sym of U.syms) {
+        const F = U.F[sym];
+        for (let g = Math.max(60 + U.off[sym], from); g <= to; g++) {
+          const i = g - U.off[sym];
+          const r = fwdRet(F, i, o.h, F.n - 1);
+          if (r == null || !fin(r)) continue;
+          let s;
+          try { s = AGENT_FNS[agentId](F, i, P, U, sym); } catch { s = null; }
+          if (!s || !s.dir) continue;
+          sum += s.dir * r; n++;
+        }
+      }
+      return { mean: n ? sum / n : 0, n };
+    };
+    const values = [...new Set([cur, ...key.values])];
+    const fit = values.map(v => ({ v, ...score(v, fitFrom, fitTo) })).filter(x => x.n >= 30);
+    if (!fit.length) return { agentId, key: key.id, current: cur, best: cur, accepted: false, reason: 'too few signals' };
+    fit.sort((a, b) => b.mean - a.mean);
+    const best = fit[0];
+    if (best.v === cur) return { agentId, key: key.id, current: cur, best: cur, accepted: false, reason: 'current value is best' };
+    const tb = score(best.v, testFrom, testTo), tc = score(cur, testFrom, testTo);
+    const accepted = tb.n >= 10 && tb.mean > tc.mean;
+    return {
+      agentId, key: key.id, current: cur, best: best.v, accepted,
+      fitMean: best.mean, testMean: tb.mean, testMeanCurrent: tc.mean, testN: tb.n,
+      reason: accepted ? 'better on older and newer data' : 'not better on newer data',
+    };
+  }
+
+  // ── Stay-invested backtest ─────────────────────────────────────────────────
+  // Hold every stock at an equal share of `investFraction` of equity; sell a stock when the ensemble calls
+  // SELL with confidence ≥ minConf, buy it back when the SELL call clears. Decisions at the close, fills at
+  // the next open. A daily loss beyond `dailyLoss`% blocks buying the next day.
+  function runInvested(U, o = {}) {
+    const start = Math.max(o.start ?? 60, 60), end = Math.min(o.end ?? U.L - 1, U.L - 1);
+    const capital = o.capital ?? 100000, slip = o.slip ?? 0.0005, frac = o.investFraction ?? 0.9;
+    const minConf = o.minConf ?? 0.55;
+    const signalsAt = o.signalsAt || ((sym, i) => agentSignals(U, sym, i, o.params));
+    const weightsAt = o.weightsAt || (() => o.weights || {});
+    const N = U.syms.length;
+    let cash = capital;
+    const pos = {}; // sym → { qty, entry, entryG }
+    const trades = [], curve = [], bench = [], days = [];
+    let orders = []; // { sym, side: 'buy' | 'sell' }
+    let blockBuys = false, invSum = 0, prevEq = capital;
+    for (let g = start; g <= end; g++) {
+      // fills at today's open
+      let eqOpen = cash;
+      for (const s of Object.keys(pos)) { const F = U.F[s], i = g - U.off[s]; eqOpen += pos[s].qty * F.o[i]; }
+      for (const od of orders) {
+        const F = U.F[od.sym], i = g - U.off[od.sym];
+        if (i < 0) continue;
+        if (od.side === 'sell' && pos[od.sym]) {
+          const p = pos[od.sym], px = F.o[i] * (1 - slip);
+          cash += p.qty * px;
+          trades.push({ sym: od.sym, entry: p.entry, exit: px, qty: p.qty, pnl: (px - p.entry) * p.qty, pnlPct: px / p.entry - 1, entryG: p.entryG, exitG: g, reason: 'WEAKNESS' });
+          delete pos[od.sym];
+        } else if (od.side === 'buy' && !pos[od.sym] && !blockBuys) {
+          const px = F.o[i] * (1 + slip), val = Math.min(cash, eqOpen * frac / N);
+          if (val > 1) { pos[od.sym] = { qty: val / px, entry: px, entryG: g }; cash -= val; }
+        }
+      }
+      orders = [];
+      // mark at the close
+      let eq = cash;
+      for (const s of Object.keys(pos)) { const F = U.F[s], i = g - U.off[s]; eq += pos[s].qty * F.c[i]; }
+      let bsum = 0, bn = 0;
+      for (const s of U.syms) { const i = g - U.off[s], i0 = start - U.off[s]; if (i0 >= 0) { bsum += U.F[s].c[i] / U.F[s].c[i0]; bn++; } }
+      curve.push(eq); bench.push(bn ? capital * bsum / bn : capital); days.push(g);
+      invSum += (eq - cash) / eq;
+      blockBuys = o.dailyLoss != null && eq / prevEq - 1 <= -o.dailyLoss / 100;
+      prevEq = eq;
+      if (g === end) break;
+      // decisions at the close for tomorrow's open
+      const w = weightsAt(g);
+      for (const s of U.syms) {
+        const i = g - U.off[s];
+        if (i < 60) continue;
+        const e = ensemble(signalsAt(s, i), w);
+        const weak = e.dir === 'SELL' && e.confidence >= minConf;
+        if (weak && pos[s]) orders.push({ sym: s, side: 'sell' });
+        else if (!weak && !pos[s]) orders.push({ sym: s, side: 'buy' });
+      }
+    }
+    for (const s of Object.keys(pos)) {
+      const F = U.F[s], i = end - U.off[s], p = pos[s];
+      trades.push({ sym: s, entry: p.entry, exit: F.c[i], qty: p.qty, pnl: (F.c[i] - p.entry) * p.qty, pnlPct: F.c[i] / p.entry - 1, entryG: p.entryG, exitG: end, reason: 'END' });
+    }
+    const rets = curve.slice(1).map((v, k) => v / curve[k] - 1);
+    const mu = rets.reduce((s, r) => s + r, 0) / (rets.length || 1);
+    const sd = Math.sqrt(rets.reduce((s, r) => s + (r - mu) ** 2, 0) / (rets.length || 1));
+    let peak = -Infinity, maxDD = 0;
+    for (const v of curve) { peak = Math.max(peak, v); maxDD = Math.min(maxDD, (v - peak) / peak); }
+    const sells = trades.filter(t => t.reason === 'WEAKNESS');
+    return {
+      curve, bench, days, trades,
+      finalEq: curve[curve.length - 1] ?? capital,
+      totalReturn: (curve[curve.length - 1] ?? capital) / capital - 1,
+      benchReturn: (bench[bench.length - 1] ?? capital) / capital - 1,
+      tradeCount: trades.length, sells: sells.length,
+      winRate: trades.length ? trades.filter(t => t.pnl > 0).length / trades.length : 0,
+      avgTradePct: trades.length ? trades.reduce((s, t) => s + t.pnlPct, 0) / trades.length : 0,
+      sharpe: sd > 0 ? (mu / sd) * Math.sqrt(252) : 0, maxDD,
+      invested: curve.length ? invSum / curve.length : 0,
+    };
+  }
+
+  // ── Synthetic market (tests and offline demos) ──────────────────────────────────────
   // Market + sector + stock factors with regime switching (trending / ranging, calm / volatile),
   // opening gaps, intraday ranges and volume that swells on big moves.
   function synthUniverseBars(symbols, sectorOf, seed, n, basePrices = {}) {
@@ -1101,6 +1367,7 @@
     AGENT_IDS, DEFAULT_PARAMS, mergeParams, agentSignals, AGENT_FNS,
     ensemble, correlationAdjust, regimeMultipliers, atrPlan,
     runBacktest, evaluateAgents, synthUniverseBars,
+    TUNE_KEYS, AUTOPILOT, createScoreBook, proposeWeights, tuneParam, runInvested,
   };
   root.ShoalSignals = api;
 })(typeof window !== 'undefined' ? window : globalThis);

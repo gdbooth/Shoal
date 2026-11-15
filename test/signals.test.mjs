@@ -212,3 +212,61 @@ test('evaluateAgents reports hit rate, expectancy and vote correlation', () => {
   }
   assert.ok(e.avgAbsCorr >= 0 && e.avgAbsCorr <= 1);
 });
+
+// ── Autopilot + stay-invested ───────────────────────────────────────────────
+const U_FULL = S.buildUniverse(FULL, SECT);
+const U_CUT = (n) => S.buildUniverse(sliceBars(FULL, n + 1), SECT);
+
+test('score book: weights sum to 1 (or all zero with no edge) and use only matured outcomes', () => {
+  const book = S.createScoreBook(U_FULL, {}, { window: 120 });
+  const asOf = 380;
+  const w = book.weightsAt(asOf);
+  const tot = Object.values(w.w).reduce((a, b) => a + b, 0);
+  assert.ok(Math.abs(tot - 1) < 1e-9 || (w.status === 'no-edge' && tot < 1), `sum ${tot} status ${w.status}`);
+  // identical when every bar after asOf is removed → no lookahead
+  const wCut = S.createScoreBook(U_CUT(asOf), {}, { window: 120 }).weightsAt(asOf);
+  for (const id of S.AGENT_IDS) close(w.w[id], wCut.w[id], 1e-12);
+});
+
+test('score book: warming up gives equal weights; sell-side scoring ignores BUY calls', () => {
+  const early = S.createScoreBook(U_FULL, {}).target(70);
+  assert.equal(early.status, 'warming-up');
+  const sell = S.createScoreBook(U_FULL, {}, { side: 'sell' });
+  const both = S.createScoreBook(U_FULL, {});
+  const d1 = sell.day(300), d2 = both.day(300);
+  assert.ok(Object.keys(d1).length <= Object.keys(d2).length);
+});
+
+test('watch-it-first: promotion decided only on outcomes known at the time', () => {
+  const asOf = 420;
+  const a = S.proposeWeights(S.createScoreBook(U_FULL, {}, { testDays: 40 }), asOf, null);
+  const b = S.proposeWeights(S.createScoreBook(U_CUT(asOf), {}, { testDays: 40 }), asOf, null);
+  assert.equal(a.promote, b.promote);
+  close(a.challengerScore.mean, b.challengerScore.mean, 1e-12);
+  assert.equal(typeof a.promote, 'boolean');
+});
+
+test('tested tuning: no lookahead and only accepts values that also win on newer data', () => {
+  const asOf = 450;
+  const a = S.tuneParam(U_FULL, 'earn', asOf, {}, { testDays: 40 });
+  const b = S.tuneParam(U_CUT(asOf), 'earn', asOf, {}, { testDays: 40 });
+  assert.deepEqual(a, b);
+  if (a.accepted) assert.ok(a.testMean > a.testMeanCurrent);
+  assert.ok(S.TUNE_KEYS.earn.values.includes(a.best) || a.best === S.DEFAULT_PARAMS.earn.lookback);
+});
+
+test('stay invested: never selling matches buy-and-hold; selling reduces time invested', () => {
+  const hold = S.runInvested(U_FULL, { start: 150, minConf: 2, investFraction: 1, slip: 0 });
+  assert.equal(hold.sells, 0);
+  assert.ok(Math.abs(hold.totalReturn - hold.benchReturn) < 0.03, `${hold.totalReturn} vs ${hold.benchReturn}`);
+  const act = S.runInvested(U_FULL, { start: 150, minConf: 0.3 });
+  assert.ok(act.sells > 0 && act.invested < hold.invested);
+  assert.ok(act.curve.every(v => v > 0));
+});
+
+test('stay invested: daily loss limit blocks buying the next day', () => {
+  const free = S.runInvested(U_FULL, { start: 150, minConf: 0.3 });
+  const capped = S.runInvested(U_FULL, { start: 150, minConf: 0.3, dailyLoss: 0.5 });
+  const buys = r => r.trades.length;
+  assert.ok(buys(capped) <= buys(free));
+});

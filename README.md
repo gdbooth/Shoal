@@ -70,10 +70,36 @@ Agents work on daily OHLCV bars, price and volume only:
 
 Without volume data (IG spread bets) the volume agents fall back to price-only versions.
 
-Each market is classified per stock as trend or range (ADX) and calm or volatile (ATR% rank).
-Positions use ATR stops and targets and are sized so a stop loses about *Risk per trade* % of equity.
-Regime-aware weights and the correlation penalty are available in Settings but off by default: on
-2014–2018 daily data for 24 of the 25 tickers they lowered returns in every test period.
+Each stock's market is classified as trend or range (ADX) and calm or volatile (ATR% rank).
 
-SIMULATED mode runs on a generated market with trending/ranging and calm/volatile regimes and walks
-forward one bar per tick, so simulated trades are marked against that market's bars.
+## Strategy
+
+Settings has four main controls; everything else is under *Advanced*.
+
+- **Risk level**: Cautious / Balanced / Bold. Sets equity invested, risk per trade, position limits,
+  stop widths, the confidence needed to act and the daily loss limit.
+- **Style**:
+  - *Stay invested* (default): hold every stock at an equal share of equity, sell one when it shows
+    weakness, buy it back when that clears. The default weakness signal is Trend Persistence: on
+    2015–2018 daily data it kept 88% of buy-and-hold's 95% gain with a −10% worst drop (vs −15%).
+  - *Trade both ways*: long and short trades with ATR stops and targets. It lost to buy-and-hold on
+    the same data.
+- **Autopilot** (off by default): every agent's call on every stock is scored once its 5-day result
+  is known. Every 5 days a challenger weight set, fitted only on outcomes known 60 days earlier,
+  replaces the current weights if it did better on those 60 days. Every 20 days each weighted agent's
+  main setting is tuned the same way. Changes are logged in plain English. In LIVE mode at most one
+  weight change and one setting change happen per day, and *Freeze tuning* stops all changes. On
+  2015–2018 data Autopilot lowered returns (61% vs 88% for the default), which is why it's off.
+- **Daily loss limit**: once equity is down this much in a day, no new positions until the next day.
+
+Regime-aware weights and the correlation penalty are under Advanced, off by default: on 2014–2018 daily
+data they lowered returns in every test period.
+
+## Modes
+
+- **SIMULATED** replays the connected broker's daily history (about 3 years from Alpaca, 220 days from
+  IG) one day per tick, with local fills and no orders. Without a broker there is nothing to replay.
+- **VIRTUAL** sends orders to the broker's paper/demo account.
+- **LIVE** sends real orders.
+
+The dashboard compares Shoal with buying and holding the same stocks over the same period.

@@ -20,7 +20,10 @@ before(async () => {
   m.get('/v2/clock', (_q, r) => r.json({ is_open: true }));
   m.post('/v2/orders', (q, r) => r.json({ id: 'o1', ...q.body }));
   m.delete('/v2/positions/:s', (q, r) => r.status(q.params.s === 'AAPL' ? 204 : 404).end());
-  m.get('/v2/stocks/bars', (q, r) => r.json({ bars: { [q.query.symbols]: [{ c: 1 }] } }));
+  // two pages: Alpaca's limit spans all symbols, so the adapter must follow next_page_token
+  m.get('/v2/stocks/bars', (q, r) => q.query.page_token === 'p2'
+    ? r.json({ bars: { AAPL: [{ c: 3 }], MSFT: [{ c: 4 }] }, next_page_token: null })
+    : r.json({ bars: { AAPL: [{ c: 1 }, { c: 2 }] }, next_page_token: 'p2' }));
   mock = await new Promise(res => { const s = m.listen(0, () => res(s)); });
   const url = `http://127.0.0.1:${mock.address().port}`;
   Object.assign(process.env, { ALPACA_PAPER_URL: url, ALPACA_DATA_URL: url, PORT: '0' });
@@ -54,7 +57,12 @@ test('orders, positions, bars pass through', async () => {
   assert.equal((await api('/api/positions')).body[0].symbol, 'AAPL');
   assert.deepEqual(await api('/api/positions/AAPL', { method: 'DELETE' }), { status: 200, body: { ok: true } });
   assert.deepEqual((await api('/api/positions/MSFT', { method: 'DELETE' })).body, { ok: true, notFound: true });
-  assert.equal((await api('/api/bars?symbols=AAPL')).body.bars.AAPL[0].c, 1);
+  const bars = (await api('/api/bars?symbols=AAPL,MSFT')).body.bars;
+  assert.deepEqual(bars.AAPL.map(b => b.c), [1, 2, 3]);
+  assert.deepEqual(bars.MSFT.map(b => b.c), [4]);
+  const barsReq = seen.find(u => u.startsWith('GET /v2/stocks/bars'));
+  assert.match(barsReq, /start=\d{4}-\d{2}-\d{2}/);
+  assert.match(barsReq, /adjustment=split/);
   await api('/api/orders?token=x&status=open');
   assert.ok(seen.includes('GET /v2/orders?status=open&limit=100'), 'token param stripped');
 });

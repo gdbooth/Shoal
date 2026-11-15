@@ -57,9 +57,24 @@ class AlpacaSession {
     return r;
   }
 
-  bars(symbols) {
-    const qs = `symbols=${encodeURIComponent(symbols.join(','))}&timeframe=1Day&limit=252&feed=iex&adjustment=raw`;
-    return this.req(`/v2/stocks/bars?${qs}`, { base: DATA_BASE });
+  // ~3 years of daily bars per symbol. Alpaca's `limit` counts bars across all symbols in the request,
+  // so ask for a start date and follow next_page_token until every page is in.
+  async bars(symbols, days = 1100) {
+    const start = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    const out = {};
+    let token = null;
+    for (let page = 0; page < 20; page++) {
+      const qs = new URLSearchParams({
+        symbols: symbols.join(','), timeframe: '1Day', start, limit: '10000', feed: 'iex', adjustment: 'split',
+        ...(token ? { page_token: token } : {}),
+      });
+      const r = await this.req(`/v2/stocks/bars?${qs}`, { base: DATA_BASE });
+      if (r.status !== 200) return r;
+      for (const [sym, b] of Object.entries(r.body?.bars || {})) (out[sym] = out[sym] || []).push(...b);
+      token = r.body?.next_page_token;
+      if (!token) break;
+    }
+    return { status: 200, body: { bars: out } };
   }
 
   async snapshot() {
