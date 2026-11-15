@@ -890,6 +890,12 @@
     return i >= lb ? F.c[i - skip] / F.c[i - lb] - 1 : NaN;
   }
 
+  // Crash guard signal: the universe's equal-weight index below its n-day average
+  function marketBelowAverage(U, n = 200) {
+    const sma = ind.sma(U.ctx.mktIdx, n);
+    return (g) => fin(sma[g]) && U.ctx.mktIdx[g] < sma[g];
+  }
+
   function monthEnd(U, g) {
     for (const s of U.syms) {
       const F = U.F[s], i = g - U.off[s];
@@ -907,7 +913,7 @@
     let cash = capital;
     const pos = {}; // sym → { qty, entry, entryG }
     const trades = [], curve = [], bench = [], days = [], picks = [];
-    let orders = null, traded = 0, invSum = 0, rebalances = 0;
+    let orders = null, traded = 0, invSum = 0, rebalances = 0, riskOffDays = 0;
     for (let g = start; g <= end; g++) {
       if (orders) {
         let eqOpen = cash;
@@ -938,8 +944,15 @@
       invSum += (eq - cash) / eq;
       if (g === end) break;
       const me = monthEnd(U, g);
-      const rebalance = g === start || (me == null ? (g - start) % 21 === 0 : me);
-      if (!rebalance) continue;
+      const monthly = g === start || (me == null ? (g - start) % 21 === 0 : me);
+      // Optional crash guard: o.riskOff(g) true → sell everything and wait in cash. Checked at month ends,
+      // or every day with o.riskOffDaily. Back in at the next check where it's false.
+      if (o.riskOff && (monthly || o.riskOffDaily)) {
+        const off = o.riskOff(g);
+        if (off) { if (Object.keys(pos).length) { orders = { sell: Object.keys(pos), buy: [] }; rebalances++; } riskOffDays++; continue; }
+        if (!monthly && Object.keys(pos).length === 0) { /* guard just lifted mid-month: re-enter now */ }
+        else if (!monthly) continue;
+      } else if (!monthly) continue;
       const ranked = U.syms
         .map(s => [s, scoreAt(s, g - U.off[s])])
         .filter(x => Number.isFinite(x[1]))
@@ -972,6 +985,7 @@
       sharpe: sd > 0 ? (mu / sd) * Math.sqrt(252) : 0, maxDD,
       invested: curve.length ? invSum / curve.length : 0,
       turnover: traded / avgEq / years, // traded value per year, in multiples of equity
+      riskOffDays,
     };
   }
 
@@ -1753,7 +1767,7 @@
     runBacktest, evaluateAgents, synthUniverseBars,
     TUNE_KEYS, AUTOPILOT, createScoreBook, proposeWeights, tuneParam, runInvested,
     OPT_SPACE, OPT_WARMUP, configWeights, configParams, createEvaluator, optimiseSettings, compareSettings,
-    COST_PROFILES, trendScore, runTilt, MODEL, fitModel, modelScore, rankIC, agentEvidence, createModelScorer,
+    COST_PROFILES, trendScore, runTilt, marketBelowAverage, MODEL, fitModel, modelScore, rankIC, agentEvidence, createModelScorer,
   };
   root.ShoalSignals = api;
 })(typeof window !== 'undefined' ? window : globalThis);

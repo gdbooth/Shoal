@@ -367,3 +367,15 @@ test('optimiser objective: a drawdown cap penalises deep drops', async () => {
   assert.equal(free.objective, 'return'); assert.equal(capped.objective, 'balanced');
   assert.ok(capped.best.obj <= capped.best.ret + 1e-12);
 });
+
+test('rank & tilt crash guard: always off = same as no guard; always on = stays in cash', () => {
+  const base = S.runTilt(U_FULL, { start: 150, topK: 3 });
+  const never = S.runTilt(U_FULL, { start: 150, topK: 3, riskOff: () => false });
+  close(base.totalReturn, never.totalReturn, 1e-12);
+  const always = S.runTilt(U_FULL, { start: 150, topK: 3, riskOff: () => true, riskOffDaily: true });
+  assert.equal(always.tradeCount, 0);
+  assert.ok(always.riskOffDays > 300);
+  close(always.totalReturn, 0, 1e-12);
+  const g = S.marketBelowAverage(U_FULL, 50);
+  assert.equal(typeof g(300), 'boolean');
+});
