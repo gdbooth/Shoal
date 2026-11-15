@@ -79,17 +79,26 @@ Settings has four main controls; everything else is under *Advanced*.
 - **Risk level**: Cautious / Balanced / Bold. Sets equity invested, risk per trade, position limits,
   stop widths, the confidence needed to act and the daily loss limit.
 - **Style**:
-  - *Stay invested* (default): hold every stock at an equal share of equity, sell one when it shows
+  - *Rank & tilt* (default): fully invested in the top 12 stocks by trend score (return from 6 months to
+    1 month ago), re-ranked at each month end; dropped names are sold, new ones bought, survivors left
+    alone. On 2013–2018 daily data after costs: 223% vs 139% for holding all 23 stocks, ahead in 4 of 5
+    years — but most of the gap came from staying in NVDA and AMD through 2016–17 (without them: 85% vs
+    74%). It pays when strong trends exist.
+  - *Stay invested*: hold every stock at an equal share of equity, sell one when it shows
     weakness, buy it back when that clears. The default weakness signal is Trend Persistence: on
     2015–2018 daily data it kept 88% of buy-and-hold's 95% gain with a −10% worst drop (vs −15%).
   - *Trade both ways*: long and short trades with ATR stops and targets. It lost to buy-and-hold on
     the same data.
-- **Autopilot** (off by default): every agent's call on every stock is scored once its 5-day result
-  is known. Every 5 days a challenger weight set, fitted only on outcomes known 60 days earlier,
-  replaces the current weights if it did better on those 60 days. Every 20 days each weighted agent's
-  main setting is tuned the same way. Changes are logged in plain English. In LIVE mode at most one
-  weight change and one setting change happen per day, and *Freeze tuning* stops all changes. On
-  2015–2018 data Autopilot lowered returns (61% vs 88% for the default), which is why it's off.
+- **Autopilot** (off by default) is the combination model: agents emit scores (direction × strength); a
+  ridge regression turns the trend score plus the scores of agents with positive evidence into an
+  expected next-month return per stock, shrunk toward trusting only the trend score. It refits every
+  quarter on past data; a new version is adopted only if it ranked stocks better on the 60 days it wasn't
+  fitted on. Rank & tilt ranks by it; the other styles take agent weights from it. Changes are logged.
+  On 2015–2018 data it made 153% vs 175% for the plain trend score, which is why it's off.
+- **Costs**: every buy and sell pays a per-side cost (Alpaca 5bp, IG spread bets 12bp, fictional 5bp;
+  adjustable under Advanced) in replays, backtests and the optimiser.
+- **Agent evidence**: Agent config shows each agent's next-month rank IC on the data in use. Agents without
+  positive evidence (t ≥ 1) are advisory and don't vote; the model prunes the same way, walk-forward.
 - **Daily loss limit**: once equity is down this much in a day, no new positions until the next day.
 
 Regime-aware weights and the correlation penalty are under Advanced, off by default: on 2014–2018 daily
@@ -98,8 +107,11 @@ data they lowered returns in every test period.
 ## Modes
 
 - **SIMULATED** replays daily history one day per tick, with local fills and no orders. *Replay data*
-  in Settings picks the source: *Auto* (the broker's history when connected — about 3 years from
-  Alpaca, 220 days from IG — otherwise the fictional market), *Fictional* or *Broker*.
+  in Settings picks the source: *Auto* (the broker's history when connected — 3, 5 or 10 years from
+  Alpaca as its data plan allows, 220 days from IG — otherwise the fictional market), *Fictional*,
+  *Broker*, or *Imported*: a CSV you choose (`date,symbol,open,high,low,close,volume`), read in the
+  browser, kept in IndexedDB and never uploaded. Use it for longer validation history from any source
+  you're licensed to use.
   The fictional market is generated in the browser (no network): two years of made-up daily prices
   ending today, plus about 21 months of warm-up history before them. It shows how a strategy behaves, not whether it
   works on real prices, and it never reaches VIRTUAL or LIVE.
@@ -116,6 +128,8 @@ The **Optimiser** screen fits settings to recent history and then checks whether
    broker bar otherwise). It searches style, which agents decide, confidence threshold, share invested,
    ATR stop/target, holding period and the deciding agent's main setting, for the highest return.
    A **held-out check** runs the result on the N days *before* the window, which the search never saw.
+   The goal is after-cost return with a penalty for drops beyond the risk level's cap, each style searches
+   only its own settings, and **Apply is locked unless the held-out check passes**.
 2. **Apply & freeze**: the optimised settings are applied and Settings / Agent config are locked. Your
    previous settings are kept.
 3. **Run again & compare**: frozen vs previous settings vs buy-and-hold on the days since freezing, with a

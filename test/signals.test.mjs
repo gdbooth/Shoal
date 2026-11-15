@@ -285,7 +285,9 @@ test('optimiser: never worse than the starting settings in the window; held-out 
   assert.ok(r.heldOut && r.heldOut.to === 320 && r.heldOut.from === 221);
   assert.ok(Number.isFinite(r.heldOut.best.ret) && Number.isFinite(r.heldOut.baseline.ret));
   assert.equal(last, 1);
-  assert.ok(['invested', 'both'].includes(r.best.cfg.style));
+  assert.ok(['tilt', 'invested', 'both'].includes(r.best.cfg.style));
+  assert.equal(typeof r.canApply, 'boolean');
+  if (r.canApply) assert.ok(r.changed && r.heldOut.best.obj > r.heldOut.baseline.obj);
   if (r.best.cfg.param) assert.equal(r.best.cfg.param.agent, r.best.cfg.agents);
 });
 
@@ -303,4 +305,65 @@ test('compare: frozen vs previous settings and buy-and-hold on the days since fr
   assert.equal(c.days, 60);
   for (const k of ['frozen', 'before']) assert.ok(Number.isFinite(c[k].ret));
   assert.ok(Number.isFinite(c.bench));
+});
+
+// ── Costs, Rank & tilt, combination model ───────────────────────────────────
+test('costs: higher per-side cost lowers the result in every engine', () => {
+  const a = S.runTilt(U_FULL, { start: 150, costBps: 0 }), b = S.runTilt(U_FULL, { start: 150, costBps: 50 });
+  assert.ok(b.totalReturn < a.totalReturn);
+  const c = S.runInvested(U_FULL, { start: 150, minConf: 0.3, costBps: 0 }), d = S.runInvested(U_FULL, { start: 150, minConf: 0.3, costBps: 50 });
+  assert.ok(d.totalReturn < c.totalReturn);
+  assert.ok(S.COST_PROFILES.ig.bps > S.COST_PROFILES.alpaca.bps);
+});
+
+test('rank & tilt: holds the top K, re-ranks every 21 bars without dates, stays invested', () => {
+  const r = S.runTilt(U_FULL, { start: 150, topK: 3, costBps: 5 });
+  assert.ok(r.rebalances >= Math.floor((499 - 150) / 21));
+  for (const p of r.picks) assert.equal(p.keep.length, 3);
+  assert.ok(r.invested > 0.9, `invested ${r.invested}`);
+  assert.ok(r.turnover > 0 && Number.isFinite(r.turnover));
+  // first pick = top 3 by trend score on the first day
+  const g = 150, ranked = SYMS.map(s => [s, S.trendScore(U_FULL.F[s], g)]).sort((a, b) => b[1] - a[1]).slice(0, 3).map(x => x[0]).sort();
+  assert.deepEqual([...r.picks[0].keep].sort(), ranked);
+});
+
+test('rank & tilt: re-ranks at month ends when bars have dates', () => {
+  const days = []; for (let d = new Date('2020-01-01'); days.length < 500; d = new Date(d.getTime() + 86400000)) { if (d.getUTCDay() % 6) days.push(d.toISOString().slice(0, 10)); }
+  const dated = Object.fromEntries(Object.entries(FULL).map(([s, b]) => [s, { ...b, t: days }]));
+  const U = S.buildUniverse(dated, SECT);
+  const r = S.runTilt(U, { start: 150, topK: 3 });
+  for (const p of r.picks.slice(1)) assert.notEqual(days[p.g].slice(0, 7), days[p.g + 1].slice(0, 7));
+});
+
+test('model: falls back while warming up, then fits; no lookahead', () => {
+  assert.equal(S.fitModel(U_FULL, { asOf: 160, ids: ['earn'] }).status, 'warming-up');
+  const a = S.fitModel(U_FULL, { asOf: 420, ids: ['earn', 'fund'] });
+  assert.equal(a.status, 'ok'); assert.equal(a.beta.length, 3); assert.deepEqual(a.features, ['trend', 'earn', 'fund']);
+  const b = S.fitModel(U_CUT(420), { asOf: 420, ids: ['earn', 'fund'] });
+  a.beta.forEach((v, k) => close(v, b.beta[k], 1e-12));
+  // heavy shrinkage → the trend coefficient stays positive (the prior)
+  const strong = S.fitModel(U_FULL, { asOf: 420, ids: ['earn'], lambda: 1e6 });
+  assert.ok(strong.beta[0] > 0 && Math.abs(strong.beta[1]) < Math.abs(strong.beta[0]));
+});
+
+test('model scorer: walk-forward pruning and no lookahead', () => {
+  const book = S.createScoreBook(U_FULL, {}), bookCut = S.createScoreBook(U_CUT(430), {});
+  const a = S.createModelScorer(U_FULL, book.signalsAt), b = S.createModelScorer(U_CUT(430), bookCut.signalsAt);
+  for (const sym of SYMS) close(a.scoreAt(sym, 430), b.scoreAt(sym, 430), 1e-12);
+  assert.ok(a.state.fits.length === 1 && Array.isArray(a.state.kept));
+});
+
+test('evidence: rank IC in [-1, 1] with honest (non-overlapping) samples', () => {
+  const book = S.createScoreBook(U_FULL, {});
+  const ev = S.agentEvidence(U_FULL, { signalsAt: book.signalsAt, from: 130, to: 480 });
+  for (const id of S.AGENT_IDS) { assert.ok(ev[id].mean >= -1 && ev[id].mean <= 1); assert.ok(ev[id].n <= Math.ceil((480 - 130) / 21)); }
+  const t = S.rankIC(U_FULL, (s, i) => S.trendScore(U_FULL.F[s], i), { from: 130, to: 480 });
+  assert.ok(Number.isFinite(t.mean));
+});
+
+test('optimiser objective: a drawdown cap penalises deep drops', async () => {
+  const free = await S.optimiseSettings(U_FULL, { asOf: 420, days: 100, objective: 'return' });
+  const capped = await S.optimiseSettings(U_FULL, { asOf: 420, days: 100, ddCap: 0.01 });
+  assert.equal(free.objective, 'return'); assert.equal(capped.objective, 'balanced');
+  assert.ok(capped.best.obj <= capped.best.ret + 1e-12);
 });

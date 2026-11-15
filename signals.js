@@ -870,6 +870,263 @@
     return { stopPct, tpPct, notional: base * (0.5 + 0.5 * clamp(confidence, 0, 1)) };
   }
 
+  // ── Trading costs ──────────────────────────────────────────────────────────
+  // One number per trade side, in basis points: half the bid/ask spread + slippage + commission.
+  // Engines buy at price × (1 + cost) and sell at price × (1 − cost).
+  const COST_PROFILES = {
+    alpaca:    { label: 'Alpaca (no commission)', bps: 5 },   // ~2bp half-spread on large caps + ~3bp slippage
+    ig:        { label: 'IG spread bet',          bps: 12 },  // wider quoted spread on US share spread bets
+    fictional: { label: 'Fictional market',       bps: 5 },
+  };
+  const costOf = (o) => (o.costBps != null ? o.costBps / 1e4 : (o.slip ?? 0.0005));
+
+  // ── Rank & tilt ────────────────────────────────────────────────────────────
+  // Fully invested in the top-K stocks by a score, re-ranked at each month end (decision at the last
+  // close of the month, trades at the next open). Swap-only: dropped names are sold, new names bought
+  // with an equal share of equity; holdings that stay are not resized, keeping turnover and costs low.
+  // Default score: the trend score (return from 6 months ago to 1 month ago).
+  function trendScore(F, i, p = DEFAULT_PARAMS.earn) {
+    const lb = p.lookback ?? 126, skip = p.skip ?? 21;
+    return i >= lb ? F.c[i - skip] / F.c[i - lb] - 1 : NaN;
+  }
+
+  function monthEnd(U, g) {
+    for (const s of U.syms) {
+      const F = U.F[s], i = g - U.off[s];
+      if (F.t && F.t[i] && F.t[i + 1]) return String(F.t[i]).slice(0, 7) !== String(F.t[i + 1]).slice(0, 7);
+      if (F.t && F.t[i] && !F.t[i + 1]) return false;
+    }
+    return null; // no dates: caller falls back to every 21 bars
+  }
+
+  function runTilt(U, o = {}) {
+    const start = Math.max(o.start ?? 130, 130), end = Math.min(o.end ?? U.L - 1, U.L - 1);
+    const capital = o.capital ?? 100000, cost = costOf(o), frac = o.investFraction ?? 1;
+    const N = U.syms.length, K = Math.max(1, Math.min(N, o.topK ?? Math.ceil(N / 2)));
+    const scoreAt = o.scoreAt || ((sym, i) => trendScore(U.F[sym], i, mergeParams(o.params).earn));
+    let cash = capital;
+    const pos = {}; // sym → { qty, entry, entryG }
+    const trades = [], curve = [], bench = [], days = [], picks = [];
+    let orders = null, traded = 0, invSum = 0, rebalances = 0;
+    for (let g = start; g <= end; g++) {
+      if (orders) {
+        let eqOpen = cash;
+        for (const s of Object.keys(pos)) { const F = U.F[s]; eqOpen += pos[s].qty * F.o[g - U.off[s]]; }
+        for (const s of orders.sell) {
+          const F = U.F[s], i = g - U.off[s], p = pos[s];
+          if (!p || i < 0) continue;
+          const px = F.o[i] * (1 - cost);
+          cash += p.qty * px; traded += p.qty * px;
+          trades.push({ sym: s, entry: p.entry, exit: px, qty: p.qty, pnl: (px - p.entry) * p.qty, pnlPct: px / p.entry - 1, entryG: p.entryG, exitG: g, reason: 'REBALANCE' });
+          delete pos[s];
+        }
+        const per = eqOpen * frac / K;
+        for (const s of orders.buy) {
+          const F = U.F[s], i = g - U.off[s];
+          if (pos[s] || i < 0) continue;
+          const px = F.o[i] * (1 + cost), val = Math.min(cash, per);
+          if (val <= 1) continue;
+          pos[s] = { qty: val / px, entry: px, entryG: g }; cash -= val; traded += val;
+        }
+        orders = null;
+      }
+      let eq = cash;
+      for (const s of Object.keys(pos)) { const F = U.F[s]; eq += pos[s].qty * F.c[g - U.off[s]]; }
+      let bsum = 0, bn = 0;
+      for (const s of U.syms) { const i = g - U.off[s], i0 = start - U.off[s]; if (i0 >= 0) { bsum += U.F[s].c[i] / U.F[s].c[i0]; bn++; } }
+      curve.push(eq); bench.push(bn ? capital * bsum / bn : capital); days.push(g);
+      invSum += (eq - cash) / eq;
+      if (g === end) break;
+      const me = monthEnd(U, g);
+      const rebalance = g === start || (me == null ? (g - start) % 21 === 0 : me);
+      if (!rebalance) continue;
+      const ranked = U.syms
+        .map(s => [s, scoreAt(s, g - U.off[s])])
+        .filter(x => Number.isFinite(x[1]))
+        .sort((a, b) => b[1] - a[1]);
+      if (ranked.length < K) continue;
+      const keep = new Set(ranked.slice(0, K).map(x => x[0]));
+      orders = { sell: Object.keys(pos).filter(s => !keep.has(s)), buy: [...keep].filter(s => !pos[s]) };
+      picks.push({ g, keep: [...keep] });
+      rebalances++;
+    }
+    for (const s of Object.keys(pos)) {
+      const F = U.F[s], i = end - U.off[s], p = pos[s];
+      trades.push({ sym: s, entry: p.entry, exit: F.c[i], qty: p.qty, pnl: (F.c[i] - p.entry) * p.qty, pnlPct: F.c[i] / p.entry - 1, entryG: p.entryG, exitG: end, reason: 'END' });
+    }
+    const rets = curve.slice(1).map((v, k) => v / curve[k] - 1);
+    const mu = rets.reduce((s, r) => s + r, 0) / (rets.length || 1);
+    const sd = Math.sqrt(rets.reduce((s, r) => s + (r - mu) ** 2, 0) / (rets.length || 1));
+    let peak = -Infinity, maxDD = 0;
+    for (const v of curve) { peak = Math.max(peak, v); maxDD = Math.min(maxDD, (v - peak) / peak); }
+    const avgEq = curve.reduce((s, v) => s + v, 0) / (curve.length || 1);
+    const years = Math.max(1 / 252, curve.length / 252);
+    return {
+      curve, bench, days, trades, picks,
+      finalEq: curve[curve.length - 1] ?? capital,
+      totalReturn: (curve[curve.length - 1] ?? capital) / capital - 1,
+      benchReturn: (bench[bench.length - 1] ?? capital) / capital - 1,
+      tradeCount: trades.length, rebalances,
+      winRate: trades.length ? trades.filter(t => t.pnl > 0).length / trades.length : 0,
+      avgTradePct: trades.length ? trades.reduce((s, t) => s + t.pnlPct, 0) / trades.length : 0,
+      sharpe: sd > 0 ? (mu / sd) * Math.sqrt(252) : 0, maxDD,
+      invested: curve.length ? invSum / curve.length : 0,
+      turnover: traded / avgEq / years, // traded value per year, in multiples of equity
+    };
+  }
+
+  // ── Combination model ──────────────────────────────────────────────────────
+  // Agents as scores: each agent's call on a stock becomes a number in [−1, 1] (direction × strength).
+  // A ridge regression turns the raw trend score plus those agent scores into an expected next-H-day
+  // return relative to the other stocks that day. It is shrunk toward a prior that only trusts the trend
+  // score, so with little or noisy data it ranks like the plain trend score and moves away only as
+  // evidence accumulates.
+  const MODEL = { H: 21, window: 500, step: 5, lambda: 1.0, priorIC: 0.05 };
+
+  function solve(A, b) { // Gaussian elimination with partial pivoting (small dense systems)
+    const n = b.length, M = A.map((r, k) => [...r, b[k]]);
+    for (let c = 0; c < n; c++) {
+      let p = c;
+      for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+      [M[c], M[p]] = [M[p], M[c]];
+      if (Math.abs(M[c][c]) < 1e-12) continue;
+      for (let r = 0; r < n; r++) {
+        if (r === c) continue;
+        const f = M[r][c] / M[c][c];
+        for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+      }
+    }
+    return M.map((r, k) => (Math.abs(r[k]) < 1e-12 ? 0 : r[n] / r[k]));
+  }
+
+  const scoreVec = (sig, ids) => ids.map(id => (sig && sig[id] ? sig[id].dir * sig[id].strength : 0));
+  // Model features: the raw trend score (6 months to 1 month ago) first, then the chosen agents' scores
+  const featureVec = (U, sym, i, sig, ids) => { const t = trendScore(U.F[sym], i); return [fin(t) ? t : 0, ...scoreVec(sig, ids)]; };
+
+  // Fit on calls made in (asOf − H − window, asOf − H]: only outcomes known by `asOf`.
+  function fitModel(U, o) {
+    const m = { ...MODEL, ...o };
+    const ids = m.ids || AGENT_IDS;
+    const signalsAt = m.signalsAt || ((s, i) => agentSignals(U, s, i, m.params));
+    const X = [], y = [];
+    const last = m.asOf - m.H, first = Math.max(130, last - m.window + 1);
+    for (let d = last; d >= first; d -= m.step) {
+      const rowsX = [], rowsY = [];
+      for (const s of U.syms) {
+        const F = U.F[s], i = d - U.off[s];
+        if (i < 130 || i + m.H > F.n - 1) continue;
+        const r = F.c[i + m.H] / F.o[i + 1] - 1;
+        if (!fin(r)) continue;
+        rowsX.push(featureVec(U, s, i, signalsAt(s, i), ids)); rowsY.push(r);
+      }
+      if (rowsX.length < 5) continue;
+      // cross-sectional demeaning: the model predicts which stocks beat the others, not the market
+      const my = rowsY.reduce((a, b) => a + b, 0) / rowsY.length;
+      const mx = rowsX[0].map((_, k) => rowsX.reduce((a, r) => a + r[k], 0) / rowsX.length);
+      rowsX.forEach((r, j) => { X.push(r.map((v, k) => v - mx[k])); y.push(rowsY[j] - my); });
+    }
+    const n = y.length, p = ids.length + 1;
+    if (n < 50) return { ids, beta: null, n, status: 'warming-up' };
+    const sd = Array.from({ length: p }, (_, k) => Math.sqrt(X.reduce((a, r) => a + r[k] ** 2, 0) / n) || 1);
+    const sdy = Math.sqrt(y.reduce((a, v) => a + v * v, 0) / n) || 1;
+    const Z = X.map(r => r.map((v, k) => v / sd[k]));
+    // prior: trust the trend score at a modest information coefficient, nothing else
+    const prior = Array.from({ length: p }, (_, k) => (k === 0 ? m.priorIC * sdy : 0));
+    const lam = m.lambda * n;
+    const A = prior.map((_, a) => prior.map((__, b) => Z.reduce((s, r) => s + r[a] * r[b], 0) + (a === b ? lam : 0)));
+    const rhs = prior.map((_, a) => Z.reduce((s, r, j) => s + r[a] * y[j], 0) + lam * prior[a]);
+    const beta = solve(A, rhs);
+    return { ids, beta, sd, n, status: 'ok', fittedAt: m.asOf, H: m.H, features: ['trend', ...ids] };
+  }
+
+  // Model score for one stock (higher = expected to beat the other stocks)
+  function modelScore(model, sig, U, sym, i) {
+    if (!model || !model.beta) return NaN;
+    const x = featureVec(U, sym, i, sig, model.ids);
+    return x.reduce((s, v, k) => s + model.beta[k] * v / model.sd[k], 0);
+  }
+
+  // Rank correlation (Spearman) of a score with the next-H-day return across stocks, averaged over days.
+  // With step = H the days don't overlap, so the t-statistic is honest.
+  function rankIC(U, scoreFn, { from, to, H = 21, step = 21 } = {}) {
+    const rank = (v) => { const o = v.map((x, i) => [x, i]).sort((a, b) => a[0] - b[0]); const r = new Array(v.length); o.forEach(([, i], k) => { r[i] = k; }); return r; };
+    const ics = [];
+    for (let d = Math.max(130, from); d <= to - H; d += step) {
+      const a = [], b = [];
+      for (const s of U.syms) {
+        const F = U.F[s], i = d - U.off[s];
+        if (i < 130 || i + H > F.n - 1) continue;
+        const sc = scoreFn(s, i), r = F.c[i + H] / F.o[i + 1] - 1;
+        if (!fin(sc) || !fin(r)) continue;
+        a.push(sc); b.push(r);
+      }
+      if (a.length < 5 || new Set(a).size < 2) continue;
+      const ra = rank(a), rb = rank(b), n = a.length, ma = (n - 1) / 2;
+      let num = 0, da = 0, db = 0;
+      for (let k = 0; k < n; k++) { num += (ra[k] - ma) * (rb[k] - ma); da += (ra[k] - ma) ** 2; db += (rb[k] - ma) ** 2; }
+      ics.push(num / Math.sqrt(da * db));
+    }
+    const n = ics.length, mean = n ? ics.reduce((a, b) => a + b, 0) / n : 0;
+    const sd = n > 1 ? Math.sqrt(ics.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1)) : 0;
+    return { mean, t: sd > 0 ? mean / (sd / Math.sqrt(n)) : 0, n };
+  }
+
+  // Evidence per agent: rank IC of its score for next-month relative returns
+  function agentEvidence(U, o = {}) {
+    const signalsAt = o.signalsAt || ((s, i) => agentSignals(U, s, i, o.params));
+    const from = o.from ?? 130, to = o.to ?? U.L - 1;
+    const out = {};
+    for (const id of o.ids || AGENT_IDS) {
+      out[id] = rankIC(U, (s, i) => { const sg = signalsAt(s, i); return sg && sg[id] ? sg[id].dir * sg[id].strength : 0; }, { from, to, H: o.H ?? 21 });
+    }
+    return out;
+  }
+
+  // Walk-forward model ranking for Rank & tilt. Every `refit` bars:
+  //  1. measure each agent's evidence on the history so far and keep agents with positive evidence (t ≥ tMin)
+  //  2. watch-it-first gate (gate: true): a candidate fitted only on data known `testDays` ago must rank
+  //     stocks better (rank IC) than the current scorer over those `testDays`, which it never saw;
+  //     if so it is adopted, refitted on all data known now
+  // Until a model is adopted it ranks by the plain trend score.
+  function createModelScorer(U, signalsAt, o = {}) {
+    const refit = o.refit ?? 63, tMin = o.tMin ?? 1, testDays = o.testDays ?? 60, gate = o.gate !== false, H = MODEL.H;
+    const state = { model: null, lastFit: -Infinity, kept: [], fits: [] };
+    const scoreWith = (model) => (sym, i) => {
+      const sc = model && model.beta ? modelScore(model, signalsAt(sym, i), U, sym, i) : NaN;
+      return fin(sc) ? sc : trendScore(U.F[sym], i);
+    };
+    const keptAt = (g) => {
+      const ev = agentEvidence(U, { signalsAt, from: 130, to: g });
+      return { ev, kept: AGENT_IDS.filter(id => ev[id].mean > 0 && ev[id].t >= tMin) };
+    };
+    const scoreAt = (sym, i) => {
+      const g = i + U.off[sym];
+      if (g - state.lastFit >= refit || g < state.lastFit) {
+        state.lastFit = g;
+        let adopt = true, icNew = null, icCur = null;
+        if (gate) {
+          const past = keptAt(g - testDays);
+          const cand = fitModel(U, { asOf: g - testDays, ids: past.kept, signalsAt });
+          if (!cand.beta) adopt = false;
+          else {
+            const win = { from: g - testDays - H + 1, to: g, H, step: 5 };
+            icNew = rankIC(U, scoreWith(cand), win).mean;
+            icCur = rankIC(U, scoreWith(state.model), win).mean;
+            adopt = icNew > icCur;
+          }
+        }
+        if (adopt) {
+          const now = keptAt(g);
+          const m = fitModel(U, { asOf: g, ids: now.kept, signalsAt });
+          if (m.beta) { state.model = m; state.kept = now.kept; state.evidence = now.ev; }
+        }
+        state.fits.push({ g, adopted: adopt, kept: state.kept, beta: state.model?.beta || null, icNew, icCur });
+      }
+      return scoreWith(state.model)(sym, i);
+    };
+    return { scoreAt, state };
+  }
+
   // ── Walk-forward portfolio backtest ────────────────────────────────────────
   // Signals at day g's close, entries at day g+1's open, ATR stops/targets checked against each day's
   // high/low (stop assumed first if both are hit), time stop after maxHold days.
@@ -877,7 +1134,7 @@
     const ids = o.ids || AGENT_IDS;
     const signalsAt = o.signalsAt || ((sym, i) => agentSignals(U, sym, i, o.params));
     const start = Math.max(o.start ?? 0, 60), end = Math.min(o.end ?? U.L - 1, U.L - 1);
-    const capital = o.capital ?? 100000, slip = o.slip ?? 0.0005;
+    const capital = o.capital ?? 100000, slip = costOf(o);
     const minConf = o.minConf ?? 0.3, minCons = o.minConsensus ?? 2, maxPos = o.maxPos ?? 8;
     const atrStop = o.atrStop ?? 2, atrTarget = o.atrTarget ?? 3, maxHold = o.maxHold ?? 10;
     const weights = { ...(o.weights || {}) };
@@ -1245,7 +1502,7 @@
   // the next open. A daily loss beyond `dailyLoss`% blocks buying the next day.
   function runInvested(U, o = {}) {
     const start = Math.max(o.start ?? 60, 60), end = Math.min(o.end ?? U.L - 1, U.L - 1);
-    const capital = o.capital ?? 100000, slip = o.slip ?? 0.0005, frac = o.investFraction ?? 0.9;
+    const capital = o.capital ?? 100000, slip = costOf(o), frac = o.investFraction ?? 0.9;
     const minConf = o.minConf ?? 0.55;
     const signalsAt = o.signalsAt || ((sym, i) => agentSignals(U, sym, i, o.params));
     const weightsAt = o.weightsAt || (() => o.weights || {});
@@ -1325,7 +1582,9 @@
   // Coordinate search: starting from the current settings, try every value of one setting at a time and
   // keep any improvement; two passes.
   const OPT_SPACE = {
-    style: ['invested', 'both'],
+    style: ['tilt', 'invested', 'both'],
+    topK: [6, 8, 12, 16],
+    score: ['trend', 'model'],
     agents: ['default', 'swarm', ...AGENT_IDS],
     minConf: [0.45, 0.55, 0.65, 0.75],
     investFraction: [0.6, 0.8, 1.0],
@@ -1347,7 +1606,7 @@
     return { ...base, [agent]: { ...(base[agent] || {}), [key]: value } };
   }
 
-  function createEvaluator(U, baseParams = {}) {
+  function createEvaluator(U, baseParams = {}, costBps) {
     const books = new Map();
     const bookFor = (params) => {
       const k = JSON.stringify(params);
@@ -1357,11 +1616,17 @@
     return (cfg, from, to) => {
       const book = bookFor(configParams(cfg, baseParams));
       const weights = configWeights(cfg);
+      const costs = costBps != null ? { costBps } : {};
+      if (cfg.style === 'tilt') {
+        const scoreAt = cfg.score === 'model' ? createModelScorer(U, book.signalsAt).scoreAt : undefined;
+        const r = runTilt(U, { start: from, end: to, topK: cfg.topK, investFraction: cfg.investFraction, scoreAt, params: configParams(cfg, baseParams), ...costs });
+        return { ret: r.totalReturn, bench: r.benchReturn, sharpe: r.sharpe, maxDD: r.maxDD, trades: r.tradeCount, curve: r.curve, benchCurve: r.bench, turnover: r.turnover };
+      }
       const r = cfg.style === 'both'
         ? runBacktest(U, { start: from, end: to, weights, signalsAt: book.signalsAt, minConf: cfg.minConf, minConsensus: 1,
             maxPos: 25, riskPct: 1, maxTradePct: 5, atrStop: cfg.atrStop, atrTarget: cfg.atrTarget, maxHold: cfg.maxHold,
-            regimeAware: false, corrAware: false })
-        : runInvested(U, { start: from, end: to, weights, signalsAt: book.signalsAt, minConf: cfg.minConf, investFraction: cfg.investFraction });
+            regimeAware: false, corrAware: false, ...costs })
+        : runInvested(U, { start: from, end: to, weights, signalsAt: book.signalsAt, minConf: cfg.minConf, investFraction: cfg.investFraction, ...costs });
       return { ret: r.totalReturn, bench: r.benchReturn, sharpe: r.sharpe, maxDD: r.maxDD, trades: r.tradeCount, curve: r.curve, benchCurve: r.bench };
     };
   }
@@ -1371,13 +1636,18 @@
   async function optimiseSettings(U, o) {
     const days = Math.round(o.days), to = o.asOf, from = to - days + 1;
     if (from < OPT_WARMUP) return { error: `Need ${OPT_WARMUP + days} days of history for a ${days}-day window; this data has ${to + 1}.` };
-    const evaluate = createEvaluator(U, o.params || {});
-    const startCfg = { style: 'invested', agents: 'default', minConf: 0.55, investFraction: 0.9, atrStop: 2, atrTarget: 3, maxHold: 7, param: null, ...o.start };
+    const evaluate = createEvaluator(U, o.params || {}, o.costBps);
+    const startCfg = { style: 'tilt', agents: 'default', minConf: 0.55, investFraction: 0.9, atrStop: 2, atrTarget: 3, maxHold: 7, topK: Math.ceil(U.syms.length / 2), score: 'trend', param: null, ...o.start };
+    // Objective: after-cost return, minus a penalty for any drawdown beyond the cap (o.ddCap, e.g. 0.15).
+    // Maximising raw return over a short window mostly rewards luck and concentration.
+    const objective = (r) => (o.objective === 'return' || o.ddCap == null ? r.ret : r.ret - 2 * Math.max(0, -r.maxDD - o.ddCap));
     let evals = 0;
-    const score = async (cfg) => { evals++; if (evals % 2 === 0) await tick(); return evaluate(cfg, from, to); };
+    const score = async (cfg) => { evals++; if (evals % 2 === 0) await tick(); const r = evaluate(cfg, from, to); return { ...r, obj: objective(r) }; };
     const baseline = { cfg: startCfg, ...(await score(startCfg)) };
     let best = baseline;
+    // Fewer settings = fewer chances to fit noise: each style searches only what it uses
     const dims = (cfg) => {
+      if (cfg.style === 'tilt') return ['style', 'topK', 'score', 'investFraction'];
       const d = ['style', 'agents', 'minConf'];
       if (cfg.style === 'both') d.push('atrStop', 'atrTarget', 'maxHold'); else d.push('investFraction');
       if (TUNE_KEYS[cfg.agents]) d.push('param');
@@ -1390,9 +1660,12 @@
         return [null, ...key.values.map(v => ({ agent: cfg.agents, key: key.id, value: v }))];
       }
       if ((dim === 'investFraction' && cfg.style === 'both') || (['atrStop', 'atrTarget', 'maxHold'].includes(dim) && cfg.style !== 'both')) return [];
+      if (['topK', 'score'].includes(dim) && cfg.style !== 'tilt') return [];
+      if (['agents', 'minConf', 'param'].includes(dim) && cfg.style === 'tilt') return [];
+      if (dim === 'topK') return [...new Set([cfg.topK, ...OPT_SPACE.topK])].filter(k => k >= 2 && k < U.syms.length);
       return [...new Set([cfg[dim], ...OPT_SPACE[dim]])];
     };
-    const total = 2 * (3 + 4 + 18 + 4 + 3 + 6); // rough, for the progress bar
+    const total = 2 * (3 + 4 + 2 + 3 + 18 + 4 + 6); // rough, for the progress bar
     for (let pass = 0; pass < 2; pass++) {
       let improved = false;
       for (const dim of dims(best.cfg)) {
@@ -1401,7 +1674,7 @@
           const cfg = { ...best.cfg, [dim]: v };
           if (dim === 'agents' && cfg.param && cfg.param.agent !== v) cfg.param = null; // a tuned setting belongs to its agent
           const r = await score(cfg);
-          if (r.ret > best.ret + 1e-9) { best = { cfg, ...r }; improved = true; }
+          if (r.obj > best.obj + 1e-9) { best = { cfg, ...r }; improved = true; }
           if (o.onProgress) o.onProgress(Math.min(0.99, evals / total));
         }
       }
@@ -1410,17 +1683,21 @@
     // Held-out check: the same two configs on the `days` before the window — data the search never saw
     let heldOut = null;
     if (from - days >= OPT_WARMUP) {
-      heldOut = { from: from - days, to: from - 1, best: evaluate(best.cfg, from - days, from - 1), baseline: evaluate(startCfg, from - days, from - 1) };
+      const hb = evaluate(best.cfg, from - days, from - 1), hc = evaluate(startCfg, from - days, from - 1);
+      heldOut = { from: from - days, to: from - 1, best: { ...hb, obj: objective(hb) }, baseline: { ...hc, obj: objective(hc) } };
     }
     if (o.onProgress) o.onProgress(1);
-    return { from, to, days, baseline, best, heldOut, evals };
+    const changed = JSON.stringify(best.cfg) !== JSON.stringify(startCfg);
+    // Gate: settings may only be applied if they also beat the current ones on the held-out days
+    const canApply = changed && heldOut != null && heldOut.best.obj > heldOut.baseline.obj;
+    return { from, to, days, baseline, best, heldOut, evals, changed, canApply, objective: o.objective === 'return' || o.ddCap == null ? 'return' : 'balanced', ddCap: o.ddCap };
   }
 
   // Frozen vs previous settings (each with its own agent parameters) and buy-and-hold, on [from, to].
   function compareSettings(U, { frozen, before, from, to }) {
     if (to - from + 1 < 1) return null;
-    const a = createEvaluator(U, frozen.params || {})(frozen.cfg, from, to);
-    const b = createEvaluator(U, before.params || {})(before.cfg, from, to);
+    const a = createEvaluator(U, frozen.params || {}, frozen.costBps)(frozen.cfg, from, to);
+    const b = createEvaluator(U, before.params || {}, before.costBps)(before.cfg, from, to);
     return { from, to, days: to - from + 1, frozen: a, before: b, bench: a.bench };
   }
 
@@ -1476,6 +1753,7 @@
     runBacktest, evaluateAgents, synthUniverseBars,
     TUNE_KEYS, AUTOPILOT, createScoreBook, proposeWeights, tuneParam, runInvested,
     OPT_SPACE, OPT_WARMUP, configWeights, configParams, createEvaluator, optimiseSettings, compareSettings,
+    COST_PROFILES, trendScore, runTilt, MODEL, fitModel, modelScore, rankIC, agentEvidence, createModelScorer,
   };
   root.ShoalSignals = api;
 })(typeof window !== 'undefined' ? window : globalThis);

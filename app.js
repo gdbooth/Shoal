@@ -149,7 +149,9 @@ app.delete('/api/orders/:id', auth, proxy(req => req.session.cancelOrder(req.par
 app.get('/api/bars', auth, proxy(req => {
   const symbols = (req.query.symbols || '').split(',').filter(s => SYMBOL_RE.test(s)).slice(0, 30);
   if (!symbols.length) return { status: 400, body: { error: 'symbols required' } };
-  return req.session.bars(symbols);
+  // optional history length in calendar days (brokers that support it; capped at ~10 years)
+  const days = Math.max(200, Math.min(3700, parseInt(req.query.days, 10) || 1100));
+  return req.session.bars(symbols, days);
 }));
 
 // ── SSE stream: pushes account + positions + orders + clock (+ prices for IG) ─

@@ -63,6 +63,13 @@ test('orders, positions, bars pass through', async () => {
   const barsReq = seen.find(u => u.startsWith('GET /v2/stocks/bars'));
   assert.match(barsReq, /start=\d{4}-\d{2}-\d{2}/);
   assert.match(barsReq, /adjustment=split/);
+  // longer history on request (capped)
+  seen.length = 0;
+  await api('/api/bars?symbols=AAPL&days=99999');
+  const longReq = seen.find(u => u.startsWith('GET /v2/stocks/bars'));
+  const start = new URLSearchParams(longReq.split('?')[1]).get('start');
+  const ageDays = (Date.now() - Date.parse(start)) / 86400000;
+  assert.ok(ageDays > 3600 && ageDays < 3800, `start ${start}`);
   await api('/api/orders?token=x&status=open');
   assert.ok(seen.includes('GET /v2/orders?status=open&limit=100'), 'token param stripped');
 });

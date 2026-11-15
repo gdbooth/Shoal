@@ -1981,13 +1981,13 @@ let nextTradeId = 10000 + Math.floor(Math.random() * 80000); // sequential: rand
 
 // Risk levels: one choice sets the detailed risk values (still editable under Advanced).
 const RISK_LEVELS = {
-  cautious: { perTrade: 0.5, maxTradePct: 3,  maxPos: 15, confidence: 65, dailyLoss: 2, atrStop: 2.5, atrTarget: 3.5, investFraction: 0.6 },
-  balanced: { perTrade: 1.0, maxTradePct: 5,  maxPos: 25, confidence: 55, dailyLoss: 3, atrStop: 2,   atrTarget: 3,   investFraction: 0.9 },
-  bold:     { perTrade: 2.0, maxTradePct: 10, maxPos: 40, confidence: 45, dailyLoss: 5, atrStop: 1.5, atrTarget: 3,   investFraction: 1.0 },
+  cautious: { perTrade: 0.5, maxTradePct: 3,  maxPos: 15, confidence: 65, dailyLoss: 2, atrStop: 2.5, atrTarget: 3.5, investFraction: 0.6, topK: 16, ddCap: 0.10 },
+  balanced: { perTrade: 1.0, maxTradePct: 5,  maxPos: 25, confidence: 55, dailyLoss: 3, atrStop: 2,   atrTarget: 3,   investFraction: 0.9, topK: 12, ddCap: 0.15 },
+  bold:     { perTrade: 2.0, maxTradePct: 10, maxPos: 40, confidence: 45, dailyLoss: 5, atrStop: 1.5, atrTarget: 3,   investFraction: 1.0, topK: 8,  ddCap: 0.25 },
 };
 const RISK_DEFAULTS = {
   riskLevel: 'balanced', ...RISK_LEVELS.balanced,
-  style: 'invested', autopilot: false, autopilotFrozen: false, replaySource: 'auto',
+  style: 'tilt', autopilot: false, autopilotFrozen: false, replaySource: 'auto', costBps: 'auto', historyDays: 1100, pruneAgents: true,
   shorts: true, minAgentAccuracy: 35, autoDisableAgents: false, maxDisagreement: 65, maxSectorPct: 40,
   stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48, atrStops: true, regimeWeights: false, corrPenalty: false,
 };
@@ -1997,6 +1997,25 @@ const RISK_DEFAULTS = {
 // Autopilot, when on, starts from these and changes them only after beating them on days it hadn't seen.
 const defaultWeightsFor = (style) => Object.fromEntries(AGENTS.map(a => [a.id,
   style === 'both' ? 1 / AGENTS.length : (a.id === 'earn' ? 1 : 0)]));
+
+const styleLabel = (st) => (st === 'both' ? 'trade both ways' : st === 'invested' ? 'stay invested' : 'rank & tilt');
+// Trading cost per trade side (bps): the setting, or the profile for the data/broker in use
+const costBpsFor = (risk, U, brokerId) => {
+  const v = risk?.costBps;
+  if (v != null && v !== 'auto' && Number.isFinite(+v)) return +v;
+  if (U && U.fictional) return SS.COST_PROFILES.fictional.bps;
+  return brokerId === 'ig' ? SS.COST_PROFILES.ig.bps : SS.COST_PROFILES.alpaca.bps;
+};
+// Weights shown for the model: positive coefficients, the trend score counted under Trend Persistence
+const weightsFromModel = (model) => {
+  if (!model || !model.beta) return null;
+  const w = Object.fromEntries(AGENTS.map(a => [a.id, 0]));
+  model.features.forEach((f, k) => { const id = f === 'trend' ? 'earn' : f; if (id in w) w[id] += Math.max(0, model.beta[k] / model.sd[k]); });
+  const tot = Object.values(w).reduce((a, b) => a + b, 0);
+  if (!(tot > 0)) return null;
+  AGENTS.forEach(a => { w[a.id] /= tot; });
+  return w;
+};
 
 // Replay starts after a warm-up, so every indicator (and Autopilot's scoring window when there's enough
 // history) has data on the first replayed day. The fictional market starts exactly 2 years back.
@@ -2013,11 +2032,63 @@ const SIM_BARS = SS.synthUniverseBars(TICKERS.map(t => t.sym), SECTOR_OF, SEED, 
   Object.fromEntries(TICKERS.map(t => [t.sym, t.last * 0.78])));
 Object.values(SIM_BARS).forEach(b => { b.t = FICTION_DATES; });
 const SIM_U = SS.buildUniverse(SIM_BARS, SECTOR_OF);
+
+// Imported history: a CSV the user chooses, parsed locally (no upload, no network) and kept in this
+// browser's IndexedDB. Long format, one row per stock per day:
+//   date,symbol,open,high,low,close,volume   (date as YYYY-MM-DD; open/high/low/volume optional)
+const IMPORT_MAX_BYTES = 40 * 1024 * 1024, IMPORT_MAX_SYMBOLS = 60, IMPORT_MAX_DAYS = 6000;
+function parseBarsCsv(text) {
+  const lines = String(text).split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) throw new Error('The file has no data rows.');
+  const head = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/^"|"$/g, ''));
+  const col = (...names) => names.map(n => head.indexOf(n)).find(i => i >= 0);
+  const ci = { d: col('date', 'day', 'timestamp'), s: col('symbol', 'ticker'), o: col('open'), h: col('high'), l: col('low'), c: col('close', 'adj close', 'adj_close'), v: col('volume') };
+  if (ci.d == null || ci.s == null || ci.c == null) throw new Error('Need at least date, symbol and close columns.');
+  const bySym = new Map();
+  let skipped = 0;
+  for (let k = 1; k < lines.length; k++) {
+    const f = lines[k].split(',').map(x => x.trim().replace(/^"|"$/g, ''));
+    const sym = (f[ci.s] || '').toUpperCase(), date = (f[ci.d] || '').slice(0, 10), c = +f[ci.c];
+    if (!/^[A-Z0-9.\-]{1,10}$/.test(sym) || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !(c > 0) || !Number.isFinite(c)) { skipped++; continue; }
+    const num = (i, d) => { const x = i == null ? NaN : +f[i]; return Number.isFinite(x) && x > 0 ? x : d; };
+    const o = num(ci.o, c), h = Math.max(num(ci.h, Math.max(o, c)), o, c), l = Math.min(num(ci.l, Math.min(o, c)), o, c);
+    const v = ci.v == null ? 0 : (Number.isFinite(+f[ci.v]) && +f[ci.v] >= 0 ? +f[ci.v] : 0);
+    if (!bySym.has(sym)) { if (bySym.size >= IMPORT_MAX_SYMBOLS) { skipped++; continue; } bySym.set(sym, new Map()); }
+    bySym.get(sym).set(date, { o, h, l, c, v });
+  }
+  if (bySym.size < 3) throw new Error('Need at least 3 symbols with valid rows.');
+  // align on the dates most symbols share; drop symbols with less than 80% of the longest history
+  const maxLen = Math.max(...[...bySym.values()].map(m => m.size));
+  const keep = [...bySym.entries()].filter(([, m]) => m.size >= 0.8 * maxLen);
+  const dropped = [...bySym.keys()].filter(sym => !keep.some(([k]) => k === sym));
+  let dates = [...keep[0][1].keys()].filter(d => keep.every(([, m]) => m.has(d))).sort();
+  if (dates.length > IMPORT_MAX_DAYS) dates = dates.slice(-IMPORT_MAX_DAYS);
+  if (dates.length < 200) throw new Error(`Only ${dates.length} dates are shared by all symbols; need at least 200.`);
+  const bars = {};
+  for (const [sym, m] of keep) {
+    const b = { o: [], h: [], l: [], c: [], v: [], t: dates };
+    for (const d of dates) { const x = m.get(d); b.o.push(x.o); b.h.push(x.h); b.l.push(x.l); b.c.push(x.c); b.v.push(x.v); }
+    bars[sym] = b;
+  }
+  return { bars, symbols: keep.map(([k]) => k), from: dates[0], to: dates[dates.length - 1], days: dates.length, dropped, skipped };
+}
+const buildImportedUniverse = (imp) => {
+  const U = SS.buildUniverse(imp.bars, Object.fromEntries(imp.symbols.map(s2 => [s2, SECTOR_OF[s2] || 'Other'])));
+  U.imported = true; U.meta = { from: imp.from, to: imp.to, days: imp.days, symbols: imp.symbols.length };
+  return U;
+};
+const idbStore = {
+  open: () => new Promise((res, rej) => { const r = indexedDB.open('shoal', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }),
+  async get(k) { const db = await idbStore.open(); return new Promise((res, rej) => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); },
+  async set(k, v) { const db = await idbStore.open(); return new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); },
+  async del(k) { const db = await idbStore.open(); return new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').delete(k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); },
+};
 SIM_U.fictional = true;
 
 // Which data SIMULATED replays: 'auto' = broker history when connected, otherwise the fictional market
-const replayUniverseFor = (source, live) => (source === 'broker' ? live : source === 'fictional' ? SIM_U : (live || SIM_U));
-const replayKey = (U) => (U && U.fictional ? 'fictional' : 'broker');
+const replayUniverseFor = (source, live, imported) => (source === 'broker' ? live : source === 'fictional' ? SIM_U
+  : source === 'imported' ? (imported || null) : (live || SIM_U));
+const replayKey = (U) => (U && U.fictional ? 'fictional' : U && U.imported ? 'imported' : 'broker');
 
 const PRICE_HISTORY = {};
 TICKERS.forEach(t => { PRICE_HISTORY[t.sym] = SIM_BARS[t.sym].c.slice(0, SIM_START); });
@@ -2709,7 +2780,7 @@ const StatusStrip = ({ ctx, mode }) => {
       for (const s of U.syms) { const F = U.F[s], i0 = info.anchor.g - U.off[s], i = info.g - U.off[s]; if (i0 >= 0 && i >= 0) { sum += F.c[i] / F.c[i0]; n++; } }
       bench = n ? sum / n - 1 : null;
       bot = info.anchor.equity > 0 ? (ctx.balance ?? 0) / info.anchor.equity - 1 : null;
-      label = `${U.fictional ? 'fictional market' : 'broker history'} · replay ${barDate(U, info.anchor.g)} → ${info.date} (${info.g - info.start + 1} of ${info.end - info.start + 1} days)`;
+      label = `${U.fictional ? 'fictional market' : U.imported ? 'imported history' : 'broker history'} · replay ${barDate(U, info.anchor.g)} → ${info.date} (${info.g - info.start + 1} of ${info.end - info.start + 1} days)`;
     } else if (mode !== 'SIMULATED') {
       const from = new Date(ctx?.tradesResetAt || 0).toISOString().slice(0, 10);
       let sum = 0, n = 0;
@@ -2851,7 +2922,7 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
     <div className="page" data-screen-label="01 Dashboard">
       <div className="page-head" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
         <div>
-          <div className="page-eyebrow">Dashboard · {mode === 'LIVE' ? 'Live trading' : mode === 'VIRTUAL' ? 'Broker paper · virtual' : 'History replay'} · {(ctx?.risk?.style === 'both') ? 'trade both ways' : 'stay invested'}{ctx?.risk?.autopilot ? ' · Autopilot' : ''}</div>
+          <div className="page-eyebrow">Dashboard · {mode === 'LIVE' ? 'Live trading' : mode === 'VIRTUAL' ? 'Broker paper · virtual' : 'History replay'} · {styleLabel(ctx?.risk?.style)}{ctx?.risk?.autopilot ? ' · Autopilot' : ''}</div>
           <h1 className="page-title">A swarm of {AGENTS.length} agents <em>currently disagreeing about the next 12 hours.</em></h1>
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
@@ -4243,7 +4314,7 @@ const STRAT_ENABLED = {
 function runBacktestSim(period, strategy, universe, opts = {}) {
   const periodDays = { '3M': 63, '6M': 126, '1Y': 252, '3Y': 756 }[period] || 252;
   const capital = 100000;
-  const style = opts.style === 'both' ? 'both' : 'invested';
+  const style = opts.style === 'both' ? 'both' : opts.style === 'tilt' ? 'tilt' : 'invested';
   const enabledSet = STRAT_ENABLED[strategy] || null;
   let weights;
   if (strategy === 'Equal weight') weights = Object.fromEntries(AGENTS.map(a => [a.id, 1 / AGENTS.length]));
@@ -4252,27 +4323,24 @@ function runBacktestSim(period, strategy, universe, opts = {}) {
   const end = universe.L - 1;
   const start = Math.max(130, end - periodDays);
   const book = SS.createScoreBook(universe, opts.params);
+  const costs = opts.costBps != null ? { costBps: opts.costBps } : {};
+  // Autopilot: the combination model (walk-forward, gated) — ranks for Rank & tilt, weights for the others
+  const ms = opts.autopilot && !enabledSet && strategy !== 'Equal weight' ? SS.createModelScorer(universe, book.signalsAt) : null;
   let weightsAt = null;
-  if (opts.autopilot && !enabledSet && strategy !== 'Equal weight') {
-    let cur = weights, last = -999;
-    weightsAt = (g) => {
-      if (g - last >= 5) {
-        last = g;
-        const p = SS.proposeWeights(book, g, cur, { style, minConf: (opts.confidence ?? 55) / 100 });
-        if (p.promote && !(style === 'invested' && p.status === 'no-edge')) cur = p.challenger;
-      }
-      return cur;
-    };
+  if (ms && style !== 'tilt') {
+    weightsAt = (g) => { const s0 = universe.syms[0]; ms.scoreAt(s0, g - universe.off[s0]); return weightsFromModel(ms.state.model) || weights; };
   }
-  const r = style === 'invested'
+  const r = style === 'tilt'
+    ? SS.runTilt(universe, { start, end, capital, topK: opts.topK, investFraction: opts.investFraction ?? 0.9, scoreAt: ms ? ms.scoreAt : undefined, params: opts.params, ...costs })
+    : style === 'invested'
     ? SS.runInvested(universe, { start, end, capital, weights, weightsAt, signalsAt: book.signalsAt,
-        minConf: (opts.confidence ?? 55) / 100, investFraction: opts.investFraction ?? 0.9, dailyLoss: opts.dailyLoss })
+        minConf: (opts.confidence ?? 55) / 100, investFraction: opts.investFraction ?? 0.9, dailyLoss: opts.dailyLoss, ...costs })
     : SS.runBacktest(universe, {
         start, end, capital, weights, weightsAt, enabled: enabledSet, signalsAt: book.signalsAt,
         minConf: (opts.confidence ?? 55) / 100, minConsensus: 1,
         maxPos: opts.maxPos ?? 25, riskPct: opts.perTrade ?? 1, maxTradePct: opts.maxTradePct ?? 5, atrStop: opts.atrStop ?? 2, atrTarget: opts.atrTarget ?? 3,
         maxHold: Math.max(1, Math.round((opts.maxHoldHours ?? 48) / 6.5)),
-        regimeAware: !!opts.regimeWeights, corrAware: !!opts.corrPenalty,
+        regimeAware: !!opts.regimeWeights, corrAware: !!opts.corrPenalty, ...costs,
       });
   const monthlyRets = Array.from({ length: 12 }, (_, m) => {
     const si = Math.floor(m * r.curve.length / 12);
@@ -4282,14 +4350,15 @@ function runBacktestSim(period, strategy, universe, opts = {}) {
   return {
     bot: r.curve, bench: r.bench, finalEq: r.finalEq,
     tradeCount: r.tradeCount, winRate: r.winRate, maxDD: r.maxDD, sharpe: r.sharpe, monthlyRets,
-    avgTradePct: r.avgTradePct, invested: r.invested, style,
+    avgTradePct: r.avgTradePct, invested: r.invested, style, turnover: r.turnover,
   };
 }
 
 // ── Optimiser ─────────────────────────────────────────────────────────────────────────────────────────
 // The app's current settings as an optimiser config (see SS.optimiseSettings)
 const configFromSettings = (risk, frozen) => ({
-  style: risk.style === 'both' ? 'both' : 'invested',
+  style: risk.style === 'both' ? 'both' : risk.style === 'tilt' ? 'tilt' : 'invested',
+  topK: risk.topK || 12, score: risk.autopilot ? 'model' : 'trend',
   agents: frozen ? frozen.cfg.agents : 'default',
   minConf: (risk.confidence ?? 55) / 100,
   investFraction: risk.investFraction ?? 0.9,
@@ -4298,6 +4367,7 @@ const configFromSettings = (risk, frozen) => ({
   param: frozen ? frozen.cfg.param : null,
 });
 const describeConfig = (cfg) => {
+  if (cfg.style === 'tilt') return `Rank & tilt · top ${cfg.topK} by ${cfg.score === 'model' ? 'model' : 'trend'} score · ${Math.round(cfg.investFraction * 100)}% invested · re-ranked monthly`;
   const who = cfg.agents === 'default' ? (cfg.style === 'both' ? 'the whole swarm' : 'Trend Persistence (default)')
     : cfg.agents === 'swarm' ? 'the whole swarm' : (AGENTS.find(a => a.id === cfg.agents)?.name || cfg.agents);
   const how = cfg.style === 'both'
@@ -4315,13 +4385,13 @@ const optimiserContext = (ctx) => {
   const sim = ctx?.mode === 'SIMULATED';
   const U = sim ? ctx?.replayUniverse : ctx?.liveUniverse;
   if (!U) return { U: null };
-  const live = sim && ctx?.replayInfo && ctx.replayInfo.g != null && ctx.replayInfo.fictional === !!U.fictional;
+  const live = sim && ctx?.replayInfo && ctx.replayInfo.g != null && ctx.replayInfo.key === replayKey(U);
   const asOf = sim ? (live ? ctx.replayInfo.g : replayStartFor(U) - 1) : U.L - 1;
   return { U, asOf, srcKey: replayKey(U), sim };
 };
 
 const ScreenOptimiser = ({ ctx, optimiser, onApplyFreeze, onUnfreeze, onRecordComparison }) => {
-  const [days, setDays] = React.useState(100);
+  const [days, setDays] = React.useState(250);
   const [running, setRunning] = React.useState(false);
   const [progress, setProgress] = React.useState(0);
   const [result, setResult] = React.useState(null);
@@ -4334,10 +4404,11 @@ const ScreenOptimiser = ({ ctx, optimiser, onApplyFreeze, onUnfreeze, onRecordCo
     setRunning(true); setError(null); setResult(null); setProgress(0);
     await new Promise(r => setTimeout(r, 30));
     const start = configFromSettings(ctx.risk || {}, frozen);
-    const r = await SS.optimiseSettings(oc.U, { asOf: oc.asOf, days, start, params: ctx.agentParams || {}, onProgress: setProgress });
+    const ddCap = (RISK_LEVELS[ctx.risk?.riskLevel] || RISK_LEVELS.balanced).ddCap;
+    const r = await SS.optimiseSettings(oc.U, { asOf: oc.asOf, days, start, params: ctx.agentParams || {}, onProgress: setProgress, costBps: ctx.costBps, ddCap });
     setRunning(false);
     if (r.error) { setError(r.error); return; }
-    setResult({ ...r, U: oc.U, srcKey: oc.srcKey, asOf: oc.asOf });
+    setResult({ ...r, U: oc.U, srcKey: oc.srcKey, asOf: oc.asOf, costBps: ctx.costBps });
   };
 
   const compare = () => {
@@ -4375,7 +4446,7 @@ const ScreenOptimiser = ({ ctx, optimiser, onApplyFreeze, onUnfreeze, onRecordCo
               {oc.U ? `${barDate(oc.U, Math.max(0, oc.asOf - days + 1))} → ${barDate(oc.U, oc.asOf)}. ${oc.sim ? 'In SIMULATED this ends at the day being replayed, so later replay days are new data for step 3.' : 'Ends at the latest bar; step 3 needs trading days after you freeze.'}` : ''}
             </div>
           </div>
-          <div className="mono tiny muted" style={{marginBottom:10}}>Searches: style, which agents decide, confidence threshold, share invested, ATR stop and target, holding period, and the deciding agent's main setting.</div>
+          <div className="mono tiny muted" style={{marginBottom:10}}>Goal: highest return after {ctx?.costBps ?? 5}bp trading costs per side, penalised for any drop beyond {Math.round(((RISK_LEVELS[ctx?.risk?.riskLevel] || RISK_LEVELS.balanced).ddCap) * 100)}% (your risk level). Searches each style's own settings: stocks held and score for Rank & tilt; deciding agents, confidence and share invested for Stay invested; stops, targets and holding period for Trade both ways. Applying requires passing the held-out check.</div>
           <button className="btn primary" style={{width:'100%'}} disabled={!oc.U || running} onClick={run}>{running ? `OPTIMISING… ${Math.round(progress * 100)}%` : `OPTIMISE THE LAST ${days} DAYS`}</button>
           {running && <div style={{height:3,background:'var(--line-2)',marginTop:8}}><div style={{height:3,width:`${progress * 100}%`,background:'var(--virtual)'}}></div></div>}
           {error && <div className="tiny" style={{color:'var(--down)',marginTop:10}}>{error}</div>}
@@ -4391,8 +4462,8 @@ const ScreenOptimiser = ({ ctx, optimiser, onApplyFreeze, onUnfreeze, onRecordCo
 
       {result && (() => {
         const b = result.best, c = result.baseline, ho = result.heldOut;
-        const changed = JSON.stringify(b.cfg) !== JSON.stringify(c.cfg);
-        const hoPass = ho ? ho.best.ret > ho.baseline.ret : null;
+        const changed = result.changed;
+        const hoPass = ho ? ho.best.obj > ho.baseline.obj : null;
         return (
           <div className="card" style={{marginBottom:16}}>
             <div className="card-head"><div className="card-title">Result · {barDate(result.U, result.from)} → {barDate(result.U, result.to)}</div><div className="card-meta">{result.evals} settings tried</div></div>
@@ -4411,7 +4482,8 @@ const ScreenOptimiser = ({ ctx, optimiser, onApplyFreeze, onUnfreeze, onRecordCo
                 : <>on the {result.days} days before the window ({barDate(result.U, ho.from)} → {barDate(result.U, ho.to)}), which the search never saw, the optimised settings returned <b>{pct1(ho.best.ret)}</b> vs <b>{pct1(ho.baseline.ret)}</b> for your current settings. {hoPass ? 'They hold up on unseen data: a reasonable sign, though not a guarantee.' : 'They do worse on unseen data: the optimised return is likely to be mostly luck, and freezing them would probably leave you worse off.'}</>}
             </div>
             <div style={{display:'flex',gap:8,marginTop:12}}>
-              <button className="btn primary" disabled={!changed} onClick={() => { onApplyFreeze(result); setResult(null); }}>APPLY &amp; FREEZE THESE SETTINGS</button>
+              <button className="btn primary" disabled={!result.canApply} onClick={() => { onApplyFreeze(result); setResult(null); }}>APPLY &amp; FREEZE THESE SETTINGS</button>
+              {!result.canApply && changed && <span className="mono tiny muted" style={{alignSelf:'center'}}>Locked: the settings didn't pass the held-out check.</span>}
               <button className="btn ghost" onClick={() => setResult(null)}>DISCARD</button>
             </div>
           </div>
@@ -4483,9 +4555,9 @@ const ScreenBacktest = ({ mode, ctx }) => {
   const [strategy, setStrategy]   = React.useState('Swarm v0.4');
   const [result, setResult]       = React.useState(null);
   // Broker history when connected; otherwise the fictional market (clearly labelled)
-  const universe = ctx?.liveUniverse || SIM_U;
-  const usingLive = !!ctx?.liveUniverse;
-  const btOpts = { ...(ctx?.risk || {}), params: ctx?.agentParams };
+  const universe = ctx?.analysisUniverse || SIM_U;
+  const usingLive = !universe.fictional;
+  const btOpts = { ...(ctx?.risk || {}), params: ctx?.agentParams, costBps: ctx?.costBps };
 
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -4514,10 +4586,12 @@ const ScreenBacktest = ({ mode, ctx }) => {
   return (
     <div className="page" data-screen-label="05 Backtest">
       <div className="page-head">
-        <div className="page-eyebrow">Backtest · {usingLive ? "your broker's daily bars" : 'fictional market (generated prices)'} · {(ctx?.risk?.style === 'both') ? 'trade both ways' : 'stay invested'}{ctx?.risk?.autopilot ? ' · Autopilot' : ''}</div>
+        <div className="page-eyebrow">Backtest · {usingLive ? "your broker's daily bars" : 'fictional market (generated prices)'} · {styleLabel(ctx?.risk?.style)}{ctx?.risk?.autopilot ? ' · Autopilot' : ''}</div>
         <h1 className="page-title">Replay the swarm <em>against the past.</em></h1>
         <p className="page-sub">{!usingLive && 'Fictional prices: useful to see how the strategy behaves, not evidence it works. Connect a broker to backtest real history. '}{(ctx?.risk?.style === 'both'
             ? `Walk-forward on ${universe.L} daily bars: agents recomputed from each day's bars only, entries at the next open, exits at the ATR stop, ATR target or time limit.`
+            : (ctx?.risk?.style || 'tilt') === 'tilt'
+            ? `Walk-forward on ${universe.L} daily bars: at each month end, rank the stocks by ${ctx?.risk?.autopilot ? 'the model score' : 'trend score'} using only data up to that day, hold the top ${ctx?.risk?.topK || 12} from the next open, after ${ctx?.costBps ?? 5}bp costs per trade side. The grey line holds everything throughout.`
             : `Walk-forward on ${universe.L} daily bars: hold every stock, sell one at the next open when the weakness signal fires, buy it back when it clears. The grey line holds everything throughout.`)}</p>
       </div>
 
@@ -4784,8 +4858,10 @@ window.ScreenMarket = ScreenMarket;
 <script type="text/babel" data-presets="react">
 // Settings screen — Alpaca connection + risk parameters
 
-const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset, onResetWeights, onExportWeights, onImportWeights, backendOk, autopilotLog = [], frozen = null, onOpenOptimiser }) => {
+const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset, onResetWeights, onExportWeights, onImportWeights, backendOk, autopilotLog = [], frozen = null, onOpenOptimiser, importedUniverse = null, onImportCsv, onRemoveImport, autoCostBps = 5 }) => {
   const [showAdvanced, setShowAdvanced] = React.useState(false);
+  const [importMsg, setImportMsg] = React.useState(null);
+  const importFileRef = React.useRef(null);
   const [showConnect, setShowConnect] = React.useState(false);
   const [connecting, setConnecting] = React.useState(false);
   const [connectErr, setConnectErr] = React.useState('');
@@ -4999,25 +5075,39 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
           <div className="field">
             <div className="field-label" style={{marginBottom:8}}>Style</div>
             <div className="tweak-opts">
-              <div className={'tweak-opt ' + (risk.style !== 'both' ? 'on' : '')} onClick={() => setRisk({ ...risk, style: 'invested' })}>Stay invested</div>
-              <div className={'tweak-opt ' + (risk.style === 'both' ? 'on' : '')} onClick={() => setRisk({ ...risk, style: 'both' })}>Trade both ways</div>
+              {[['tilt','Rank & tilt'],['invested','Stay invested'],['both','Trade both ways']].map(([k, label]) => (
+                <div key={k} className={'tweak-opt ' + ((risk.style || 'tilt') === k ? 'on' : '')} onClick={() => setRisk({ ...risk, style: k })}>{label}</div>
+              ))}
             </div>
             <div className="mono tiny muted" style={{marginTop:6}}>
               {risk.style === 'both'
                 ? 'Long and short trades when enough agents agree, with ATR stops and targets. On 2015–2018 daily data this lost to simply holding the stocks.'
-                : 'Hold all the stocks and sell one only when it shows weakness (Trend Persistence by default); buy it back when that clears. On 2015–2018 daily data: 88% vs 95% for holding everything, with a −10% worst drop instead of −15%.'}
+                : risk.style === 'invested'
+                ? 'Hold all the stocks and sell one only when it shows weakness (Trend Persistence by default); buy it back when that clears. On 2015–2018 daily data: 88% vs 95% for holding everything, with a −10% worst drop instead of −15%.'
+                : `Stay fully invested in the ${risk.topK || 12} stocks with the strongest trend (return from 6 months to 1 month ago), re-ranked at each month end. On 2013–2018 daily data, after costs: 223% vs 139% for holding all 23 stocks, ahead in 4 of 5 years. Most of the gap came from staying in NVDA and AMD through their 2016–17 run; without them it was 85% vs 74%. It works when strong trends exist — paper-trade it before going live.`}
             </div>
           </div>
 
           <div className="field">
             <div className="field-label" style={{marginBottom:8}}>Replay data <span className="muted">(SIMULATED mode)</span></div>
             <div className="tweak-opts">
-              {[['auto','Auto'],['fictional','Fictional'],['broker','Broker']].map(([k, label]) => (
-                <div key={k} className={'tweak-opt ' + ((risk.replaySource || 'auto') === k ? 'on' : '')} onClick={() => setRisk({ ...risk, replaySource: k })}>{label}</div>
+              {[['auto','Auto'],['fictional','Fictional'],['broker','Broker'],['imported','Imported']].map(([k, label]) => (
+                <div key={k} className={'tweak-opt ' + ((risk.replaySource || 'auto') === k ? 'on' : '')}
+                  style={k === 'imported' && !importedUniverse ? {opacity:0.4,pointerEvents:'none'} : undefined}
+                  onClick={() => setRisk({ ...risk, replaySource: k })}>{label}</div>
               ))}
             </div>
+            <div style={{display:'flex',gap:8,alignItems:'center',marginTop:8,flexWrap:'wrap'}}>
+              <button className="btn" style={{fontSize:10,padding:'4px 10px'}} onClick={() => importFileRef.current?.click()}>IMPORT CSV…</button>
+              {importedUniverse && <button className="btn ghost" style={{fontSize:10,padding:'4px 10px'}} onClick={async () => { await onRemoveImport(); setImportMsg(null); if (risk.replaySource === 'imported') setRisk({ ...risk, replaySource: 'auto' }); }}>REMOVE IMPORT</button>}
+              <input ref={importFileRef} type="file" accept=".csv,text/csv" style={{display:'none'}}
+                onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; if (!f) return; setImportMsg({ ok: true, msg: 'Reading…' }); const r = await onImportCsv(f); setImportMsg(r); if (r.ok) setRisk({ ...risk, replaySource: 'imported' }); }}/>
+              <span className="mono tiny muted">{importedUniverse ? `Imported: ${importedUniverse.meta.symbols} stocks, ${importedUniverse.meta.from} → ${importedUniverse.meta.to}` : 'Longer history for validation: one CSV with date,symbol,open,high,low,close,volume. Read in your browser only; never uploaded.'}</span>
+            </div>
+            {importMsg && <div className="tiny" style={{marginTop:6,color: importMsg.ok ? 'var(--ink-2)' : 'var(--down)'}}>{importMsg.msg}</div>}
             <div className="mono tiny muted" style={{marginTop:6}}>
-              {(risk.replaySource || 'auto') === 'fictional' ? 'Always replay the built-in fictional market: 2 years of generated prices ending today.'
+              {risk.replaySource === 'imported' ? 'Replay, backtest and optimise on the history you imported.'
+                : (risk.replaySource || 'auto') === 'fictional' ? 'Always replay the built-in fictional market: 2 years of generated prices ending today.'
                 : risk.replaySource === 'broker' ? "Only replay your broker's history (about 3 years from Alpaca, 220 days from IG)."
                 : "Your broker's history when connected, otherwise the fictional 2-year market."}
             </div>
@@ -5029,7 +5119,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
               <button className={'tweak-opt ' + (risk.autopilot ? 'on' : '')} onClick={() => setRisk({ ...risk, autopilot: !risk.autopilot })}>{risk.autopilot ? 'ON' : 'OFF'}</button>
             </div>
             <div className="mono tiny muted" style={{marginTop:6}}>
-              Scores every agent's call on every stock once its 5-day result is known, re-weights the agents from that record and tunes their settings. A change is adopted only if it beat the current setup on the newest 60 days it wasn't fitted on. Off by default: on 2015–2018 daily data it lowered returns (61% vs 88% for the default).
+              The combination model: a regression that turns the trend score plus the scores of agents with positive evidence into an expected next-month return for each stock. It refits each quarter on past data only, and a new version is adopted only if it ranked stocks better on the 60 days it wasn't fitted on. Rank & tilt then ranks by it; the other styles take their agent weights from it. Off by default: on 2015–2018 daily data it made 153% vs 175% for the plain trend score.
             </div>
             {risk.autopilot && (
               <div style={{marginTop:10}}>
@@ -5039,7 +5129,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
                 </div>
                 {mode === 'LIVE' && <div className="mono tiny" style={{color:'var(--live)',marginBottom:8}}>LIVE: at most one weight change and one setting change per day, each agent's weight moves at most 5 points.</div>}
                 <div className="mono tiny muted" style={{letterSpacing:'0.1em',marginBottom:6}}>RECENT CHANGES</div>
-                <AutopilotLog log={autopilotLog} limit={4} empty="No changes yet: Autopilot checks every 5 trading days." />
+                <AutopilotLog log={autopilotLog} limit={4} empty="No changes yet: the model refits every quarter (63 trading days)." />
               </div>
             )}
           </div>
@@ -5059,6 +5149,46 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
             <span className="mono tiny">{showAdvanced ? '▾ HIDE' : '▸ SHOW'}</span>
           </div>
           {showAdvanced && (<>
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between'}}>
+              <div className="field-label">Stocks held <span className="muted">(Rank & tilt)</span></div>
+              <div className="mono" style={{fontSize:13}}>top {risk.topK || 12}</div>
+            </div>
+            <input type="range" min="3" max="20" step="1" value={risk.topK || 12} onChange={e=>setRisk({...risk, topK: +e.target.value, riskLevel: 'custom'})}/>
+            <div className="mono tiny muted" style={{marginTop:4}}>Fewer = more concentrated in the strongest trends (higher potential return, bigger swings).</div>
+          </div>
+
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div className="field-label">Trading cost per trade side</div>
+              <div className="mono" style={{fontSize:13}}>{risk.costBps === 'auto' || risk.costBps == null ? `auto · ${autoCostBps}bp` : `${risk.costBps}bp`}</div>
+            </div>
+            <div className="tweak-opts" style={{marginTop:6}}>
+              {[['auto','Auto'],[3,'3bp'],[5,'5bp'],[10,'10bp'],[20,'20bp']].map(([k, label]) => (
+                <div key={String(k)} className={'tweak-opt ' + (String(risk.costBps ?? 'auto') === String(k) ? 'on' : '')} onClick={() => setRisk({ ...risk, costBps: k })}>{label}</div>
+              ))}
+            </div>
+            <div className="mono tiny muted" style={{marginTop:4}}>Half the bid/ask spread + slippage + commission, charged on every buy and sell in replays, backtests and the optimiser. Auto: Alpaca 5bp, IG spread bets 12bp, fictional 5bp.</div>
+          </div>
+
+          <div className="field">
+            <div className="field-label" style={{marginBottom:8}}>Broker history to load <span className="muted">(Alpaca)</span></div>
+            <div className="tweak-opts">
+              {[[1100,'3 years'],[1850,'5 years'],[3700,'10 years']].map(([k, label]) => (
+                <div key={k} className={'tweak-opt ' + ((risk.historyDays || 1100) === k ? 'on' : '')} onClick={() => setRisk({ ...risk, historyDays: k })}>{label}</div>
+              ))}
+            </div>
+            <div className="mono tiny muted" style={{marginTop:4}}>More history makes backtests and the optimiser more trustworthy. Alpaca returns what its data plan covers; IG stays at 220 days (weekly data allowance).</div>
+          </div>
+
+          <div className="field">
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div className="field-label">Only agents with evidence vote</div>
+              <button className={'tweak-opt ' + (risk.pruneAgents !== false ? 'on' : '')} onClick={() => setRisk({ ...risk, pruneAgents: risk.pruneAgents === false })}>{risk.pruneAgents !== false ? 'ON' : 'OFF'}</button>
+            </div>
+            <div className="mono tiny muted" style={{marginTop:4}}>Agents whose scores haven't predicted next-month returns on the history so far (rank IC t ≥ 1) become advisory: shown with their evidence in Agent config, but excluded from votes. The model always prunes this way.</div>
+          </div>
+
 
           <div className="field">
             <div style={{display:'flex',justifyContent:'space-between'}}>
@@ -6410,7 +6540,7 @@ const ScreenSectorUniverse = ({ mode, ctx }) => {
 };
 
 // ── ScreenAgentConfig ─────────────────────────────────────────────────────────
-const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnabledAgents, agentWeights, agentHistory, agentParamPresets = {}, setAgentParamPresets = () => {}, universe = null, autopilot = false }) => {
+const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnabledAgents, agentWeights, agentHistory, agentParamPresets = {}, setAgentParamPresets = () => {}, universe = null, autopilot = false, evidence = null }) => {
   const [optimizing, setOptimizing] = React.useState({});
   const [optResults, setOptResults]  = React.useState({});
   const [expanded, setExpanded]      = React.useState({});
@@ -6598,6 +6728,11 @@ const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnab
         <div key={family} style={{marginBottom:24}}>
           <div style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.14em',color:'var(--ink-3)',textTransform:'uppercase',marginBottom:10,paddingBottom:6,borderBottom:'1px solid var(--line)'}}>{family}</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(290px,1fr))',gap:10}}>
+            {family === families[0] && evidence?.trend && (
+              <div className="mono tiny" style={{gridColumn:'1 / -1',color: evidence.trend.mean > 0 && evidence.trend.t >= 1 ? 'var(--up)' : 'var(--ink-3)',marginBottom:4}}>
+                TREND SCORE (what Rank &amp; tilt ranks by) · next-month IC {evidence.trend.mean >= 0 ? '+' : ''}{evidence.trend.mean.toFixed(3)} · t {evidence.trend.t.toFixed(1)} · {evidence.trend.n} months of {evidence.U?.fictional ? 'fictional' : evidence.U?.imported ? 'imported' : 'broker'} data
+              </div>
+            )}
             {AGENTS.filter(a => a.family === family).map(agent => {
               const enabled = !enabledAgents || enabledAgents.has(agent.id);
               const hist = agentHistory?.[agent.id] || [];
@@ -6618,6 +6753,14 @@ const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnab
                         <span style={{fontWeight:500,fontSize:12}}>{agent.name}</span>
                       </div>
                       <div style={{fontSize:10,color:'var(--ink-3)',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{agent.desc}</div>
+                      {evidence?.ev?.[agent.id] && (() => {
+                        const e = evidence.ev[agent.id], core = e.mean > 0 && e.t >= 1;
+                        if (!e.n) return <div className="mono" style={{fontSize:9,marginTop:4,color:'var(--ink-4)',letterSpacing:'0.06em'}} title="This agent gives every stock the same score on a given day (a market-wide view), so it can't rank stocks against each other.">MARKET-WIDE · can't rank stocks</div>;
+                        return <div className="mono" style={{fontSize:9,marginTop:4,color: core ? 'var(--up)' : 'var(--ink-4)',letterSpacing:'0.06em'}}
+                          title="Rank correlation between this agent's score and each stock's return over the next month, averaged over non-overlapping months of the data in use. Agents without positive evidence (t ≥ 1) are advisory: shown, but excluded from decisions.">
+                          {core ? 'CORE' : 'ADVISORY'} · next-month IC {e.mean >= 0 ? '+' : ''}{e.mean.toFixed(3)} · t {e.t.toFixed(1)} · {e.n} months
+                        </div>;
+                      })()}
                     </div>
                     <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
                       <span style={{fontFamily:'var(--mono)',fontSize:10,color: acc >= 0.6 ? 'var(--up)' : acc < 0.5 ? 'var(--down)' : 'var(--ink-3)'}}>
@@ -6961,6 +7104,25 @@ const App = () => {
   const [liveSignals, setLiveSignals] = React.useState(null);
   const [livePrices, setLivePrices] = React.useState({});
 
+  // Imported history (CSV, local only) — loaded from IndexedDB on start
+  const [importedUniverse, setImportedUniverse] = React.useState(null);
+  const importedUniverseRef = React.useRef(null);
+  React.useEffect(() => { importedUniverseRef.current = importedUniverse; }, [importedUniverse]);
+  React.useEffect(() => {
+    idbStore.get('import_v1').then(imp => { if (imp && imp.bars) setImportedUniverse(buildImportedUniverse(imp)); }).catch(() => {});
+  }, []);
+  const importCsv = async (file) => {
+    if (!file) return { ok: false, msg: 'No file chosen.' };
+    if (file.size > IMPORT_MAX_BYTES) return { ok: false, msg: `File is ${(file.size / 1e6).toFixed(0)} MB; the limit is ${IMPORT_MAX_BYTES / 1e6} MB.` };
+    try {
+      const imp = parseBarsCsv(await file.text());
+      await idbStore.set('import_v1', imp).catch(() => {});
+      setImportedUniverse(buildImportedUniverse(imp));
+      return { ok: true, msg: `Imported ${imp.symbols.length} stocks, ${imp.days} days (${imp.from} → ${imp.to})${imp.dropped.length ? `; dropped ${imp.dropped.join(', ')} (too short)` : ''}${imp.skipped ? `; skipped ${imp.skipped} invalid rows` : ''}.` };
+    } catch (err) { return { ok: false, msg: err.message }; }
+  };
+  const removeImport = async () => { await idbStore.del('import_v1').catch(() => {}); setImportedUniverse(null); };
+
   // Live market data as an indicator universe (full OHLCV bars from the broker), when connected
   const [liveUniverse, setLiveUniverse] = React.useState(null);
   const liveUniverseRef = React.useRef(null);
@@ -6993,17 +7155,18 @@ const App = () => {
 
   const applyAndFreeze = (result) => {
     const cfg = result.best.cfg;
-    const before = { cfg: configFromSettings(risk, optimiserRef.current.frozen), params: agentParams, risk: { ...risk } };
+    const before = { cfg: configFromSettings(risk, optimiserRef.current.frozen), params: agentParams, risk: { ...risk }, costBps: result.costBps };
     const params = SS.configParams(cfg, agentParams);
     const frozen = {
       cfg, params, before,
       at: { g: result.asOf, date: barDate(result.U, result.asOf), srcKey: result.srcKey },
       optimised: { days: result.days, ret: result.best.ret, baselineRet: result.baseline.ret, bench: result.baseline.bench },
+      costBps: result.costBps,
     };
     setOptimiser({ frozen, comparisons: [] }); // before setRisk, so the weights effect sees the frozen config
-    setRisk({ ...risk, style: cfg.style, confidence: Math.round(cfg.minConf * 100), investFraction: cfg.investFraction,
+    setRisk({ ...risk, style: cfg.style, topK: cfg.topK ?? risk.topK, confidence: Math.round(cfg.minConf * 100), investFraction: cfg.investFraction,
       atrStop: cfg.atrStop, atrTarget: cfg.atrTarget, maxHoldHours: Math.round(cfg.maxHold * 6.5), atrStops: true,
-      riskLevel: 'custom', autopilot: false, autopilotFrozen: false });
+      riskLevel: 'custom', autopilot: cfg.style === 'tilt' && cfg.score === 'model', autopilotFrozen: false });
     setAgentParams(params);
     setAgentWeights(SS.configWeights(cfg));
   };
@@ -7026,7 +7189,7 @@ const App = () => {
     autopilotStateRef.current = { lastCheck: null, lastTune: null, queue: [], lastPromoDay: null, lastParamDay: null };
     if (!first && risk.autopilot) {
       setAutopilotLog(prev => [{ ts: Date.now(), kind: 'info', when: new Date().toISOString().slice(0, 10),
-        text: `Autopilot on. Starting from ${risk.style === 'both' ? 'equal weights' : 'Trend Persistence as the weakness signal'}; changes need to beat the current weights on the most recent 60 days they weren't fitted on.` }, ...prev].slice(0, 100));
+        text: `Autopilot on: the combination model (trend score + agents with positive evidence) refits every quarter; a new version is adopted only if it ranked stocks better on the 60 days it wasn't fitted on.` }, ...prev].slice(0, 100));
     }
   }, [risk.style, risk.autopilot]);
 
@@ -7090,7 +7253,7 @@ const App = () => {
     const fetchBars = async () => {
       try {
         const r = await fetch(
-          `${BACKEND_URL}/api/bars?symbols=${encodeURIComponent(symbols)}`,
+          `${BACKEND_URL}/api/bars?symbols=${encodeURIComponent(symbols)}&days=${riskRef.current?.historyDays || 1100}`,
           // IG's first load resolves ticker→epic and fetches history under tight rate limits (~2 min); later loads hit the backend's cache
           { headers: { 'Authorization': 'Bearer ' + alpaca.token }, signal: AbortSignal.timeout(alpaca.brokerId === 'ig' ? 180000 : 15000) }
         );
@@ -7114,7 +7277,7 @@ const App = () => {
     fetchBars();
     const id = setInterval(fetchBars, 10 * 60 * 1000); // refresh every 10 min
     return () => clearInterval(id);
-  }, [alpaca.connected, alpaca.token]);
+  }, [alpaca.connected, alpaca.token, risk.historyDays]);
 
   // Backend health-check — polls every 15 s
   React.useEffect(() => {
@@ -7317,61 +7480,63 @@ const App = () => {
     }
   };
 
-  // ── Autopilot ──────────────────────────────────────────────────────────────────────────────────────
-  // Every 5 bars: a challenger weight set, fitted on outcomes known 60 days ago, replaces the current
-  // weights only if it did better on the 60 days since. Every 20 bars: one tested tuning pass over the
-  // agents that currently carry weight, one agent per tick. In LIVE mode at most one weight change and
-  // one parameter change per day, and no agent's weight moves more than 5 points at a time.
-  const pctTxt = (x) => `${(x * 100).toFixed(0)}%`;
-  const bpTxt = (x) => `${x >= 0 ? '+' : ''}${(x * 1e4).toFixed(0)}bp`;
-  const runAutopilot = ({ U, asOf, book, replay, style, riskNow, isLive }) => {
-    const st = autopilotStateRef.current;
-    if (riskNow.autopilotFrozen) return;
-    const today = new Date().toISOString().slice(0, 10);
-    const when = replay ? barDate(U, asOf) : today;
-    if (st.lastCheck == null || asOf < st.lastCheck || asOf - st.lastCheck >= 5) {
-      st.lastCheck = asOf;
-      if (!(isLive && st.lastPromoDay === today)) {
-        const cur = agentWeightsRef.current;
-        const p = SS.proposeWeights(book, asOf, cur, { style: style === 'both' ? 'both' : 'invested', minConf: (riskNow.confidence ?? 55) / 100 });
-        // stay-invested keeps its weights when nothing shows an edge (standing aside = staying invested)
-        if (p.promote && !(style !== 'both' && p.status === 'no-edge')) {
-          let next = { ...p.challenger };
-          if (isLive) {
-            AGENTS.forEach(a => { const c = cur[a.id] ?? 0; next[a.id] = Math.max(0, c + Math.max(-0.05, Math.min(0.05, (next[a.id] ?? 0) - c))); });
-            const tot = Object.values(next).reduce((x, y) => x + y, 0);
-            if (tot > 0) AGENTS.forEach(a => { next[a.id] /= tot; });
-            st.lastPromoDay = today;
-          }
-          const moves = AGENTS.map(a => ({ a, d: (next[a.id] ?? 0) - (cur[a.id] ?? 0) }))
-            .filter(x => Math.abs(x.d) >= 0.01).sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).slice(0, 3)
-            .map(x => `${x.a.name} ${pctTxt(cur[x.a.id] ?? 0)} → ${pctTxt(next[x.a.id] ?? 0)}`);
-          setAgentWeights(next);
-          setWeightHistory(prev => { const n = { ...prev }; AGENTS.forEach(a => { n[a.id] = [...(n[a.id] || []), next[a.id] ?? 0].slice(-90); }); return n; });
-          setAutopilotLog(prev => [{ ts: Date.now(), kind: 'weights', when,
-            text: p.status === 'no-edge'
-              ? 'No agent showed an edge over the last 120 days: standing aside (no new trades) until one does.'
-              : `${moves.join(', ') || 'small changes'}. On the ${p.challengerScore.days} most recent days they weren't fitted on, the ${style === 'both' ? 'calls' : 'sell calls'} they would have made returned ${bpTxt(p.challengerScore.mean)} over the next 5 days vs ${bpTxt(p.currentScore.mean)} for the old weights${style === 'both' ? '' : ' (negative = the stocks rose after being sold)'}.` }, ...prev].slice(0, 100));
-        }
-      }
-    }
-    if (st.lastTune == null || asOf < st.lastTune || asOf - st.lastTune >= 20) {
-      st.lastTune = asOf;
-      // Pattern Memory is skipped: re-running its nearest-neighbour search per candidate takes seconds in a browser
-      st.queue = AGENTS.filter(a => a.id !== 'patt' && (agentWeightsRef.current[a.id] || 0) > 0.01).map(a => a.id);
-    }
-    if (st.queue.length && !(isLive && st.lastParamDay === today)) {
-      const id = st.queue.shift();
-      const t = SS.tuneParam(U, id, asOf, agentParamsRef.current);
-      if (t && t.accepted) {
-        setAgentParams(prev => ({ ...prev, [id]: { ...(prev[id] || {}), [t.key]: t.best } }));
-        if (isLive) st.lastParamDay = today;
-        const name = AGENTS.find(a => a.id === id)?.name || id;
-        setAutopilotLog(prev => [{ ts: Date.now(), kind: 'param', when,
-          text: `${name}: ${t.key} ${t.current} → ${t.best}. Best on the older 120 days (${bpTxt(t.fitMean)}/signal) and better on the newest 60 (${bpTxt(t.testMean)} vs ${bpTxt(t.testMeanCurrent)}).` }, ...prev].slice(0, 100));
-      }
-    }
+  // ── Autopilot: the combination model ───────────────────────────────────────────────────────────────
+  // Rank & tilt ranks by the model's score; the other styles take their agent weights from it. Every 63
+  // bars the model re-measures each agent's evidence on the history so far, keeps agents with positive
+  // evidence, and a candidate fitted on data known 60 days ago must rank stocks better than the current
+  // model over those 60 days before it is adopted (refitted on all data known now). In LIVE mode at most
+  // one weight change per day, each agent's weight moving at most 5 points.
+  const scorerCacheRef = React.useRef({ U: null, key: null, ms: null, fitsSeen: 0 });
+  const scorerFor = (U, book, useModel, params) => {
+    const key = `${useModel ? 'model' : 'trend'}|${JSON.stringify(params || {})}`;
+    const c = scorerCacheRef.current;
+    if (c.U !== U || c.key !== key) scorerCacheRef.current = { U, key, ms: useModel ? SS.createModelScorer(U, book.signalsAt) : null, fitsSeen: 0 };
+    const ms = scorerCacheRef.current.ms;
+    const earnP = SS.mergeParams(params).earn;
+    return ms ? ms.scoreAt : (sym, i) => SS.trendScore(U.F[sym], i, earnP);
   };
+  const pctTxt = (x) => `${(x * 100).toFixed(0)}%`;
+  const runAutopilot = ({ U, asOf, book, replay, style, riskNow, isLive }) => {
+    if (riskNow.autopilotFrozen) return;
+    const scorer = scorerFor(U, book, true, agentParamsRef.current);
+    const s0 = U.syms.find(sym => asOf - U.off[sym] >= 130);
+    if (s0) scorer(s0, asOf - U.off[s0]); // runs any refit that is due
+    const c = scorerCacheRef.current, fits = c.ms.state.fits;
+    const when = replay ? barDate(U, asOf) : new Date().toISOString().slice(0, 10);
+    while (c.fitsSeen < fits.length) {
+      const f = fits[c.fitsSeen++];
+      const names = (f.kept || []).map(id => AGENTS.find(a => a.id === id)?.name || id);
+      setAutopilotLog(prev => [{ ts: Date.now(), kind: 'weights', when,
+        text: f.icNew == null
+          ? `Model refit: ranks by the trend score${names.length ? ` plus ${names.join(', ')}` : ' only (no other agent has positive evidence yet)'}.`
+          : f.adopted
+            ? `Model updated: a version fitted 60 days ago ranked stocks better than the current one on the 60 days since (rank IC ${f.icNew.toFixed(3)} vs ${f.icCur.toFixed(3)}). Inputs: trend score${names.length ? ` + ${names.join(', ')}` : ''}.`
+            : `Model kept: the candidate ranked stocks worse on the last 60 days it hadn't seen (rank IC ${f.icNew.toFixed(3)} vs ${f.icCur.toFixed(3)}).` }, ...prev].slice(0, 100));
+    }
+    const target = weightsFromModel(c.ms.state.model);
+    if (!target) return;
+    const st = autopilotStateRef.current, today = new Date().toISOString().slice(0, 10);
+    if (isLive && st.lastPromoDay === today) return;
+    const cur = agentWeightsRef.current;
+    let next = { ...target };
+    if (isLive) {
+      AGENTS.forEach(a => { const v = cur[a.id] ?? 0; next[a.id] = Math.max(0, v + Math.max(-0.05, Math.min(0.05, (next[a.id] ?? 0) - v))); });
+      const tot = Object.values(next).reduce((x, y) => x + y, 0);
+      if (tot > 0) AGENTS.forEach(a => { next[a.id] /= tot; });
+    }
+    const moved = AGENTS.reduce((sum, a) => sum + Math.abs((next[a.id] ?? 0) - (cur[a.id] ?? 0)), 0);
+    if (moved < 0.02) return;
+    if (isLive) st.lastPromoDay = today;
+    setAgentWeights(next);
+    setWeightHistory(prev => { const n = { ...prev }; AGENTS.forEach(a => { n[a.id] = [...(n[a.id] || []), next[a.id] ?? 0].slice(-90); }); return n; });
+  };
+  const evidenceCacheRef = React.useRef({ U: null, bucket: null, ev: null });
+  const evidenceAt = (U, asOf, book) => {
+    const bucket = Math.floor(asOf / 21), c = evidenceCacheRef.current;
+    if (c.U !== U || c.bucket !== bucket) evidenceCacheRef.current = { U, bucket, ev: SS.agentEvidence(U, { signalsAt: book.signalsAt, from: 130, to: asOf }) };
+    return evidenceCacheRef.current.ev;
+  };
+  const tiltStateRef = React.useRef((() => { try { return JSON.parse(localStorage.getItem('shoal_tilt_state_v1') || '{}'); } catch (_) { return {}; } })());
 
   // Global swarm execution — signal-driven trades with real TA, regardless of which screen is mounted.
   React.useEffect(() => {
@@ -7383,9 +7548,10 @@ const App = () => {
       // SIMULATED replays daily history one bar per tick: the broker's when connected (or chosen), the
       // fictional market otherwise. VIRTUAL and LIVE only ever trade on real broker bars.
       const replay = mode === 'SIMULATED';
-      const U = replay ? replayUniverseFor(riskNow.replaySource, liveUniverseRef.current) : liveUniverseRef.current;
+      const U = replay ? replayUniverseFor(riskNow.replaySource, liveUniverseRef.current, importedUniverseRef.current) : liveUniverseRef.current;
       if (!U) { if (replay) setReplayInfo(r => (r && r.waiting ? r : { waiting: true })); return; }
       const srcKey = replayKey(U);
+      const cost = costBpsFor(riskNow, replay ? U : null, alpacaNow?.brokerId) / 1e4; // per trade side
       let rollover = false;
       if (replay) {
         const start = replayStartFor(U);
@@ -7397,7 +7563,7 @@ const App = () => {
         replayIdxRef.current = g;
         window.SHOAL_REPLAY = { U, g, key: srcKey };
         if (!replayAnchorRef.current || rollover) replayAnchorRef.current = { g, equity: balanceRef.current };
-        setReplayInfo({ g, start, end: U.L - 1, date: barDate(U, g), anchor: replayAnchorRef.current, fictional: !!U.fictional });
+        setReplayInfo({ g, start, end: U.L - 1, date: barDate(U, g), anchor: replayAnchorRef.current, fictional: !!U.fictional, key: srcKey });
       }
       const asOf = replay ? replayIdxRef.current : U.L - 1;
       const book = bookFor(U, agentParamsRef.current);
@@ -7479,14 +7645,14 @@ const App = () => {
             if (!F) return t;
             const i = asOf - U.off[t.sym];
             if (rollover) { exit = F.c[F.n - 1]; reason = 'REPLAY-END'; }
-            else if (t.style !== 'invested' && asOf > t.entryG && i >= 0) {
+            else if (t.style !== 'invested' && t.style !== 'tilt' && asOf > t.entryG && i >= 0) {
               const hitStop = side === 1 ? F.l[i] <= stopPx : F.h[i] >= stopPx;
               const hitTgt  = side === 1 ? F.h[i] >= tgtPx  : F.l[i] <= tgtPx;
               if (hitStop) { exit = side === 1 ? Math.min(stopPx, F.o[i]) : Math.max(stopPx, F.o[i]); reason = 'STOP-LOSS'; }
               else if (hitTgt) { exit = side === 1 ? Math.max(tgtPx, F.o[i]) : Math.min(tgtPx, F.o[i]); reason = 'TAKE-PROFIT'; }
               else if (asOf - t.entryG >= maxHoldBars) { exit = F.c[i]; reason = 'TIME-STOP'; }
             }
-          } else if (t.style !== 'invested') {
+          } else if (t.style !== 'invested' && t.style !== 'tilt') {
             const mark = lpNow[t.sym];
             if (mark > 0) {
               if ((mark - stopPx) * side <= 0) { exit = mark; reason = 'STOP-LOSS'; }
@@ -7495,6 +7661,7 @@ const App = () => {
             if (!exit && Date.now() - t.ts > maxHoldMs) { exit = mark > 0 ? mark : t.price; reason = 'TIME-STOP'; }
           }
           if (exit == null) return t;
+          exit = exit * (1 - side * cost); // closing cost
           const pnlAmt = (exit - t.price) * t.qty * side;
           if (t._brokerSent) closedSyms.add(t.sym);
           return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false, closeReason: reason };
@@ -7517,8 +7684,11 @@ const App = () => {
       // Cache decay-weighted accuracy once per tick — reused by dynamicEnabled and Kelly sizing
       const accCache = new Map(AGENTS.map(a => [a.id, decayAccuracy(hist[a.id])]));
 
+      // Agents without positive evidence on the history so far are advisory: shown, but they don't vote
+      const ev = riskNow.pruneAgents !== false ? evidenceAt(U, asOf, book) : null;
       const dynamicEnabled = new Set(
         [...enabledAgentsRef.current].filter(id => {
+          if (ev && !(ev[id] && ev[id].mean > 0 && ev[id].t >= 1)) return false;
           if (!autoDisableOn) return true;
           const h = hist[id];
           if (!h || h.length < 5) return true;
@@ -7566,10 +7736,94 @@ const App = () => {
       const blockNew = dayStartRef.current.hit;
       const isPending = (sym) => { const ts = pendingOrdersRef.current.get(sym); return ts != null && Date.now() - ts < 90_000; };
 
+      // ── Rank & tilt ──
+      // Fully invested in the top-K stocks by score (trend score, or the model with Autopilot on). Re-ranked
+      // at each month end in a replay, once per calendar month live. Swap-only: dropped names are sold,
+      // new names bought with an equal share of equity; names that stay are not resized.
+      if (style === 'tilt') {
+        const frac = riskNow.investFraction ?? 0.9;
+        const K = Math.max(1, Math.min(U.syms.length - 1, riskNow.topK || Math.ceil(U.syms.length / 2)));
+        const blacklist = blacklistedSymbolsRef.current;
+        const open = tradesRef.current.filter(t => t.status === 'OPEN');
+        const heldBy = new Map(open.map(t => [t.sym, t]));
+        const curMonth = replay ? barDate(U, asOf).slice(0, 7) : new Date().toISOString().slice(0, 7);
+        const monthEnds = replay ? (asOf < U.L - 1 && barDate(U, asOf + 1).slice(0, 7) !== curMonth) : tiltStateRef.current.month !== curMonth;
+        if (!(heldBy.size === 0 || monthEnds)) return;
+        const scorer = scorerFor(U, book, !!riskNow.autopilot, agentParamsRef.current);
+        const ranked = U.syms.filter(sym => !blacklist.has(sym))
+          .map(sym => [sym, localIdx(sym) >= 130 ? scorer(sym, localIdx(sym)) : NaN])
+          .filter(x => Number.isFinite(x[1])).sort((x, y) => y[1] - x[1]);
+        if (ranked.length < K) return;
+        const keep = new Set(ranked.slice(0, K).map(x => x[0]));
+        tiltStateRef.current = { month: curMonth, keep: [...keep] };
+        if (!replay) { try { localStorage.setItem('shoal_tilt_state_v1', JSON.stringify(tiltStateRef.current)); } catch (_) {} }
+        const topSigs = sigsFor(ranked[0][0]);
+        if (topSigs) { const e = computeEnsemble(topSigs, agentWeightsRef.current, null); setSwarmFocus({ sym: ranked[0][0], votes: e.votes, dir: 'BUY', confidence: e.confidence, ts: Date.now() }); }
+        const toSell = open.filter(t => !keep.has(t.sym) && !isPending(t.sym));
+        const toBuy = [...keep].filter(sym => !heldBy.has(sym) && !isPending(sym));
+        const scoreName = riskNow.autopilot ? 'model' : 'trend';
+        let freed = 0;
+        if (toSell.length) {
+          const sellSet = new Set(toSell.map(t => t.id));
+          const closeFn = (t) => {
+            if (!sellSet.has(t.id) || t.status !== 'OPEN' || t._real) return t;
+            const exit = (priceFor(t.sym) || t.price) * (1 - cost);
+            const pnlAmt = (exit - t.price) * t.qty * (t.side === 'BUY' ? 1 : -1);
+            return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false, closeReason: 'REBALANCE', exitReason: `dropped out of the top ${K} by ${scoreName} score` };
+          };
+          setTrades(prev => prev.map(closeFn));
+          tradesRef.current = tradesRef.current.map(closeFn);
+          for (const t of toSell) {
+            freed += t.qty * (priceFor(t.sym) || t.price);
+            if ((isLiveReal || isBrokerPaper) && alpacaNow?.token && (t._brokerSent || t._real)) {
+              pendingOrdersRef.current.set(t.sym, Date.now());
+              fetch(`${BACKEND_URL}/api/positions/${t.sym}`, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + alpacaNow.token } }).catch(() => {});
+            }
+          }
+        }
+        const bought = [];
+        if (toBuy.length && !blockNew) {
+          const equity = balanceRef.current ?? 0;
+          const per = equity * frac / K;
+          let cashLeft = equity - open.reduce((sum, t) => sum + t.qty * t.price, 0) + freed;
+          const newTrades = [];
+          for (const sym of toBuy) {
+            const px = priceFor(sym);
+            if (!(px > 0)) continue;
+            const notional = parseFloat(Math.min(per, cashLeft).toFixed(2));
+            if (notional < 1) break;
+            cashLeft -= notional;
+            const rank = ranked.findIndex(x => x[0] === sym) + 1;
+            const sg = sigsFor(sym) || {};
+            const e = computeEnsemble(sg, agentWeightsRef.current, null);
+            const F = U.F[sym], i = localIdx(sym), regime = SS.regimeAt(F, i);
+            newTrades.push({
+              id: 'TX-' + (nextTradeId++), ts: Date.now(), exitTs: null,
+              sym, side: 'BUY', qty: parseFloat((notional / (px * (1 + cost))).toFixed(4)), price: px * (1 + cost), exit: null,
+              conf: 1 - (rank - 1) / ranked.length, reason: `Rank & tilt · #${rank} of ${ranked.length} by ${scoreName} score`,
+              pnl: null, pnlPct: null, status: 'OPEN', mode,
+              consensus: e.consensus, votes: e.votes, signals: sg, disagreement: e.disagreement,
+              annVol: F.vol(20)[i] || 0, style: 'tilt', replay, replaySrc: replay ? srcKey : null, entryG: replay ? asOf : null,
+              regime: regime.label, regimeKey: regime.key, isNew: true, _notional: notional,
+            });
+            bought.push(sym);
+          }
+          if (newTrades.length) {
+            if (isLiveReal || isBrokerPaper) newTrades.forEach(placeOrder);
+            else { setTrades(prev => [...newTrades, ...prev].slice(0, 5000)); tradesRef.current = [...newTrades, ...tradesRef.current]; }
+          }
+        }
+        if (toSell.length || bought.length) {
+          setAutopilotLog(prev => [{ ts: Date.now(), kind: 'info', when: replay ? barDate(U, asOf) : new Date().toISOString().slice(0, 10),
+            text: `Monthly re-rank (top ${K} by ${scoreName} score): ${toSell.length ? `sold ${toSell.map(t => t.sym).join(', ')}` : 'nothing sold'}; ${bought.length ? `bought ${bought.join(', ')}` : 'nothing bought'}.` }, ...prev].slice(0, 100));
+        }
+        return;
+      }
+
       // ── Stay invested, sell on weakness ──
       // Hold every stock at an equal share of `investFraction` of equity. Sell a holding when the weighted
       // swarm calls SELL with confidence ≥ the threshold; buy it back once the SELL call clears.
-      if (style !== 'both') {
+      if (style === 'invested') {
         const minConf = (riskNow.confidence ?? 55) / 100;
         const frac = riskNow.investFraction ?? 0.9;
         const blacklist = blacklistedSymbolsRef.current;
@@ -7598,7 +7852,7 @@ const App = () => {
           const closeFn = (t) => {
             const x = sellBy.get(t.sym);
             if (!x || t.status !== 'OPEN' || t._real) return t;
-            const exit = priceFor(t.sym) || t.price;
+            const exit = (priceFor(t.sym) || t.price) * (1 - cost);
             const pnlAmt = (exit - t.price) * t.qty * (t.side === 'BUY' ? 1 : -1);
             return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false, closeReason: 'WEAKNESS', exitReason: buildReason(x.sigs, x.ens) };
           };
@@ -7625,7 +7879,7 @@ const App = () => {
             const notional = parseFloat(Math.min(per, cash).toFixed(2));
             if (notional < 1) break;
             cash -= notional;
-            const price = px * 1.0005; // half-spread slippage
+            const price = px * (1 + cost);
             newTrades.push({
               id: 'TX-' + (nextTradeId++), ts: Date.now(), exitTs: null,
               sym: x.sym, side: 'BUY', qty: parseFloat((notional / price).toFixed(4)), price, exit: null,
@@ -7767,7 +8021,7 @@ const App = () => {
             if (pick === 0) setSwarmFocus({ sym: tk.sym, votes: ensemble.votes, dir: ensemble.dir, confidence: ensemble.confidence, ts: Date.now() });
 
             const basePx = priceFor(tk.sym) || tk.last;
-            const price = basePx * (1 + (side === 'BUY' ? 1 : -1) * 0.0005); // half-spread slippage
+            const price = basePx * (1 + (side === 'BUY' ? 1 : -1) * cost);
             // [8] Size: ATR stops risk `Risk per trade` % of equity over a stop of atrStop × ATR, capped at
             // the max trade size. With ATR stops off (or no bars): the original confidence × half-Kelly sizing.
             let rawNotional, stopPct = null, tpPct = null;
@@ -7974,6 +8228,22 @@ const App = () => {
   ), [trades]);
   const availableBalance = Math.max(0, balance - openExposure);
 
+  // Agent evidence for display: next-month rank IC on the whole history of the data being analysed
+  const [agentEvidenceDisplay, setAgentEvidenceDisplay] = React.useState(null);
+  const evidenceUniverse = (mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : liveUniverse) || SIM_U;
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        setAgentEvidenceDisplay({
+          U: evidenceUniverse,
+          ev: SS.agentEvidence(evidenceUniverse, { signalsAt: bookFor(evidenceUniverse, agentParams).signalsAt }),
+          trend: SS.rankIC(evidenceUniverse, (sym, i) => SS.trendScore(evidenceUniverse.F[sym], i, SS.mergeParams(agentParams).earn), { from: 130, to: evidenceUniverse.L - 1 }),
+        });
+      } catch (_) {}
+    }, 400);
+    return () => clearTimeout(t);
+  }, [evidenceUniverse, agentParams]);
+
   // After every hook above — returning earlier changes the hook count when onboarding ends.
   if (showOnboarding) {
     return <ScreenOnboarding onDone={() => { localStorage.setItem('shoal_onboarded', '1'); setShowOnboarding(false); }}/>;
@@ -7981,7 +8251,9 @@ const App = () => {
 
   const alpacaConnected = !!(alpaca?.connected && alpaca?.token);
   const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected, liveUniverse, agentParams, replayInfo, lossHit, autopilotLog, mode,
-    replayUniverse: replayUniverseFor(risk.replaySource, liveUniverse) };
+    replayUniverse: replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse),
+    analysisUniverse: (mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : liveUniverse) || SIM_U,
+    importedUniverse, costBps: costBpsFor(risk, mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : null, alpaca?.brokerId) };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
@@ -7996,9 +8268,10 @@ const App = () => {
     pnltrend:    <ScreenPnlTrend mode={mode} ctx={ctx}/>,
     sectors:     <ScreenSectorUniverse mode={mode} ctx={ctx}/>,
     agentconfig: optimiser.frozen
-      ? <div className="page"><FrozenNotice frozen={optimiser.frozen} onOpen={() => setRoute('optimiser')}/><div style={{pointerEvents:'none',opacity:0.5}}><ScreenAgentConfig agentParams={agentParams} setAgentParams={setAgentParams} enabledAgents={enabledAgents} setEnabledAgents={setEnabledAgents} agentWeights={agentWeights} agentHistory={agentHistory} agentParamPresets={agentParamPresets} setAgentParamPresets={setAgentParamPresets} universe={liveUniverse || SIM_U} autopilot={!!risk.autopilot}/></div></div>
-      : <ScreenAgentConfig agentParams={agentParams} setAgentParams={setAgentParams} enabledAgents={enabledAgents} setEnabledAgents={setEnabledAgents} agentWeights={agentWeights} agentHistory={agentHistory} agentParamPresets={agentParamPresets} setAgentParamPresets={setAgentParamPresets} universe={liveUniverse || SIM_U} autopilot={!!risk.autopilot}/>,
-    settings:    <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} onResetWeights={()=>setShowWeightReset(true)} onExportWeights={exportWeights} onImportWeights={importWeights} backendOk={backendOk} autopilotLog={autopilotLog} frozen={optimiser.frozen} onOpenOptimiser={() => setRoute('optimiser')}/>,
+      ? <div className="page"><FrozenNotice frozen={optimiser.frozen} onOpen={() => setRoute('optimiser')}/><div style={{pointerEvents:'none',opacity:0.5}}><ScreenAgentConfig agentParams={agentParams} setAgentParams={setAgentParams} enabledAgents={enabledAgents} setEnabledAgents={setEnabledAgents} agentWeights={agentWeights} agentHistory={agentHistory} agentParamPresets={agentParamPresets} setAgentParamPresets={setAgentParamPresets} universe={ctx.analysisUniverse} autopilot={!!risk.autopilot} evidence={agentEvidenceDisplay}/></div></div>
+      : <ScreenAgentConfig agentParams={agentParams} setAgentParams={setAgentParams} enabledAgents={enabledAgents} setEnabledAgents={setEnabledAgents} agentWeights={agentWeights} agentHistory={agentHistory} agentParamPresets={agentParamPresets} setAgentParamPresets={setAgentParamPresets} universe={ctx.analysisUniverse} autopilot={!!risk.autopilot} evidence={agentEvidenceDisplay}/>,
+    settings:    <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} onResetWeights={()=>setShowWeightReset(true)} onExportWeights={exportWeights} onImportWeights={importWeights} backendOk={backendOk} autopilotLog={autopilotLog} frozen={optimiser.frozen} onOpenOptimiser={() => setRoute('optimiser')}
+      importedUniverse={importedUniverse} onImportCsv={importCsv} onRemoveImport={removeImport} autoCostBps={costBpsFor({ costBps: 'auto' }, mode === 'SIMULATED' ? ctx.replayUniverse : null, alpaca?.brokerId)}/>,
   };
 
   const navItem = NAV.find(n => n.id === route);
