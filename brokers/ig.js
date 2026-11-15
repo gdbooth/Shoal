@@ -22,7 +22,7 @@ const CACHE_DIR      = process.env.SHOAL_CACHE_DIR || (process.env.VERCEL ? '/tm
 const OVERRIDES_FILE = path.resolve('ig-epics.json');
 const SNAPSHOT_TTL_MS = 15_000;
 const MARKET_REFRESH_MS = 60_000;
-const BARS_INITIAL = 100;   // signals need ≥60 closes; 100 leaves headroom without burning allowance
+const BARS_INITIAL = 220;   // 200-day breadth, 6-month momentum and 120-day ranks need ~200 bars; fetched once, then topped up
 const BARS_KEEP = 252;
 const EXPIRY = 'DFB';       // daily funded bet
 
@@ -585,12 +585,14 @@ class IGSession {
   async _barsFor(epic) {
     const today = new Date().toISOString().slice(0, 10);
     const entry = this.cache.bars[epic];
-    if (entry?.fetchedOn === today) return entry.bars;
+    // caches from before BARS_INITIAL was raised are refetched in full once
+    const short = entry && !entry.full && entry.bars.length < BARS_INITIAL * 0.9;
+    if (entry?.fetchedOn === today && !short) return entry.bars;
 
     const key = `bars:${epic}`;
     if (this.cache.inflight.has(key)) return this.cache.inflight.get(key);
     const job = (async () => {
-      const last = entry?.bars?.at(-1)?.t;
+      const last = short ? null : entry?.bars?.at(-1)?.t;
       const qs = last
         ? `resolution=DAY&from=${last.slice(0, 10)}T00:00:00&to=${today}T23:59:59&pageSize=0`
         : `resolution=DAY&max=${BARS_INITIAL}&pageSize=0`;
@@ -612,7 +614,7 @@ class IGSession {
       const byDay = new Map((entry?.bars || []).map(b => [b.t.slice(0, 10), b]));
       for (const b of fetched) byDay.set(b.t.slice(0, 10), b);
       const bars = [...byDay.values()].sort((a, b) => a.t.localeCompare(b.t)).slice(-BARS_KEEP);
-      this.cache.bars[epic] = { bars, fetchedOn: today };
+      this.cache.bars[epic] = { bars, fetchedOn: today, full: entry?.full || !last };
       saveJson(cachePath(`ig-bars-${this.env}.json`), this.cache.bars);
       const left = r.body.metadata?.allowance?.remainingAllowance;
       if (left != null && left < 1000) console.warn(`[ig] historical price allowance low: ${left} points left this week`);

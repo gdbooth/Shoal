@@ -101,7 +101,7 @@ test('bars come back in Alpaca shape and are cached on disk', async () => {
   const r = await api('/api/bars?symbols=AAPL,MSFT,ZZZZ');
   assert.equal(r.status, 200);
   assert.deepEqual(Object.keys(r.body.bars).sort(), ['AAPL', 'MSFT']);
-  assert.equal(r.body.bars.AAPL.length, 100);
+  assert.equal(r.body.bars.AAPL.length, 220);
   assert.ok(r.body.bars.AAPL.every(b => b.c > 0 && b.t));
   const before = mock.state.calls.filter(c => c.startsWith('GET /prices')).length;
   await api('/api/bars?symbols=AAPL');
