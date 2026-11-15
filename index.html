@@ -2037,18 +2037,19 @@ const SIM_U = SS.buildUniverse(SIM_BARS, SECTOR_OF);
 // browser's IndexedDB. Long format, one row per stock per day:
 //   date,symbol,open,high,low,close,volume   (date as YYYY-MM-DD; open/high/low/volume optional)
 const IMPORT_MAX_BYTES = 40 * 1024 * 1024, IMPORT_MAX_SYMBOLS = 60, IMPORT_MAX_DAYS = 6000;
-function parseBarsCsv(text) {
-  const lines = String(text).split(/\r?\n/).filter(l => l.trim());
-  if (lines.length < 2) throw new Error('The file has no data rows.');
+function parseBarsCsv(texts) {
+  const bySym = new Map();
+  let skipped = 0;
+  for (const text of [].concat(texts)) {
+  const lines = String(text).replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) throw new Error('A file has no data rows.');
   const head = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/^"|"$/g, ''));
   const col = (...names) => names.map(n => head.indexOf(n)).find(i => i >= 0);
   // also accepts Nasdaq.com exports: Date,Symbol2,Close/Last,Volume,Open,High,Low with $ prices and MM/DD/YYYY dates
   const ci = { d: col('date', 'day', 'timestamp'), s: col('symbol', 'ticker', 'symbol2'), o: col('open'), h: col('high'), l: col('low'), c: col('close', 'adj close', 'adj_close', 'close/last'), v: col('volume') };
   const toIso = (d) => { const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(d); return m ? `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` : d.slice(0, 10); };
   const toNum = (x) => +String(x ?? '').replace(/[$,\s]/g, '');
-  if (ci.d == null || ci.s == null || ci.c == null) throw new Error('Need at least date, symbol and close columns.');
-  const bySym = new Map();
-  let skipped = 0;
+  if (ci.d == null || ci.s == null || ci.c == null) throw new Error('Need at least date, symbol and close columns in every file.');
   for (let k = 1; k < lines.length; k++) {
     const f = lines[k].split(',').map(x => x.trim().replace(/^"|"$/g, ''));
     const sym = (f[ci.s] || '').toUpperCase(), date = toIso(f[ci.d] || ''), c = toNum(f[ci.c]);
@@ -2058,6 +2059,7 @@ function parseBarsCsv(text) {
     const v = ci.v == null ? 0 : (Number.isFinite(toNum(f[ci.v])) && toNum(f[ci.v]) >= 0 ? toNum(f[ci.v]) : 0);
     if (!bySym.has(sym)) { if (bySym.size >= IMPORT_MAX_SYMBOLS) { skipped++; continue; } bySym.set(sym, new Map()); }
     bySym.get(sym).set(date, { o, h, l, c, v });
+  }
   }
   if (bySym.size < 3) throw new Error('Need at least 3 symbols with valid rows.');
   // align on the dates most symbols share; drop symbols with less than 80% of the longest history
@@ -5087,7 +5089,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
                 ? 'Long and short trades when enough agents agree, with ATR stops and targets. On 2015–2018 daily data this lost to simply holding the stocks.'
                 : risk.style === 'invested'
                 ? 'Hold all the stocks and sell one only when it shows weakness (Trend Persistence by default); buy it back when that clears. On 2015–2018 daily data: 88% vs 95% for holding everything, with a −10% worst drop instead of −15%.'
-                : `Stay fully invested in the ${risk.topK || 12} stocks with the strongest trend (return from 6 months to 1 month ago), re-ranked at each month end. On 2013–2018 daily data, after costs: 223% vs 139% for holding all 23 stocks, ahead in 4 of 5 years. Most of the gap came from staying in NVDA and AMD through their 2016–17 run; without them it was 85% vs 74%. It works when strong trends exist — paper-trade it before going live.`}
+                : `Stay fully invested in the ${risk.topK || 12} stocks with the strongest trend (return from 6 months to 1 month ago), re-ranked at each month end. Tested on real daily data after costs, it is not a reliable way to beat simply holding everything. On 12 stocks and sector funds over 2017–2026 it made about the same (+1153% vs +1178%) with a smaller worst drop (−39% vs −49%). On 6 sector funds alone it trailed (+119% vs +176%). Its earlier wins came mostly from riding a few big winners such as NVDA. Expect it to help most in long bear markets like 2022; watch the buy-and-hold comparison and paper-trade before going live.`}
             </div>
           </div>
 
@@ -5103,9 +5105,9 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
             <div style={{display:'flex',gap:8,alignItems:'center',marginTop:8,flexWrap:'wrap'}}>
               <button className="btn" style={{fontSize:10,padding:'4px 10px'}} onClick={() => importFileRef.current?.click()}>IMPORT CSV…</button>
               {importedUniverse && <button className="btn ghost" style={{fontSize:10,padding:'4px 10px'}} onClick={async () => { await onRemoveImport(); setImportMsg(null); if (risk.replaySource === 'imported') setRisk({ ...risk, replaySource: 'auto' }); }}>REMOVE IMPORT</button>}
-              <input ref={importFileRef} type="file" accept=".csv,text/csv" style={{display:'none'}}
-                onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; if (!f) return; setImportMsg({ ok: true, msg: 'Reading…' }); const r = await onImportCsv(f); setImportMsg(r); if (r.ok) setRisk({ ...risk, replaySource: 'imported' }); }}/>
-              <span className="mono tiny muted">{importedUniverse ? `Imported: ${importedUniverse.meta.symbols} stocks, ${importedUniverse.meta.from} → ${importedUniverse.meta.to}` : 'Longer history for validation: one CSV with date,symbol,open,high,low,close,volume. Read in your browser only; never uploaded.'}</span>
+              <input ref={importFileRef} type="file" accept=".csv,text/csv" multiple style={{display:'none'}}
+                onChange={async e => { const f = [...(e.target.files || [])]; e.target.value = ''; if (!f.length) return; setImportMsg({ ok: true, msg: 'Reading…' }); const r = await onImportCsv(f); setImportMsg(r); if (r.ok) setRisk({ ...risk, replaySource: 'imported' }); }}/>
+              <span className="mono tiny muted">{importedUniverse ? `Imported: ${importedUniverse.meta.symbols} stocks, ${importedUniverse.meta.from} → ${importedUniverse.meta.to}` : 'Longer history for validation: one or more CSVs with date,symbol,open,high,low,close,volume (pick several to combine them). Read in your browser only; never uploaded.'}</span>
             </div>
             {importMsg && <div className="tiny" style={{marginTop:6,color: importMsg.ok ? 'var(--ink-2)' : 'var(--down)'}}>{importMsg.msg}</div>}
             <div className="mono tiny muted" style={{marginTop:6}}>
@@ -7114,14 +7116,16 @@ const App = () => {
   React.useEffect(() => {
     idbStore.get('import_v1').then(imp => { if (imp && imp.bars) setImportedUniverse(buildImportedUniverse(imp)); }).catch(() => {});
   }, []);
-  const importCsv = async (file) => {
-    if (!file) return { ok: false, msg: 'No file chosen.' };
-    if (file.size > IMPORT_MAX_BYTES) return { ok: false, msg: `File is ${(file.size / 1e6).toFixed(0)} MB; the limit is ${IMPORT_MAX_BYTES / 1e6} MB.` };
+  const importCsv = async (fileList) => {
+    const files = [...(fileList || [])];
+    if (!files.length) return { ok: false, msg: 'No file chosen.' };
+    const bytes = files.reduce((n, f) => n + f.size, 0);
+    if (bytes > IMPORT_MAX_BYTES) return { ok: false, msg: `Files total ${(bytes / 1e6).toFixed(0)} MB; the limit is ${IMPORT_MAX_BYTES / 1e6} MB.` };
     try {
-      const imp = parseBarsCsv(await file.text());
+      const imp = parseBarsCsv(await Promise.all(files.map(f => f.text())));
       await idbStore.set('import_v1', imp).catch(() => {});
       setImportedUniverse(buildImportedUniverse(imp));
-      return { ok: true, msg: `Imported ${imp.symbols.length} stocks, ${imp.days} days (${imp.from} → ${imp.to})${imp.dropped.length ? `; dropped ${imp.dropped.join(', ')} (too short)` : ''}${imp.skipped ? `; skipped ${imp.skipped} invalid rows` : ''}.` };
+      return { ok: true, msg: `Imported ${imp.symbols.length} symbols${files.length > 1 ? ` from ${files.length} files` : ''}, ${imp.days} days (${imp.from} → ${imp.to})${imp.dropped.length ? `; dropped ${imp.dropped.join(', ')} (too short)` : ''}${imp.skipped ? `; skipped ${imp.skipped} invalid rows` : ''}.` };
     } catch (err) { return { ok: false, msg: err.message }; }
   };
   const removeImport = async () => { await idbStore.del('import_v1').catch(() => {}); setImportedUniverse(null); };

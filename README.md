@@ -81,9 +81,14 @@ Settings has four main controls; everything else is under *Advanced*.
 - **Style**:
   - *Rank & tilt* (default): fully invested in the top 12 stocks by trend score (return from 6 months to
     1 month ago), re-ranked at each month end; dropped names are sold, new ones bought, survivors left
-    alone. On 2013–2018 daily data after costs: 223% vs 139% for holding all 23 stocks, ahead in 4 of 5
-    years — but most of the gap came from staying in NVDA and AMD through 2016–17 (without them: 85% vs
-    74%). It pays when strong trends exist.
+    alone. Not a reliable way to beat holding everything. Real daily data after 5bp costs:
+    - 12 stocks + sector funds, 2017–2026: +1153% vs +1178% for buy-and-hold, worst drop −39% vs −49%
+      (ahead in 5 of 8 years; most of the lead came in 2020, and it lost less in 2022).
+    - 6 sector funds alone (XLB XLE XLF XLK XLP XLV), 2017–2026: +119% vs +176%.
+    - 23 stocks, 2013–2018: 223% vs 139%, mostly from staying in NVDA and AMD (without them: 85% vs 74%).
+    An optional crash guard (cash when the market is below its 200-day average) exists in the engine
+    but is not used by the app: it cut drops in 2020, 2022 and 2025 but missed the rebounds and lost
+    badly over the full period.
   - *Stay invested*: hold every stock at an equal share of equity, sell one when it shows
     weakness, buy it back when that clears. The default weakness signal is Trend Persistence: on
     2015–2018 daily data it kept 88% of buy-and-hold's 95% gain with a −10% worst drop (vs −15%).
@@ -109,7 +114,7 @@ data they lowered returns in every test period.
 - **SIMULATED** replays daily history one day per tick, with local fills and no orders. *Replay data*
   in Settings picks the source: *Auto* (the broker's history when connected — 3, 5 or 10 years from
   Alpaca as its data plan allows, 220 days from IG — otherwise the fictional market), *Fictional*,
-  *Broker*, or *Imported*: a CSV you choose (`date,symbol,open,high,low,close,volume`), read in the
+  *Broker*, or *Imported*: one or more CSVs you choose (`date,symbol,open,high,low,close,volume`; pick several to combine them), read in the
   browser, kept in IndexedDB and never uploaded. Use it for longer validation history from any source
   you're licensed to use.
   The fictional market is generated in the browser (no network): two years of made-up daily prices
