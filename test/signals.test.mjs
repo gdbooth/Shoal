@@ -270,3 +270,37 @@ test('stay invested: daily loss limit blocks buying the next day', () => {
   const buys = r => r.trades.length;
   assert.ok(buys(capped) <= buys(free));
 });
+
+// ── Settings optimiser ──────────────────────────────────────────────────────
+test('optimiser: needs warm-up history before the window', async () => {
+  const r = await S.optimiseSettings(U_FULL, { asOf: 150, days: 100 });
+  assert.match(r.error, /Need \d+ days of history/);
+});
+
+test('optimiser: never worse than the starting settings in the window; held-out check included', async () => {
+  let last = 0;
+  const r = await S.optimiseSettings(U_FULL, { asOf: 420, days: 100, onProgress: p => { last = p; } });
+  assert.equal(r.from, 321); assert.equal(r.to, 420);
+  assert.ok(r.best.ret >= r.baseline.ret);
+  assert.ok(r.heldOut && r.heldOut.to === 320 && r.heldOut.from === 221);
+  assert.ok(Number.isFinite(r.heldOut.best.ret) && Number.isFinite(r.heldOut.baseline.ret));
+  assert.equal(last, 1);
+  assert.ok(['invested', 'both'].includes(r.best.cfg.style));
+  if (r.best.cfg.param) assert.equal(r.best.cfg.param.agent, r.best.cfg.agents);
+});
+
+test('optimiser: no lookahead — later bars do not change the result', async () => {
+  const a = await S.optimiseSettings(U_FULL, { asOf: 380, days: 80 });
+  const b = await S.optimiseSettings(U_CUT(380), { asOf: 380, days: 80 });
+  assert.deepEqual(a.best.cfg, b.best.cfg);
+  close(a.best.ret, b.best.ret, 1e-12);
+});
+
+test('compare: frozen vs previous settings and buy-and-hold on the days since freezing', () => {
+  const frozen = { cfg: { style: 'invested', agents: 'swarm', minConf: 0.55, investFraction: 1 }, params: {} };
+  const before = { cfg: { style: 'invested', agents: 'default', minConf: 0.55, investFraction: 0.9 }, params: {} };
+  const c = S.compareSettings(U_FULL, { frozen, before, from: 401, to: 460 });
+  assert.equal(c.days, 60);
+  for (const k of ['frozen', 'before']) assert.ok(Number.isFinite(c[k].ret));
+  assert.ok(Number.isFinite(c.bench));
+});

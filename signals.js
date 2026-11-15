@@ -1317,6 +1317,113 @@
     };
   }
 
+  // ── Settings optimiser ─────────────────────────────────────────────────────
+  // Searches the settings that drive returns for the highest return over a past window, using the same
+  // walk-forward engines as the Backtest screen. A config is:
+  //   { style: 'invested' | 'both', agents: 'default' | 'swarm' | <agentId>, minConf, investFraction,
+  //     atrStop, atrTarget, maxHold, param: { agent, key, value } | null }
+  // Coordinate search: starting from the current settings, try every value of one setting at a time and
+  // keep any improvement; two passes.
+  const OPT_SPACE = {
+    style: ['invested', 'both'],
+    agents: ['default', 'swarm', ...AGENT_IDS],
+    minConf: [0.45, 0.55, 0.65, 0.75],
+    investFraction: [0.6, 0.8, 1.0],
+    atrStop: [1.5, 2, 3],
+    atrTarget: [2, 3, 5],
+    maxHold: [5, 10, 20],
+  };
+  const OPT_WARMUP = 130; // bars of history needed before a window starts
+
+  function configWeights(cfg) {
+    return Object.fromEntries(AGENT_IDS.map(id => [id,
+      cfg.agents === 'swarm' ? 1 / AGENT_IDS.length
+        : cfg.agents === 'default' ? (cfg.style === 'both' ? 1 / AGENT_IDS.length : (id === 'earn' ? 1 : 0))
+        : (id === cfg.agents ? 1 : 0)]));
+  }
+  function configParams(cfg, base = {}) {
+    if (!cfg.param) return base;
+    const { agent, key, value } = cfg.param;
+    return { ...base, [agent]: { ...(base[agent] || {}), [key]: value } };
+  }
+
+  function createEvaluator(U, baseParams = {}) {
+    const books = new Map();
+    const bookFor = (params) => {
+      const k = JSON.stringify(params);
+      if (!books.has(k)) books.set(k, createScoreBook(U, params));
+      return books.get(k);
+    };
+    return (cfg, from, to) => {
+      const book = bookFor(configParams(cfg, baseParams));
+      const weights = configWeights(cfg);
+      const r = cfg.style === 'both'
+        ? runBacktest(U, { start: from, end: to, weights, signalsAt: book.signalsAt, minConf: cfg.minConf, minConsensus: 1,
+            maxPos: 25, riskPct: 1, maxTradePct: 5, atrStop: cfg.atrStop, atrTarget: cfg.atrTarget, maxHold: cfg.maxHold,
+            regimeAware: false, corrAware: false })
+        : runInvested(U, { start: from, end: to, weights, signalsAt: book.signalsAt, minConf: cfg.minConf, investFraction: cfg.investFraction });
+      return { ret: r.totalReturn, bench: r.benchReturn, sharpe: r.sharpe, maxDD: r.maxDD, trades: r.tradeCount, curve: r.curve, benchCurve: r.bench };
+    };
+  }
+
+  const tick = () => new Promise(r => setTimeout(r, 0));
+
+  async function optimiseSettings(U, o) {
+    const days = Math.round(o.days), to = o.asOf, from = to - days + 1;
+    if (from < OPT_WARMUP) return { error: `Need ${OPT_WARMUP + days} days of history for a ${days}-day window; this data has ${to + 1}.` };
+    const evaluate = createEvaluator(U, o.params || {});
+    const startCfg = { style: 'invested', agents: 'default', minConf: 0.55, investFraction: 0.9, atrStop: 2, atrTarget: 3, maxHold: 7, param: null, ...o.start };
+    let evals = 0;
+    const score = async (cfg) => { evals++; if (evals % 2 === 0) await tick(); return evaluate(cfg, from, to); };
+    const baseline = { cfg: startCfg, ...(await score(startCfg)) };
+    let best = baseline;
+    const dims = (cfg) => {
+      const d = ['style', 'agents', 'minConf'];
+      if (cfg.style === 'both') d.push('atrStop', 'atrTarget', 'maxHold'); else d.push('investFraction');
+      if (TUNE_KEYS[cfg.agents]) d.push('param');
+      return d;
+    };
+    const valuesFor = (dim, cfg) => {
+      if (dim === 'param') {
+        const key = TUNE_KEYS[cfg.agents];
+        if (!key) return []; // the agent choice changed earlier in this pass
+        return [null, ...key.values.map(v => ({ agent: cfg.agents, key: key.id, value: v }))];
+      }
+      if ((dim === 'investFraction' && cfg.style === 'both') || (['atrStop', 'atrTarget', 'maxHold'].includes(dim) && cfg.style !== 'both')) return [];
+      return [...new Set([cfg[dim], ...OPT_SPACE[dim]])];
+    };
+    const total = 2 * (3 + 4 + 18 + 4 + 3 + 6); // rough, for the progress bar
+    for (let pass = 0; pass < 2; pass++) {
+      let improved = false;
+      for (const dim of dims(best.cfg)) {
+        for (const v of valuesFor(dim, best.cfg)) {
+          if (JSON.stringify(v) === JSON.stringify(best.cfg[dim])) continue;
+          const cfg = { ...best.cfg, [dim]: v };
+          if (dim === 'agents' && cfg.param && cfg.param.agent !== v) cfg.param = null; // a tuned setting belongs to its agent
+          const r = await score(cfg);
+          if (r.ret > best.ret + 1e-9) { best = { cfg, ...r }; improved = true; }
+          if (o.onProgress) o.onProgress(Math.min(0.99, evals / total));
+        }
+      }
+      if (!improved) break;
+    }
+    // Held-out check: the same two configs on the `days` before the window — data the search never saw
+    let heldOut = null;
+    if (from - days >= OPT_WARMUP) {
+      heldOut = { from: from - days, to: from - 1, best: evaluate(best.cfg, from - days, from - 1), baseline: evaluate(startCfg, from - days, from - 1) };
+    }
+    if (o.onProgress) o.onProgress(1);
+    return { from, to, days, baseline, best, heldOut, evals };
+  }
+
+  // Frozen vs previous settings (each with its own agent parameters) and buy-and-hold, on [from, to].
+  function compareSettings(U, { frozen, before, from, to }) {
+    if (to - from + 1 < 1) return null;
+    const a = createEvaluator(U, frozen.params || {})(frozen.cfg, from, to);
+    const b = createEvaluator(U, before.params || {})(before.cfg, from, to);
+    return { from, to, days: to - from + 1, frozen: a, before: b, bench: a.bench };
+  }
+
   // ── Synthetic market (tests and offline demos) ──────────────────────────────────────
   // Market + sector + stock factors with regime switching (trending / ranging, calm / volatile),
   // opening gaps, intraday ranges and volume that swells on big moves.
@@ -1368,6 +1475,7 @@
     ensemble, correlationAdjust, regimeMultipliers, atrPlan,
     runBacktest, evaluateAgents, synthUniverseBars,
     TUNE_KEYS, AUTOPILOT, createScoreBook, proposeWeights, tuneParam, runInvested,
+    OPT_SPACE, OPT_WARMUP, configWeights, configParams, createEvaluator, optimiseSettings, compareSettings,
   };
   root.ShoalSignals = api;
 })(typeof window !== 'undefined' ? window : globalThis);

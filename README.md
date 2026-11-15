@@ -101,9 +101,26 @@ data they lowered returns in every test period.
   in Settings picks the source: *Auto* (the broker's history when connected — about 3 years from
   Alpaca, 220 days from IG — otherwise the fictional market), *Fictional* or *Broker*.
   The fictional market is generated in the browser (no network): two years of made-up daily prices
-  ending today, plus warm-up history before them. It shows how a strategy behaves, not whether it
+  ending today, plus about 21 months of warm-up history before them. It shows how a strategy behaves, not whether it
   works on real prices, and it never reaches VIRTUAL or LIVE.
 - **VIRTUAL** sends orders to the broker's paper/demo account.
 - **LIVE** sends real orders.
 
 The dashboard compares Shoal with buying and holding the same stocks over the same period.
+
+## Optimiser
+
+The **Optimiser** screen fits settings to recent history and then checks whether that helped:
+
+1. **Optimise** the last N days (default 100; ends at the day being replayed in SIMULATED, or the latest
+   broker bar otherwise). It searches style, which agents decide, confidence threshold, share invested,
+   ATR stop/target, holding period and the deciding agent's main setting, for the highest return.
+   A **held-out check** runs the result on the N days *before* the window, which the search never saw.
+2. **Apply & freeze**: the optimised settings are applied and Settings / Agent config are locked. Your
+   previous settings are kept.
+3. **Run again & compare**: frozen vs previous settings vs buy-and-hold on the days since freezing, with a
+   better / worse verdict and how much of the optimised advantage carried over.
+
+On real 2015–2018 prices, across 11 rolling 100-day windows, optimised settings averaged +12.1% inside
+their window vs +5.4% for the defaults, but +7.8% vs +7.2% over the following 100 days. The held-out check
+called the next-period winner in 8 of 11 windows.
