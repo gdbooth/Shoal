@@ -97,8 +97,12 @@ data they lowered returns in every test period.
 
 ## Modes
 
-- **SIMULATED** replays the connected broker's daily history (about 3 years from Alpaca, 220 days from
-  IG) one day per tick, with local fills and no orders. Without a broker there is nothing to replay.
+- **SIMULATED** replays daily history one day per tick, with local fills and no orders. *Replay data*
+  in Settings picks the source: *Auto* (the broker's history when connected — about 3 years from
+  Alpaca, 220 days from IG — otherwise the fictional market), *Fictional* or *Broker*.
+  The fictional market is generated in the browser (no network): two years of made-up daily prices
+  ending today, plus warm-up history before them. It shows how a strategy behaves, not whether it
+  works on real prices, and it never reaches VIRTUAL or LIVE.
 - **VIRTUAL** sends orders to the broker's paper/demo account.
 - **LIVE** sends real orders.
 

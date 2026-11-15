@@ -1693,6 +1693,7 @@ function computeMark(trade, livePrices) {
   // replayed trades first: livePrices holds today's prices, not the replayed day's
   if (trade.replay && window.SHOAL_REPLAY) {
     const { U, g } = window.SHOAL_REPLAY, F = U.F[trade.sym];
+    if (trade.replaySrc && trade.replaySrc !== replayKey(U)) return trade.price;
     if (F) return F.c[Math.max(0, Math.min(g - U.off[trade.sym], F.n - 1))];
   }
   const live = livePrices && livePrices[trade.sym];
@@ -1964,9 +1965,18 @@ const SECTOR_TICKERS = {
   Mat: ['LIN','APD','SHW','FCX','ECL','NEM','DOW','PPG'],
 };
 
-// Demo market: generated OHLCV bars that only feed the charts and signal displays before a broker is
-// connected. Nothing trades on them: SIMULATED mode replays the broker's own daily history.
-const SIM_START = 756, SIM_LEN = 3000;
+// Fictional market: generated OHLCV bars (no real prices, no network) dated on weekdays ending today.
+// The last ~2 years are what SIMULATED mode replays when no broker is connected; the ~330 calendar days
+// before that are warm-up so every indicator has history on the first replayed day. The same series
+// feeds the demo charts. Fictional data never reaches VIRTUAL or LIVE, which need real broker bars.
+const FICTION_REPLAY_DAYS = 730, FICTION_WARMUP_DAYS = 330;
+const FICTION_DATES = (() => {
+  const out = [], end = new Date();
+  for (let d = new Date(end.getTime() - (FICTION_REPLAY_DAYS + FICTION_WARMUP_DAYS) * 86_400_000); d <= end; d = new Date(d.getTime() + 86_400_000)) { const wd = d.getUTCDay(); if (wd !== 0 && wd !== 6) out.push(d.toISOString().slice(0, 10)); }
+  return out;
+})();
+const FICTION_REPLAY_FROM = new Date(Date.now() - FICTION_REPLAY_DAYS * 86_400_000).toISOString().slice(0, 10);
+const SIM_LEN = FICTION_DATES.length, SIM_START = SIM_LEN;
 let nextTradeId = 10000 + Math.floor(Math.random() * 80000); // sequential: random ids collided at 100× speed
 
 // Risk levels: one choice sets the detailed risk values (still editable under Advanced).
@@ -1977,7 +1987,7 @@ const RISK_LEVELS = {
 };
 const RISK_DEFAULTS = {
   riskLevel: 'balanced', ...RISK_LEVELS.balanced,
-  style: 'invested', autopilot: false, autopilotFrozen: false,
+  style: 'invested', autopilot: false, autopilotFrozen: false, replaySource: 'auto',
   shorts: true, minAgentAccuracy: 35, autoDisableAgents: false, maxDisagreement: 65, maxSectorPct: 40,
   stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48, atrStops: true, regimeWeights: false, corrPenalty: false,
 };
@@ -1988,9 +1998,12 @@ const RISK_DEFAULTS = {
 const defaultWeightsFor = (style) => Object.fromEntries(AGENTS.map(a => [a.id,
   style === 'both' ? 1 / AGENTS.length : (a.id === 'earn' ? 1 : 0)]));
 
-// SIMULATED mode replays the broker's daily bars: warm-up first, so every indicator (and Autopilot's
-// scoring window when there's enough history) has data before the first replayed day.
-const replayStartFor = (U) => Math.min(U.L - 10, U.L >= 400 ? 200 : Math.max(130, U.L - 90));
+// Replay starts after a warm-up, so every indicator (and Autopilot's scoring window when there's enough
+// history) has data on the first replayed day. The fictional market starts exactly 2 years back.
+const replayStartFor = (U) => {
+  if (U.fictional) { const k = FICTION_DATES.findIndex(d => d >= FICTION_REPLAY_FROM); return k > 0 ? k : 200; }
+  return Math.min(U.L - 10, U.L >= 400 ? 200 : Math.max(130, U.L - 90));
+};
 const barDate = (U, g) => {
   for (const s of U.syms) { const F = U.F[s], i = g - U.off[s]; if (F.t && F.t[i]) return String(F.t[i]).slice(0, 10); }
   return `day ${g}`;
@@ -1998,7 +2011,13 @@ const barDate = (U, g) => {
 const SECTOR_OF = Object.fromEntries(TICKERS.map(t => [t.sym, t.sector]));
 const SIM_BARS = SS.synthUniverseBars(TICKERS.map(t => t.sym), SECTOR_OF, SEED, SIM_LEN,
   Object.fromEntries(TICKERS.map(t => [t.sym, t.last * 0.78])));
+Object.values(SIM_BARS).forEach(b => { b.t = FICTION_DATES; });
 const SIM_U = SS.buildUniverse(SIM_BARS, SECTOR_OF);
+SIM_U.fictional = true;
+
+// Which data SIMULATED replays: 'auto' = broker history when connected, otherwise the fictional market
+const replayUniverseFor = (source, live) => (source === 'broker' ? live : source === 'fictional' ? SIM_U : (live || SIM_U));
+const replayKey = (U) => (U && U.fictional ? 'fictional' : 'broker');
 
 const PRICE_HISTORY = {};
 TICKERS.forEach(t => { PRICE_HISTORY[t.sym] = SIM_BARS[t.sym].c.slice(0, SIM_START); });
@@ -2681,7 +2700,7 @@ const ToastOverlay = ({ toasts, onRemove }) => (
 
 // Banners (no data to replay, daily loss limit hit) and the bot-vs-buy-and-hold comparison
 const StatusStrip = ({ ctx, mode }) => {
-  const U = ctx?.liveUniverse, info = ctx?.replayInfo, hit = ctx?.lossHit;
+  const U = mode === 'SIMULATED' ? ctx?.replayUniverse : ctx?.liveUniverse, info = ctx?.replayInfo, hit = ctx?.lossHit;
   let cmp = null;
   if (U) {
     let bench = null, bot = null, label = '';
@@ -2690,7 +2709,7 @@ const StatusStrip = ({ ctx, mode }) => {
       for (const s of U.syms) { const F = U.F[s], i0 = info.anchor.g - U.off[s], i = info.g - U.off[s]; if (i0 >= 0 && i >= 0) { sum += F.c[i] / F.c[i0]; n++; } }
       bench = n ? sum / n - 1 : null;
       bot = info.anchor.equity > 0 ? (ctx.balance ?? 0) / info.anchor.equity - 1 : null;
-      label = `replay ${barDate(U, info.anchor.g)} → ${info.date} (${info.g - info.start + 1} of ${info.end - info.start + 1} days)`;
+      label = `${U.fictional ? 'fictional market' : 'broker history'} · replay ${barDate(U, info.anchor.g)} → ${info.date} (${info.g - info.start + 1} of ${info.end - info.start + 1} days)`;
     } else if (mode !== 'SIMULATED') {
       const from = new Date(ctx?.tradesResetAt || 0).toISOString().slice(0, 10);
       let sum = 0, n = 0;
@@ -2711,8 +2730,13 @@ const StatusStrip = ({ ctx, mode }) => {
     <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:16}}>
       {mode === 'SIMULATED' && !U && (
         <div className="card" style={{borderColor:'var(--warn)',padding:'12px 16px'}}>
-          <div className="mono tiny" style={{color:'var(--warn)',letterSpacing:'0.12em',marginBottom:4}}>NOTHING TO REPLAY YET</div>
-          <div className="tiny" style={{color:'var(--ink-2)'}}>SIMULATED mode replays your broker's daily price history. Connect Alpaca or IG in Settings (a paper or demo account is fine). Charts below show demo data until then.</div>
+          <div className="mono tiny" style={{color:'var(--warn)',letterSpacing:'0.12em',marginBottom:4}}>NO BROKER HISTORY</div>
+          <div className="tiny" style={{color:'var(--ink-2)'}}>Replay data is set to Broker, but no broker is connected. Connect Alpaca or IG in Settings, or set Replay data to Auto or Fictional.</div>
+        </div>
+      )}
+      {mode === 'SIMULATED' && U && U.fictional && (
+        <div className="card" style={{borderColor:'var(--info)',padding:'10px 16px'}}>
+          <div className="tiny" style={{color:'var(--ink-2)'}}><span className="mono" style={{color:'var(--info)',letterSpacing:'0.12em'}}>FICTIONAL MARKET · </span>Generated prices, {barDate(U, replayStartFor(U))} to {barDate(U, U.L - 1)}. They show how the strategy behaves, not whether it works on real prices.</div>
         </div>
       )}
       {hit && (
@@ -4268,8 +4292,9 @@ const ScreenBacktest = ({ mode, ctx }) => {
   const [period, setPeriod]       = React.useState('1Y');
   const [strategy, setStrategy]   = React.useState('Swarm v0.4');
   const [result, setResult]       = React.useState(null);
-  const universe = ctx?.liveUniverse || null;
-  const usingLive = !!universe;
+  // Broker history when connected; otherwise the fictional market (clearly labelled)
+  const universe = ctx?.liveUniverse || SIM_U;
+  const usingLive = !!ctx?.liveUniverse;
   const btOpts = { ...(ctx?.risk || {}), params: ctx?.agentParams };
 
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -4299,11 +4324,9 @@ const ScreenBacktest = ({ mode, ctx }) => {
   return (
     <div className="page" data-screen-label="05 Backtest">
       <div className="page-head">
-        <div className="page-eyebrow">Backtest · {usingLive ? `your broker's daily bars · ${(ctx?.risk?.style === 'both') ? 'trade both ways' : 'stay invested'}${ctx?.risk?.autopilot ? ' · Autopilot' : ''}` : 'needs a broker connection'}</div>
+        <div className="page-eyebrow">Backtest · {usingLive ? "your broker's daily bars" : 'fictional market (generated prices)'} · {(ctx?.risk?.style === 'both') ? 'trade both ways' : 'stay invested'}{ctx?.risk?.autopilot ? ' · Autopilot' : ''}</div>
         <h1 className="page-title">Replay the swarm <em>against the past.</em></h1>
-        <p className="page-sub">{!usingLive
-          ? 'Connect a broker in Settings: backtests run on its daily price history, the same data SIMULATED mode replays.'
-          : (ctx?.risk?.style === 'both'
+        <p className="page-sub">{!usingLive && 'Fictional prices: useful to see how the strategy behaves, not evidence it works. Connect a broker to backtest real history. '}{(ctx?.risk?.style === 'both'
             ? `Walk-forward on ${universe.L} daily bars: agents recomputed from each day's bars only, entries at the next open, exits at the ATR stop, ATR target or time limit.`
             : `Walk-forward on ${universe.L} daily bars: hold every stock, sell one at the next open when the weakness signal fires, buy it back when it clears. The grey line holds everything throughout.`)}</p>
       </div>
@@ -4795,6 +4818,20 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
           </div>
 
           <div className="field">
+            <div className="field-label" style={{marginBottom:8}}>Replay data <span className="muted">(SIMULATED mode)</span></div>
+            <div className="tweak-opts">
+              {[['auto','Auto'],['fictional','Fictional'],['broker','Broker']].map(([k, label]) => (
+                <div key={k} className={'tweak-opt ' + ((risk.replaySource || 'auto') === k ? 'on' : '')} onClick={() => setRisk({ ...risk, replaySource: k })}>{label}</div>
+              ))}
+            </div>
+            <div className="mono tiny muted" style={{marginTop:6}}>
+              {(risk.replaySource || 'auto') === 'fictional' ? 'Always replay the built-in fictional market: 2 years of generated prices ending today.'
+                : risk.replaySource === 'broker' ? "Only replay your broker's history (about 3 years from Alpaca, 220 days from IG)."
+                : "Your broker's history when connected, otherwise the fictional 2-year market."}
+            </div>
+          </div>
+
+          <div className="field">
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <div className="field-label">Autopilot</div>
               <button className={'tweak-opt ' + (risk.autopilot ? 'on' : '')} onClick={() => setRisk({ ...risk, autopilot: !risk.autopilot })}>{risk.autopilot ? 'ON' : 'OFF'}</button>
@@ -5055,9 +5092,9 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
             <div className="mono tiny" style={{color:'var(--virtual)',letterSpacing:'0.14em'}}>◐ SIMULATED</div>
             <div className="serif" style={{fontSize:19,marginTop:8,marginBottom:6}}>History replay</div>
             <div className="tiny" style={{color:'var(--ink-2)',lineHeight:1.5,marginBottom:10}}>
-              Replays your broker's daily price history, one day per tick, with local fills. No orders are sent. Needs a broker connection for the data.
+              Replays daily price history one day per tick with local fills: your broker's when connected, otherwise a fictional 2-year market. No orders are sent.
             </div>
-            <div className="mono tiny muted">Broker history · no capital exposure</div>
+            <div className="mono tiny muted">Broker or fictional history · no capital exposure</div>
           </div>
           <div style={{padding:16,border:'1px solid '+(mode==='VIRTUAL'?'var(--info)':'var(--line-2)'),borderRadius:6,background: mode==='VIRTUAL' ? 'rgba(126,192,238,0.04)' : 'transparent',cursor:'pointer'}} onClick={()=>{}}>
             <div className="mono tiny" style={{color:'var(--info)',letterSpacing:'0.14em'}}>◑ VIRTUAL</div>
@@ -6500,7 +6537,7 @@ const ScreenGuide = () => {
     {
       title: 'Three operating modes',
       items: [
-        { label: 'SIMULATED', desc: 'Replays your broker\'s daily history with local fills — no orders sent. Connect a broker (paper is fine) for the data.' },
+        { label: 'SIMULATED', desc: 'Replays daily history with local fills — no orders sent. Uses your broker\'s history when connected, otherwise a fictional 2-year market.' },
         { label: 'VIRTUAL', desc: 'Real orders are sent to your Alpaca paper-trading account. Full broker round-trip, zero real money.' },
         { label: 'LIVE', desc: 'Real money, real fills through your Alpaca live account. Use with care.' },
       ],
@@ -7117,22 +7154,24 @@ const App = () => {
       const alpacaNow = alpacaRef.current;
       const riskNow = riskRef.current || {};
       const style = riskNow.style || 'invested';
-      const U = liveUniverseRef.current;
-      // SIMULATED replays the broker's daily history, one bar per tick. With no broker data there is
-      // nothing to trade on: Shoal no longer trades a made-up market, and never trades demo signals.
+      // SIMULATED replays daily history one bar per tick: the broker's when connected (or chosen), the
+      // fictional market otherwise. VIRTUAL and LIVE only ever trade on real broker bars.
       const replay = mode === 'SIMULATED';
+      const U = replay ? replayUniverseFor(riskNow.replaySource, liveUniverseRef.current) : liveUniverseRef.current;
       if (!U) { if (replay) setReplayInfo(r => (r && r.waiting ? r : { waiting: true })); return; }
+      const srcKey = replayKey(U);
       let rollover = false;
       if (replay) {
         const start = replayStartFor(U);
         let g = replayIdxRef.current;
+        if (replayIdxRef.key !== srcKey) { replayIdxRef.key = srcKey; g = null; } // data source changed: start over
         if (g == null || g < start - 1 || g > U.L - 1) { g = start - 1; replayAnchorRef.current = null; }
         g += 1;
         if (g > U.L - 1) { g = start; rollover = true; }
         replayIdxRef.current = g;
-        window.SHOAL_REPLAY = { U, g };
+        window.SHOAL_REPLAY = { U, g, key: srcKey };
         if (!replayAnchorRef.current || rollover) replayAnchorRef.current = { g, equity: balanceRef.current };
-        setReplayInfo({ g, start, end: U.L - 1, date: barDate(U, g), anchor: replayAnchorRef.current });
+        setReplayInfo({ g, start, end: U.L - 1, date: barDate(U, g), anchor: replayAnchorRef.current, fictional: !!U.fictional });
       }
       const asOf = replay ? replayIdxRef.current : U.L - 1;
       const book = bookFor(U, agentParamsRef.current);
@@ -7206,6 +7245,10 @@ const App = () => {
           let exit = null, reason = null;
           if (t.replay) {
             if (!replay) return t; // replayed position: frozen while another mode is active
+            if (t.replaySrc && t.replaySrc !== srcKey) {
+              // opened on the other data source: close flat rather than mark it against a different market
+              return { ...t, status: 'LOSS', pnl: 0, pnlPct: 0, exit: t.price, exitTs: Date.now(), isNew: false, closeReason: 'REPLAY-SOURCE-CHANGED' };
+            }
             const F = U.F[t.sym];
             if (!F) return t;
             const i = asOf - U.off[t.sym];
@@ -7363,7 +7406,7 @@ const App = () => {
               conf: x.ens.confidence, reason: 'Stay invested · no weakness signal',
               pnl: null, pnlPct: null, status: 'OPEN', mode,
               consensus: x.ens.consensus, votes: x.ens.votes, signals: x.sigs, disagreement: x.ens.disagreement,
-              annVol: x.F.vol(20)[x.i] || 0, style: 'invested', replay, entryG: replay ? asOf : null,
+              annVol: x.F.vol(20)[x.i] || 0, style: 'invested', replay, replaySrc: replay ? srcKey : null, entryG: replay ? asOf : null,
               regime: x.regime.label, regimeKey: x.regime.key, isNew: true, _notional: notional,
             });
           }
@@ -7537,7 +7580,7 @@ const App = () => {
               signals: sigs,
               disagreement: ensemble.disagreement,
               annVol: tkVol,
-              style: 'both', replay, entryG: replay ? asOf : null,
+              style: 'both', replay, replaySrc: replay ? srcKey : null, entryG: replay ? asOf : null,
               stopPct, tpPct,
               regime: regime?.label, regimeKey: regime?.key,
               voteHistory,
@@ -7711,7 +7754,8 @@ const App = () => {
   }
 
   const alpacaConnected = !!(alpaca?.connected && alpaca?.token);
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected, liveUniverse, agentParams, replayInfo, lossHit, autopilotLog, mode };
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected, liveUniverse, agentParams, replayInfo, lossHit, autopilotLog, mode,
+    replayUniverse: replayUniverseFor(risk.replaySource, liveUniverse) };
   const screens = {
     guide:       <ScreenGuide/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
@@ -7724,7 +7768,7 @@ const App = () => {
     agentperf:   <ScreenAgentPerf mode={mode} ctx={ctx}/>,
     pnltrend:    <ScreenPnlTrend mode={mode} ctx={ctx}/>,
     sectors:     <ScreenSectorUniverse mode={mode} ctx={ctx}/>,
-    agentconfig: <ScreenAgentConfig agentParams={agentParams} setAgentParams={setAgentParams} enabledAgents={enabledAgents} setEnabledAgents={setEnabledAgents} agentWeights={agentWeights} agentHistory={agentHistory} agentParamPresets={agentParamPresets} setAgentParamPresets={setAgentParamPresets} universe={liveUniverse} autopilot={!!risk.autopilot}/>,
+    agentconfig: <ScreenAgentConfig agentParams={agentParams} setAgentParams={setAgentParams} enabledAgents={enabledAgents} setEnabledAgents={setEnabledAgents} agentWeights={agentWeights} agentHistory={agentHistory} agentParamPresets={agentParamPresets} setAgentParamPresets={setAgentParamPresets} universe={liveUniverse || SIM_U} autopilot={!!risk.autopilot}/>,
     settings:    <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} onResetWeights={()=>setShowWeightReset(true)} onExportWeights={exportWeights} onImportWeights={importWeights} backendOk={backendOk} autopilotLog={autopilotLog}/>,
   };
 
