@@ -905,10 +905,13 @@
     return null; // no dates: caller falls back to every 21 bars
   }
 
+  // Holding at least as many stocks as exist would just be buy-and-hold: fall back to the top half
+  const effectiveTopK = (topK, N) => (topK && topK < N ? Math.max(1, topK) : Math.max(1, Math.ceil(N / 2)));
+
   function runTilt(U, o = {}) {
     const start = Math.max(o.start ?? 130, 130), end = Math.min(o.end ?? U.L - 1, U.L - 1);
     const capital = o.capital ?? 100000, cost = costOf(o), frac = o.investFraction ?? 1;
-    const N = U.syms.length, K = Math.max(1, Math.min(N, o.topK ?? Math.ceil(N / 2)));
+    const N = U.syms.length, K = effectiveTopK(o.topK, N);
     const scoreAt = o.scoreAt || ((sym, i) => trendScore(U.F[sym], i, mergeParams(o.params).earn));
     let cash = capital;
     const pos = {}; // sym → { qty, entry, entryG }
@@ -1767,7 +1770,7 @@
     runBacktest, evaluateAgents, synthUniverseBars,
     TUNE_KEYS, AUTOPILOT, createScoreBook, proposeWeights, tuneParam, runInvested,
     OPT_SPACE, OPT_WARMUP, configWeights, configParams, createEvaluator, optimiseSettings, compareSettings,
-    COST_PROFILES, trendScore, runTilt, marketBelowAverage, MODEL, fitModel, modelScore, rankIC, agentEvidence, createModelScorer,
+    COST_PROFILES, trendScore, runTilt, marketBelowAverage, effectiveTopK, MODEL, fitModel, modelScore, rankIC, agentEvidence, createModelScorer,
   };
   root.ShoalSignals = api;
 })(typeof window !== 'undefined' ? window : globalThis);

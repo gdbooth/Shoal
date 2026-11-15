@@ -2042,17 +2042,20 @@ function parseBarsCsv(text) {
   if (lines.length < 2) throw new Error('The file has no data rows.');
   const head = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/^"|"$/g, ''));
   const col = (...names) => names.map(n => head.indexOf(n)).find(i => i >= 0);
-  const ci = { d: col('date', 'day', 'timestamp'), s: col('symbol', 'ticker'), o: col('open'), h: col('high'), l: col('low'), c: col('close', 'adj close', 'adj_close'), v: col('volume') };
+  // also accepts Nasdaq.com exports: Date,Symbol2,Close/Last,Volume,Open,High,Low with $ prices and MM/DD/YYYY dates
+  const ci = { d: col('date', 'day', 'timestamp'), s: col('symbol', 'ticker', 'symbol2'), o: col('open'), h: col('high'), l: col('low'), c: col('close', 'adj close', 'adj_close', 'close/last'), v: col('volume') };
+  const toIso = (d) => { const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(d); return m ? `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` : d.slice(0, 10); };
+  const toNum = (x) => +String(x ?? '').replace(/[$,\s]/g, '');
   if (ci.d == null || ci.s == null || ci.c == null) throw new Error('Need at least date, symbol and close columns.');
   const bySym = new Map();
   let skipped = 0;
   for (let k = 1; k < lines.length; k++) {
     const f = lines[k].split(',').map(x => x.trim().replace(/^"|"$/g, ''));
-    const sym = (f[ci.s] || '').toUpperCase(), date = (f[ci.d] || '').slice(0, 10), c = +f[ci.c];
+    const sym = (f[ci.s] || '').toUpperCase(), date = toIso(f[ci.d] || ''), c = toNum(f[ci.c]);
     if (!/^[A-Z0-9.\-]{1,10}$/.test(sym) || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !(c > 0) || !Number.isFinite(c)) { skipped++; continue; }
-    const num = (i, d) => { const x = i == null ? NaN : +f[i]; return Number.isFinite(x) && x > 0 ? x : d; };
+    const num = (i, d) => { const x = i == null ? NaN : toNum(f[i]); return Number.isFinite(x) && x > 0 ? x : d; };
     const o = num(ci.o, c), h = Math.max(num(ci.h, Math.max(o, c)), o, c), l = Math.min(num(ci.l, Math.min(o, c)), o, c);
-    const v = ci.v == null ? 0 : (Number.isFinite(+f[ci.v]) && +f[ci.v] >= 0 ? +f[ci.v] : 0);
+    const v = ci.v == null ? 0 : (Number.isFinite(toNum(f[ci.v])) && toNum(f[ci.v]) >= 0 ? toNum(f[ci.v]) : 0);
     if (!bySym.has(sym)) { if (bySym.size >= IMPORT_MAX_SYMBOLS) { skipped++; continue; } bySym.set(sym, new Map()); }
     bySym.get(sym).set(date, { o, h, l, c, v });
   }
@@ -4556,7 +4559,7 @@ const ScreenBacktest = ({ mode, ctx }) => {
   const [result, setResult]       = React.useState(null);
   // Broker history when connected; otherwise the fictional market (clearly labelled)
   const universe = ctx?.analysisUniverse || SIM_U;
-  const usingLive = !universe.fictional;
+  const usingLive = !universe.fictional && !universe.imported;
   const btOpts = { ...(ctx?.risk || {}), params: ctx?.agentParams, costBps: ctx?.costBps };
 
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -4586,12 +4589,12 @@ const ScreenBacktest = ({ mode, ctx }) => {
   return (
     <div className="page" data-screen-label="05 Backtest">
       <div className="page-head">
-        <div className="page-eyebrow">Backtest · {usingLive ? "your broker's daily bars" : 'fictional market (generated prices)'} · {styleLabel(ctx?.risk?.style)}{ctx?.risk?.autopilot ? ' · Autopilot' : ''}</div>
+        <div className="page-eyebrow">Backtest · {universe.imported ? 'imported history' : usingLive ? "your broker's daily bars" : 'fictional market (generated prices)'} · {styleLabel(ctx?.risk?.style)}{ctx?.risk?.autopilot ? ' · Autopilot' : ''}</div>
         <h1 className="page-title">Replay the swarm <em>against the past.</em></h1>
-        <p className="page-sub">{!usingLive && 'Fictional prices: useful to see how the strategy behaves, not evidence it works. Connect a broker to backtest real history. '}{(ctx?.risk?.style === 'both'
+        <p className="page-sub">{universe.fictional && 'Fictional prices: useful to see how the strategy behaves, not evidence it works. Connect a broker or import a CSV to backtest real history. '}{(ctx?.risk?.style === 'both'
             ? `Walk-forward on ${universe.L} daily bars: agents recomputed from each day's bars only, entries at the next open, exits at the ATR stop, ATR target or time limit.`
             : (ctx?.risk?.style || 'tilt') === 'tilt'
-            ? `Walk-forward on ${universe.L} daily bars: at each month end, rank the stocks by ${ctx?.risk?.autopilot ? 'the model score' : 'trend score'} using only data up to that day, hold the top ${ctx?.risk?.topK || 12} from the next open, after ${ctx?.costBps ?? 5}bp costs per trade side. The grey line holds everything throughout.`
+            ? `Walk-forward on ${universe.L} daily bars: at each month end, rank the stocks by ${ctx?.risk?.autopilot ? 'the model score' : 'trend score'} using only data up to that day, hold the top ${SS.effectiveTopK(ctx?.risk?.topK || 12, universe.syms.length)} of ${universe.syms.length} from the next open, after ${ctx?.costBps ?? 5}bp costs per trade side. The grey line holds everything throughout.`
             : `Walk-forward on ${universe.L} daily bars: hold every stock, sell one at the next open when the weakness signal fires, buy it back when it clears. The grey line holds everything throughout.`)}</p>
       </div>
 
@@ -7742,7 +7745,7 @@ const App = () => {
       // new names bought with an equal share of equity; names that stay are not resized.
       if (style === 'tilt') {
         const frac = riskNow.investFraction ?? 0.9;
-        const K = Math.max(1, Math.min(U.syms.length - 1, riskNow.topK || Math.ceil(U.syms.length / 2)));
+        const K = SS.effectiveTopK(riskNow.topK || 12, U.syms.length);
         const blacklist = blacklistedSymbolsRef.current;
         const open = tradesRef.current.filter(t => t.status === 'OPEN');
         const heldBy = new Map(open.map(t => [t.sym, t]));
