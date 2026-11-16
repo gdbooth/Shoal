@@ -2815,6 +2815,11 @@ const StatusStrip = ({ ctx, mode }) => {
           <div className="tiny" style={{color:'var(--ink-2)'}}><span className="mono" style={{color:'var(--info)',letterSpacing:'0.12em'}}>FICTIONAL MARKET · </span>Generated prices, {barDate(U, replayStartFor(U))} to {barDate(U, U.L - 1)}. They show how the strategy behaves, not whether it works on real prices.</div>
         </div>
       )}
+      {mode !== 'SIMULATED' && ctx?.tradeStatus && (
+        <div className="card" style={{borderColor: ctx.tradeStatus.warn ? 'var(--warn)' : 'var(--line-2)',padding:'10px 16px'}}>
+          <div className="tiny" style={{color:'var(--ink-2)'}}><span className="mono" style={{color: ctx.tradeStatus.warn ? 'var(--warn)' : 'var(--info)',letterSpacing:'0.12em'}}>BOT STATUS · </span>{ctx.tradeStatus.text}</div>
+        </div>
+      )}
       {hit && (
         <div className="card" style={{borderColor:'var(--down)',padding:'12px 16px'}}>
           <div className="mono tiny" style={{color:'var(--down)',letterSpacing:'0.12em',marginBottom:4}}>DAILY LOSS LIMIT HIT · {hit.when}</div>
@@ -7072,6 +7077,9 @@ const App = () => {
   const replayIdxRef = React.useRef(null);
   const replayAnchorRef = React.useRef(null); // { g, equity } where the current replay pass started
   const [replayInfo, setReplayInfo] = React.useState(null);
+  // Why the bot is (not) trading right now in VIRTUAL / LIVE — shown on the dashboard
+  const [tradeStatus, setTradeStatus] = React.useState(null);
+  const sayStatus = (st) => setTradeStatus(p => (p && st && p.text === st.text ? p : st));
   const [replaySignals, setReplaySignals] = React.useState(null);
   // Orders sent to the broker but not yet reflected in positions (sym → time), to avoid doubling up
   const pendingOrdersRef = React.useRef(new Map());
@@ -7556,7 +7564,12 @@ const App = () => {
       // fictional market otherwise. VIRTUAL and LIVE only ever trade on real broker bars.
       const replay = mode === 'SIMULATED';
       const U = replay ? replayUniverseFor(riskNow.replaySource, liveUniverseRef.current, importedUniverseRef.current) : liveUniverseRef.current;
-      if (!U) { if (replay) setReplayInfo(r => (r && r.waiting ? r : { waiting: true })); return; }
+      if (!U) {
+        if (replay) setReplayInfo(r => (r && r.waiting ? r : { waiting: true }));
+        else sayStatus({ warn: true, text: "Waiting for price history from your broker. Trading starts once it has loaded." });
+        return;
+      }
+      if (replay) sayStatus(null);
       const srcKey = replayKey(U);
       const cost = costBpsFor(riskNow, replay ? U : null, alpacaNow?.brokerId) / 1e4; // per trade side
       let rollover = false;
@@ -7725,7 +7738,12 @@ const App = () => {
       // Broker connected + market closed: pause new trades entirely (no simulated fallback).
       // Real signals are still computed, but execution waits for the next session open.
       const mktNowGate = marketStatusRef.current;
-      if ((isLiveReal || isBrokerPaper) && mktNowGate && !mktNowGate.isOpen) return;
+      if ((isLiveReal || isBrokerPaper) && mktNowGate && !mktNowGate.isOpen) {
+        const nx = mktNowGate.nextOpen ? new Date(mktNowGate.nextOpen) : null;
+        sayStatus({ warn: true, text: `US market closed. Orders are only placed while it is open (9:30–16:00 New York time)${nx ? `; next open ${nx.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })} your time` : ''}.` });
+        return;
+      }
+      if (!replay && !isLiveReal && !isBrokerPaper) { sayStatus({ warn: true, text: mode === 'VIRTUAL' ? 'VIRTUAL needs a connected paper/demo account. Reconnect your broker in Settings.' : 'LIVE needs a connected live account. Reconnect your broker in Settings.' }); return; }
 
       // Daily loss limit: once today's equity is down by the limit, no new positions until the next day
       // (a replayed bar is a day). Selling on weakness and stops keep working.
@@ -7742,6 +7760,9 @@ const App = () => {
       }
       const blockNew = dayStartRef.current.hit;
       const isPending = (sym) => { const ts = pendingOrdersRef.current.get(sym); return ts != null && Date.now() - ts < 90_000; };
+      // Positions belonging to this mode: a replay's own positions in SIMULATED, broker-side ones otherwise.
+      // (Replayed positions stay frozen while VIRTUAL/LIVE runs and must not count as holdings there.)
+      const mineOpen = () => tradesRef.current.filter(t => t.status === 'OPEN' && (replay ? !!t.replay : !t.replay));
 
       // ── Rank & tilt ──
       // Fully invested in the top-K stocks by score (trend score, or the model with Autopilot on). Re-ranked
@@ -7751,18 +7772,25 @@ const App = () => {
         const frac = riskNow.investFraction ?? 0.9;
         const K = SS.effectiveTopK(riskNow.topK || 12, U.syms.length);
         const blacklist = blacklistedSymbolsRef.current;
-        const open = tradesRef.current.filter(t => t.status === 'OPEN');
+        const open = mineOpen();
         const heldBy = new Map(open.map(t => [t.sym, t]));
         const curMonth = replay ? barDate(U, asOf).slice(0, 7) : new Date().toISOString().slice(0, 7);
-        const monthEnds = replay ? (asOf < U.L - 1 && barDate(U, asOf + 1).slice(0, 7) !== curMonth) : tiltStateRef.current.month !== curMonth;
-        if (!(heldBy.size === 0 || monthEnds)) return;
+        const tKey = replay ? 'replay' : 'broker';
+        const monthEnds = replay ? (asOf < U.L - 1 && barDate(U, asOf + 1).slice(0, 7) !== curMonth) : (tiltStateRef.current[tKey] || {}).month !== curMonth;
+        if (!(heldBy.size === 0 || monthEnds)) {
+          if (!replay) sayStatus({ text: `Rank & tilt: holding ${heldBy.size} position${heldBy.size === 1 ? '' : 's'}, chosen this month. It re-ranks once a month, so the next trades come in the first market session of next month.` });
+          return;
+        }
         const scorer = scorerFor(U, book, !!riskNow.autopilot, agentParamsRef.current);
         const ranked = U.syms.filter(sym => !blacklist.has(sym))
           .map(sym => [sym, localIdx(sym) >= 130 ? scorer(sym, localIdx(sym)) : NaN])
           .filter(x => Number.isFinite(x[1])).sort((x, y) => y[1] - x[1]);
-        if (ranked.length < K) return;
+        if (ranked.length < K) {
+          if (!replay) sayStatus({ warn: true, text: `Rank & tilt needs at least 130 days of history for ${K} stocks to rank them; only ${ranked.length} have enough.` });
+          return;
+        }
         const keep = new Set(ranked.slice(0, K).map(x => x[0]));
-        tiltStateRef.current = { month: curMonth, keep: [...keep] };
+        tiltStateRef.current = { ...tiltStateRef.current, [tKey]: { month: curMonth, keep: [...keep] } };
         if (!replay) { try { localStorage.setItem('shoal_tilt_state_v1', JSON.stringify(tiltStateRef.current)); } catch (_) {} }
         const topSigs = sigsFor(ranked[0][0]);
         if (topSigs) { const e = computeEnsemble(topSigs, agentWeightsRef.current, null); setSwarmFocus({ sym: ranked[0][0], votes: e.votes, dir: 'BUY', confidence: e.confidence, ts: Date.now() }); }
@@ -7820,6 +7848,8 @@ const App = () => {
             else { setTrades(prev => [...newTrades, ...prev].slice(0, 5000)); tradesRef.current = [...newTrades, ...tradesRef.current]; }
           }
         }
+        if (!replay) sayStatus(blockNew && toBuy.length ? { warn: true, text: 'Daily loss limit hit: buys wait until the next trading day.' }
+          : { text: `Rank & tilt: re-ranked for ${curMonth}. ${bought.length ? `Sent buy orders for ${bought.join(', ')}.` : ''}${toSell.length ? ` Sent sells for ${toSell.map(t => t.sym).join(', ')}.` : ''}${!bought.length && !toSell.length ? 'Top stocks already held.' : ''}` });
         if (toSell.length || bought.length) {
           setAutopilotLog(prev => [{ ts: Date.now(), kind: 'info', when: replay ? barDate(U, asOf) : new Date().toISOString().slice(0, 10),
             text: `Monthly re-rank (top ${K} by ${scoreName} score): ${toSell.length ? `sold ${toSell.map(t => t.sym).join(', ')}` : 'nothing sold'}; ${bought.length ? `bought ${bought.join(', ')}` : 'nothing bought'}.` }, ...prev].slice(0, 100));
@@ -7834,7 +7864,7 @@ const App = () => {
         const minConf = (riskNow.confidence ?? 55) / 100;
         const frac = riskNow.investFraction ?? 0.9;
         const blacklist = blacklistedSymbolsRef.current;
-        const open = tradesRef.current.filter(t => t.status === 'OPEN');
+        const open = mineOpen();
         const heldBy = new Map(open.map(t => [t.sym, t]));
         const toSell = [], toBuy = [];
         let focus = null;
@@ -7932,7 +7962,7 @@ const App = () => {
         const kellyFrac = Math.max(0.15, Math.min(0.5, 2 * (avgWinRate - 0.5)));
 
         // Snapshot current open-position sector concentrations
-        const openTrades = tradesRef.current.filter(t => t.status === 'OPEN');
+        const openTrades = mineOpen();
         const sectorCounts = {};
         openTrades.forEach(t => {
           const sect = (TICKERS.find(tk => tk.sym === t.sym) || {}).sector || 'Other';
@@ -8257,7 +8287,7 @@ const App = () => {
   }
 
   const alpacaConnected = !!(alpaca?.connected && alpaca?.token);
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected, liveUniverse, agentParams, replayInfo, lossHit, autopilotLog, mode,
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected, liveUniverse, agentParams, replayInfo, tradeStatus: running ? tradeStatus : { warn: true, text: 'Paused. Press RESUME to let the bot trade.' }, lossHit, autopilotLog, mode,
     replayUniverse: replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse),
     analysisUniverse: (mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : liveUniverse) || SIM_U,
     importedUniverse, costBps: costBpsFor(risk, mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : null, alpaca?.brokerId) };
