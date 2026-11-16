@@ -2523,13 +2523,13 @@ const LineChart = ({ series, height = 220, colors = ['var(--virtual)', 'var(--in
   );
 };
 
-const StackedArea = ({ series, keys, colors, height = 240, xSuffix = 'd' }) => {
+const StackedArea = ({ series, keys, colors, height = 240, xSuffix = 'd', emptyText = 'No data yet — close some trades to see weight evolution', xLabels = null }) => {
   const W = 700, H = height, pad = { l: 40, r: 12, t: 12, b: 22 };
   const innerW = W - pad.l - pad.r, innerH = H - pad.t - pad.b;
   const len = series && keys[0] && series[keys[0]] ? series[keys[0]].length : 0;
   if (len === 0) return (
     <svg viewBox={`0 0 ${W} ${H}`} className="chart" preserveAspectRatio="none" style={{height: H}}>
-      <text x={W/2} y={H/2} textAnchor="middle" className="axis-text" opacity="0.5">No data yet — close some trades to see weight evolution</text>
+      <text x={W/2} y={H/2} textAnchor="middle" className="axis-text" opacity="0.5">{emptyText}</text>
     </svg>
   );
   const safeLen = Math.max(len, 2);
@@ -2557,9 +2557,9 @@ const StackedArea = ({ series, keys, colors, height = 240, xSuffix = 'd' }) => {
         <text key={i} x={pad.l - 6} y={pad.t + innerH * t + 3} textAnchor="end" className="axis-text">{Math.round((1-t)*100)}%</text>
       ))}
       {/* x-axis: left = oldest, right = most recent (now) */}
-      <text x={x(0)}       y={H - 6} textAnchor="start"  className="axis-text">−{len - 1}{xSuffix}</text>
-      {len > 2 && <text x={x(Math.floor((len-1)/2))} y={H - 6} textAnchor="middle" className="axis-text">−{Math.floor((len-1)/2)}{xSuffix}</text>}
-      <text x={x(len - 1)} y={H - 6} textAnchor="end"    className="axis-text">now</text>
+      <text x={x(0)}       y={H - 6} textAnchor="start"  className="axis-text">{xLabels ? xLabels[0] : `−${len - 1}${xSuffix}`}</text>
+      {len > 2 && <text x={x(Math.floor((len-1)/2))} y={H - 6} textAnchor="middle" className="axis-text">{xLabels ? xLabels[Math.floor((len-1)/2)] : `−${Math.floor((len-1)/2)}${xSuffix}`}</text>}
+      <text x={x(len - 1)} y={H - 6} textAnchor="end"    className="axis-text">{xLabels ? xLabels[len - 1] : 'now'}</text>
     </svg>
   );
 };
@@ -3680,19 +3680,37 @@ const ScreenLearning = ({ mode, ctx }) => {
   const setWeightHistory = ctx?.setWeightHistory;
   const whImportRef   = React.useRef(null);
   const [whStatus, setWhStatus] = React.useState(null); // { ok: bool, msg: string }
-  const [whView,   setWhView]   = React.useState('days'); // 'days' | 'trades'
-
-  // Weights change only through Autopilot now, so there is no per-trade weight series to rebuild.
-  const tradeWeightSeries = null;
-
-  const whLen = Math.max(0, ...AGENTS.map(a => (weightHistory[a.id] || []).length));
-  const trLen = tradeWeightSeries ? Math.max(0, ...AGENTS.map(a => (tradeWeightSeries[a.id]||[]).length)) : 0;
-
-  const activeSeries = whView === 'trades' && tradeWeightSeries ? tradeWeightSeries : weightHistory;
-  const activeXSuffix = whView === 'trades' ? 't' : ' snap';
-  const activeLabel  = whView === 'trades'
-    ? (trLen > 0 ? `last ${trLen - 1} trades` : 'no closed trades yet')
-    : (whLen > 0 ? `${whLen} snapshots (one per Autopilot weight change)` : 'no snapshots yet');
+  // Weights change only when Autopilot adopts a refitted model (about quarterly), never per trade.
+  // The chart starts from the style's starting weights and adds one dated step per adopted change.
+  const autopilotOn = !!ctx?.risk?.autopilot;
+  // only this mode's snapshots: a replay's in SIMULATED, the broker account's in VIRTUAL / LIVE
+  const allWhen = weightHistory._when || [], allSrc = weightHistory._src || [];
+  const idx = allWhen.map((_, k) => k).filter(k => (allSrc[k] === 'replay') === (mode === 'SIMULATED') || allSrc[k] == null);
+  const whWhen = idx.map(k => allWhen[k]);
+  const whLen = whWhen.length;
+  const startW = defaultWeightsFor(ctx?.risk?.style || 'tilt');
+  const activeSeries = {};
+  AGENTS.forEach(a => {
+    const col = weightHistory[a.id] || [], off = col.length - allWhen.length; // align to the dated tail
+    const steps = idx.map(k => col[k + off] ?? 0);
+    activeSeries[a.id] = whLen ? [startW[a.id] ?? 0, ...steps] : [agentWeights[a.id] ?? 0, agentWeights[a.id] ?? 0];
+  });
+  const activeLabel = whLen
+    ? `${whLen} change${whLen === 1 ? '' : 's'} · last ${whWhen[whLen - 1]}`
+    : 'no changes yet';
+  const evAll = ctx?.agentEvidence?.ev || null;
+  const disabled = ctx?.dynamicExcluded || new Set();
+  const whyFor = (a) => {
+    const w = agentWeights[a.id] ?? 0;
+    if (disabled.has && disabled.has(a.id)) return { w: 0, why: 'switched off in Agent config' };
+    if (w > 0.0005) return { w, why: a.id === 'earn' ? 'the trend score: the main way stocks are ranked' : 'adds to the ranking: its signal predicted next-month returns' };
+    if (!autopilotOn) return { w: 0, why: 'Autopilot is off, so only the trend score is used' };
+    const e = evAll && evAll[a.id];
+    if (!e) return { w: 0, why: 'not enough history yet to test it' };
+    if (!(e.mean > 0)) return { w: 0, why: `its signal pointed the wrong way for next-month returns (IC ${e.mean.toFixed(3)})` };
+    if (!(e.t >= 1)) return { w: 0, why: `too weak to rely on (IC ${e.mean.toFixed(3)}, t ${e.t.toFixed(1)}; needs t ≥ 1)` };
+    return { w: 0, why: 'passes the evidence check but adds nothing beyond the trend score' };
+  };
 
   const handleExportWH = () => {
     const csv = serializeWeightHistoryCSV(AGENTS, weightHistory);
@@ -3710,8 +3728,8 @@ const ScreenLearning = ({ mode, ctx }) => {
       const series = parseWeightHistoryCSV(csvText, AGENTS);
       const days = Math.max(...AGENTS.map(a => (series[a.id] || []).length));
       if (days < 1) throw new Error('No data rows found');
-      setWeightHistory(series);
-      setWhStatus({ ok: true, msg: `Imported ${days}-day history` });
+      setWeightHistory({ ...series, _when: Array(days).fill('imported') });
+      setWhStatus({ ok: true, msg: `Imported ${days} snapshots` });
     } catch (err) {
       setWhStatus({ ok: false, msg: 'Import failed: ' + err.message });
     }
@@ -3719,12 +3737,8 @@ const ScreenLearning = ({ mode, ctx }) => {
   };
 
   const handleClearWH = () => {
-    const uniform = 1 / AGENTS.length;
-    const cleared = {};
-    AGENTS.forEach(a => { cleared[a.id] = Array(90).fill(uniform); });
-    setWeightHistory(cleared);
-    localStorage.removeItem('shoal_weight_history_v3');
-    setWhStatus({ ok: true, msg: 'History cleared' });
+    setWeightHistory({ _when: [] });
+    setWhStatus({ ok: true, msg: 'Snapshots cleared' });
     setTimeout(() => setWhStatus(null), 3000);
   };
   const closedReal    = (ctx?.trades || []).filter(t => t.pnl != null && t.votes);
@@ -3739,10 +3753,10 @@ const ScreenLearning = ({ mode, ctx }) => {
     <div className="page" data-screen-label="03 Learning">
       <div className="page-head">
         <div className="page-eyebrow">Strategy intelligence · how the bot is adapting</div>
-        <h1 className="page-title">The swarm is <em>re-weighting itself</em> based on what worked yesterday.</h1>
+        <h1 className="page-title">Which agents count, and <em>why</em>.</h1>
         <p className="page-sub">{ctx?.risk?.autopilot
-          ? 'Autopilot scores every agent call once its result is known and changes weights or settings only after the change beat the current setup on newer data. Every change is logged below with its reason.'
-          : 'Weights are fixed at the style\'s starting point (Autopilot is off). Agent accuracy below still updates from closed trades.'}</p>
+          ? 'Autopilot refits its model about every 3 months (63 trading days) and only switches to the new one if it ranked stocks better on 60 days it had not seen. Weights therefore change a few times a year, not on every trade. Every refit is logged below.'
+          : 'Autopilot is off: weights stay at the style\'s starting point and stocks are ranked by the trend score alone. Agent accuracy below still updates from closed trades.'}</p>
       </div>
 
       <div className="card" style={{marginBottom:16}}>
@@ -3754,21 +3768,32 @@ const ScreenLearning = ({ mode, ctx }) => {
         <div className="card">
           <div className="card-head">
             <div className="card-title">Agent weights · {activeLabel}</div>
-            <div style={{display:'flex',alignItems:'center',gap:4}}>
-              <button className={'btn' + (whView==='days'   ? ' primary' : '')} style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setWhView('days')}>90 DAYS</button>
-              <button className={'btn' + (whView==='trades' ? ' primary' : '')} style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setWhView('trades')}>90 TRADES</button>
-            </div>
+            <div className="card-meta">{autopilotOn ? 'changes only when a refit is adopted' : 'Autopilot off · fixed'}</div>
           </div>
-          <StackedArea series={activeSeries} keys={AGENTS.map(a=>a.id)} colors={colors} xSuffix={activeXSuffix}/>
-          <div className="legend" style={{marginTop:10}}>
-            {AGENTS.map((a, i) => (
-              <span key={a.id}><span className="legend-dot" style={{background:colors[i]}}></span>{a.short}</span>
+          <StackedArea series={activeSeries} keys={AGENTS.map(a=>a.id)} colors={colors}
+            xLabels={whLen ? ['start', ...whWhen] : ['', 'now']}/>
+          <div className="mono tiny muted" style={{marginTop:6}}>
+            {whLen
+              ? `Left edge: the style's starting weights. Each step: a refit Autopilot adopted (${whWhen.slice(-4).join(', ')}${whLen > 4 ? ', …' : ''}).`
+              : autopilotOn
+                ? 'Flat band: today\'s weights. A step appears here only when Autopilot adopts a refitted model, a few times a year.'
+                : 'Flat band: today\'s weights. They stay fixed while Autopilot is off.'}
+          </div>
+          <div style={{marginTop:12,display:'flex',flexDirection:'column',gap:4}}>
+            <div className="mono tiny muted" style={{letterSpacing:'0.1em'}}>NOW</div>
+            {AGENTS.map((a, i) => ({ a, i, ...whyFor(a) })).sort((x, y) => y.w - x.w).map(({ a, i, w, why }) => (
+              <div key={a.id} style={{display:'grid',gridTemplateColumns:'14px minmax(90px,140px) 46px 1fr',gap:8,alignItems:'baseline',fontSize:11,opacity: w > 0 ? 1 : 0.7}}>
+                <span className="legend-dot" style={{background:colors[i]}}></span>
+                <span style={{color:'var(--ink-1)'}}>{a.name}</span>
+                <span className="mono" style={{textAlign:'right',color: w > 0 ? 'var(--ink-1)' : 'var(--ink-4)'}}>{(w * 100).toFixed(0)}%</span>
+                <span className="muted">{why}</span>
+              </div>
             ))}
           </div>
           <div style={{marginTop:12,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
             <button className="btn" style={{fontSize:11}} onClick={handleExportWH}>EXPORT CSV</button>
             <button className="btn" style={{fontSize:11}} onClick={()=>whImportRef.current?.click()}>IMPORT CSV</button>
-            <button className="btn" style={{fontSize:11}} onClick={handleClearWH}>CLEAR</button>
+            <button className="btn" style={{fontSize:11}} onClick={handleClearWH}>CLEAR SNAPSHOTS</button>
             <input ref={whImportRef} type="file" accept=".csv" style={{display:'none'}} onChange={e=>{
               const file = e.target.files?.[0];
               if (!file) return;
@@ -7058,7 +7083,8 @@ const App = () => {
   const [weightHistory, setWeightHistory] = React.useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('shoal_weight_history_v3') || 'null');
-      if (stored && typeof stored === 'object') return stored;
+      // snapshots without dates come from the old per-trade reweighting and no longer mean anything
+      if (stored && typeof stored === 'object' && Array.isArray(stored._when)) return stored;
     } catch (_) {}
     return {};
   });
@@ -7543,6 +7569,16 @@ const App = () => {
     return ms ? ms.scoreAt : (sym, i) => SS.trendScore(U.F[sym], i, earnP);
   };
   const pctTxt = (x) => `${(x * 100).toFixed(0)}%`;
+  // Weight snapshots from a replay belong to that pass; a new pass (or data source) starts the chart over
+  const dropReplaySnapshots = () => setWeightHistory(prev => {
+    const src = prev._src || [];
+    if (!src.includes('replay')) return prev;
+    const keep = src.map((x, k) => x !== 'replay' ? k : -1).filter(k => k >= 0);
+    const n = {};
+    for (const key of Object.keys(prev)) n[key] = keep.map(k => prev[key]?.[k]);
+    if (!n._when) n._when = [];
+    return n;
+  });
   const runAutopilot = ({ U, asOf, book, replay, style, riskNow, isLive }) => {
     if (riskNow.autopilotFrozen) return;
     const scorer = scorerFor(U, book, true, agentParamsRef.current);
@@ -7575,7 +7611,15 @@ const App = () => {
     if (moved < 0.02) return;
     if (isLive) st.lastPromoDay = today;
     setAgentWeights(next);
-    setWeightHistory(prev => { const n = { ...prev }; AGENTS.forEach(a => { n[a.id] = [...(n[a.id] || []), next[a.id] ?? 0].slice(-90); }); return n; });
+    const lastFit = fits[fits.length - 1];
+    setWeightHistory(prev => {
+      const n = { ...prev };
+      AGENTS.forEach(a => { n[a.id] = [...(n[a.id] || []), next[a.id] ?? 0].slice(-90); });
+      n._when = [...(prev._when || []), when].slice(-90);
+      n._src = [...(prev._src || []), replay ? 'replay' : (isLive ? 'live' : 'virtual')].slice(-90);
+      n._ic = [...(prev._ic || []), lastFit && lastFit.icNew != null ? lastFit.icNew : null].slice(-90);
+      return n;
+    });
   };
   const evidenceCacheRef = React.useRef({ U: null, bucket: null, ev: null });
   const evidenceAt = (U, asOf, book) => {
@@ -7608,10 +7652,10 @@ const App = () => {
       if (replay) {
         const start = replayStartFor(U);
         let g = replayIdxRef.current;
-        if (replayIdxRef.key !== srcKey) { replayIdxRef.key = srcKey; g = null; } // data source changed: start over
+        if (replayIdxRef.key !== srcKey) { replayIdxRef.key = srcKey; g = null; dropReplaySnapshots(); } // data source changed: start over
         if (g == null || g < start - 1 || g > U.L - 1) { g = start - 1; replayAnchorRef.current = null; }
         g += 1;
-        if (g > U.L - 1) { g = start; rollover = true; }
+        if (g > U.L - 1) { g = start; rollover = true; dropReplaySnapshots(); }
         replayIdxRef.current = g;
         window.SHOAL_REPLAY = { U, g, key: srcKey };
         if (!replayAnchorRef.current || rollover) replayAnchorRef.current = { g, equity: balanceRef.current };
@@ -8319,7 +8363,7 @@ const App = () => {
   }
 
   const alpacaConnected = !!(alpaca?.connected && alpaca?.token);
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected, liveUniverse, agentParams, replayInfo, tradeStatus: running ? tradeStatus : { warn: true, text: 'Paused. Press RESUME to let the bot trade.' }, lossHit, autopilotLog, mode,
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected, liveUniverse, agentParams, agentEvidence: agentEvidenceDisplay, replayInfo, tradeStatus: running ? tradeStatus : { warn: true, text: 'Paused. Press RESUME to let the bot trade.' }, lossHit, autopilotLog, mode,
     replayUniverse: replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse),
     analysisUniverse: (mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : liveUniverse) || SIM_U,
     importedUniverse, costBps: costBpsFor(risk, mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : null, alpaca?.brokerId) };
