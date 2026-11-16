@@ -59,8 +59,8 @@ class AlpacaSession {
 
   // ~3 years of daily bars per symbol. Alpaca's `limit` counts bars across all symbols in the request,
   // so ask for a start date and follow next_page_token until every page is in.
-  async bars(symbols, days = 1100) {
-    const start = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+  async bars(symbols, days = 1100, { since } = {}) {
+    const start = since || new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
     const out = {};
     let token = null;
     for (let page = 0; page < 20; page++) {

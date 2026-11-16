@@ -7141,6 +7141,7 @@ const App = () => {
   // Live market data as an indicator universe (full OHLCV bars from the broker), when connected
   const [liveUniverse, setLiveUniverse] = React.useState(null);
   const liveUniverseRef = React.useRef(null);
+  const liveBarsNoteRef = React.useRef(null); // why broker history hasn't loaded, for the bot status line
   React.useEffect(() => { liveUniverseRef.current = liveUniverse; }, [liveUniverse]);
 
   // Signals for the live universe at its latest bar; recomputed when bars refresh or params change
@@ -7265,29 +7266,60 @@ const App = () => {
       return;
     }
     const symbols = TICKERS.map(t => t.sym).join(',');
+    // Bars are kept in this browser (IndexedDB) per broker account type, so a cold server only needs the
+    // newest days — IG allows ~10,000 historical points a week and a full load of 25 stocks costs ~5,500.
+    const cacheKey = `bars_${alpaca.brokerId || 'alpaca'}_${alpaca.env || 'paper'}${alpaca.brokerId === 'ig' ? '' : `_${riskRef.current?.historyDays || 1100}`}`;
+    let cached = null; // { SYM: [bars] }
+    const dayOf = (b) => String(b.t || '').slice(0, 10);
+    const useBars = (bySym) => {
+      const barsBySym = {}, prices = {};
+      for (const sym of Object.keys(bySym)) {
+        const b = bySym[sym].filter(x => x.c > 0);
+        if (b.length >= 60) { barsBySym[sym] = b; prices[sym] = b[b.length - 1].c; }
+      }
+      const sig = Object.entries(barsBySym).map(([s, b]) => `${s}:${b.length}:${b[b.length - 1].t || ''}:${b[b.length - 1].c}`).join('|');
+      if (Object.keys(barsBySym).length > 0 && sig !== liveUniverseRef.sig) {
+        liveUniverseRef.sig = sig;
+        setLiveUniverse(SS.buildUniverse(barsBySym, SECTOR_OF));
+        setLivePrices(p => ({ ...p, ...prices }));
+      }
+      return Object.keys(barsBySym).length;
+    };
     const fetchBars = async () => {
       try {
+        if (cached == null) {
+          const c = await idbStore.get(cacheKey).catch(() => null);
+          cached = c && c.bars ? c.bars : {};
+          if (Object.keys(cached).length) useBars(cached);
+        }
+        // top up from the earliest last day across cached symbols (re-fetching that day refreshes a partial bar)
+        const lasts = Object.values(cached).map(b => dayOf(b[b.length - 1] || {})).filter(Boolean).sort();
+        const since = lasts.length >= Math.ceil(TICKERS.length * 0.8) ? lasts[0] : null;
         const r = await fetch(
-          `${BACKEND_URL}/api/bars?symbols=${encodeURIComponent(symbols)}&days=${riskRef.current?.historyDays || 1100}`,
+          `${BACKEND_URL}/api/bars?symbols=${encodeURIComponent(symbols)}&days=${riskRef.current?.historyDays || 1100}${since ? `&since=${since}` : ''}`,
           // IG's first load resolves ticker→epic and fetches history under tight rate limits (~2 min); later loads hit the backend's cache
           { headers: { 'Authorization': 'Bearer ' + alpaca.token }, signal: AbortSignal.timeout(alpaca.brokerId === 'ig' ? 180000 : 15000) }
         );
-        if (!r.ok) return;
+        if (!r.ok) { liveBarsNoteRef.current = `The broker's price history request failed (HTTP ${r.status}). Retrying every 10 minutes.`; return; }
         const data = await r.json();
         if (!data.bars) return;
-        // Keep full OHLCV bars: the agents use opens (gaps), highs/lows (ATR, squeezes) and volume
-        const barsBySym = {}, prices = {};
+        // Merge new bars over the cached ones by day. Keep full OHLCV bars: the agents use opens (gaps),
+        // highs/lows (ATR, squeezes) and volume.
+        const merged = { ...cached };
         for (const sym of Object.keys(data.bars)) {
-          const b = data.bars[sym].filter(x => x.c > 0);
-          if (b.length >= 60) { barsBySym[sym] = b; prices[sym] = b[b.length - 1].c; }
+          const byDay = new Map((cached[sym] || []).map(b => [dayOf(b), b]));
+          for (const b of data.bars[sym]) byDay.set(dayOf(b), b);
+          merged[sym] = [...byDay.values()].sort((a, b) => dayOf(a).localeCompare(dayOf(b))).slice(-3000);
         }
-        const sig = Object.entries(barsBySym).map(([s, b]) => `${s}:${b.length}:${b[b.length - 1].t || ''}:${b[b.length - 1].c}`).join('|');
-        if (Object.keys(barsBySym).length > 0 && sig !== liveUniverseRef.sig) {
-          liveUniverseRef.sig = sig;
-          setLiveUniverse(SS.buildUniverse(barsBySym, SECTOR_OF));
-          setLivePrices(p => ({ ...p, ...prices }));
-        }
-      } catch (_) {}
+        cached = merged;
+        idbStore.set(cacheKey, { bars: merged, savedAt: Date.now() }).catch(() => {});
+        const n = useBars(merged);
+        liveBarsNoteRef.current = n ? null : data.warning === 'allowance'
+          ? "IG's weekly allowance for price history is used up, and this browser has no saved copy yet. IG restores it within a week; trading starts as soon as the history loads (retrying every 10 minutes). After that, this browser keeps the history and only fetches the newest days."
+          : 'The broker returned no usable price history yet. Retrying every 10 minutes.';
+      } catch (err) {
+        liveBarsNoteRef.current = `Could not load price history from the broker (${err.name === 'TimeoutError' ? 'timed out' : err.message}). Retrying every 10 minutes.`;
+      }
     };
     fetchBars();
     const id = setInterval(fetchBars, 10 * 60 * 1000); // refresh every 10 min
@@ -7566,7 +7598,7 @@ const App = () => {
       const U = replay ? replayUniverseFor(riskNow.replaySource, liveUniverseRef.current, importedUniverseRef.current) : liveUniverseRef.current;
       if (!U) {
         if (replay) setReplayInfo(r => (r && r.waiting ? r : { waiting: true }));
-        else sayStatus({ warn: true, text: "Waiting for price history from your broker. Trading starts once it has loaded." });
+        else sayStatus({ warn: true, text: liveBarsNoteRef.current || "Waiting for price history from your broker. Trading starts once it has loaded." });
         return;
       }
       if (replay) sayStatus(null);

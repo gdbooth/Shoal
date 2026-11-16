@@ -151,7 +151,9 @@ app.get('/api/bars', auth, proxy(req => {
   if (!symbols.length) return { status: 400, body: { error: 'symbols required' } };
   // optional history length in calendar days (brokers that support it; capped at ~10 years)
   const days = Math.max(200, Math.min(3700, parseInt(req.query.days, 10) || 1100));
-  return req.session.bars(symbols, days);
+  // optional top-up: the browser keeps earlier bars and only asks for days from `since` on
+  const since = /^\d{4}-\d{2}-\d{2}$/.test(req.query.since || '') ? req.query.since : null;
+  return req.session.bars(symbols, days, { since });
 }));
 
 // ── SSE stream: pushes account + positions + orders + clock (+ prices for IG) ─

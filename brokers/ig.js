@@ -96,7 +96,7 @@ class IGSession {
     this.snap = { account: null, positions: null, ts: 0, pending: null };
 
     this.ls = null;
-    this.lsSub = null;
+    this.lsSubs = [];
     this.lsLastUpdate = 0;
     this.timers = [];
     this.closed = false;
@@ -282,9 +282,11 @@ class IGSession {
   _subscribePrices(Subscription = lsModule?.Subscription) {
     if (!this.ls || !Subscription) return;
     const epics = [...this.epicToSym.keys()];
-    if (this.lsSub) { this.ls.unsubscribe(this.lsSub); this.lsSub = null; }
-    if (!epics.length) return;
-    const sub = new Subscription('MERGE', epics.map(e => `MARKET:${e}`), ['BID', 'OFFER', 'MARKET_STATE']);
+    for (const s of this.lsSubs || []) { try { this.ls.unsubscribe(s); } catch {} }
+    this.lsSubs = [];
+    // One subscription per market: if IG refuses one item ("21 Invalid group"), the others keep streaming
+    for (const epic of epics) {
+    const sub = new Subscription('MERGE', [`MARKET:${epic}`], ['BID', 'OFFER', 'MARKET_STATE']);
     sub.setRequestedSnapshot('yes');
     sub.addListener({
       onItemUpdate: (u) => {
@@ -296,16 +298,17 @@ class IGSession {
         this._setMarket(epic, fields);
         this.lsLastUpdate = Date.now();
       },
-      onSubscriptionError: (code, msg) => console.warn('[ig] price subscription error', code, msg),
+      onSubscriptionError: (code, msg) => console.warn('[ig] price subscription error', epic, code, msg),
     });
     this.ls.subscribe(sub);
-    this.lsSub = sub;
+    this.lsSubs.push(sub);
+    }
   }
 
   _restartStream() {
     try { this.ls?.disconnect(); } catch {}
     this.ls = null;
-    this.lsSub = null;
+    this.lsSubs = [];
     this.startStream().catch(err => console.warn('[ig] stream restart failed', err.message));
   }
 
@@ -568,31 +571,34 @@ class IGSession {
   }
 
   // ── Daily bars (Alpaca shape: { bars: { SYM: [{ t, o, h, l, c, v }] } }) ──
-  async bars(symbols) {
+  // `since` (YYYY-MM-DD): the browser already holds bars up to that day, so a cold server with no cache
+  // only fetches from then on instead of the full history (IG's weekly allowance is ~10,000 points).
+  async bars(symbols, _days, { since } = {}) {
     const out = {};
+    this.allowanceHit = false;
     for (const sym of symbols) {
       const epic = await this.epicFor(sym);
       if (!epic) continue;
-      const bars = await this._barsFor(epic).catch(err => {
+      const bars = await this._barsFor(epic, since).catch(err => {
         console.warn('[ig] bars failed for', sym, err.message);
         return this.cache.bars[epic]?.bars || [];
       });
       if (bars.length) out[sym] = bars;
     }
-    return { status: 200, body: { bars: out } };
+    return { status: 200, body: { bars: out, ...(this.allowanceHit ? { warning: 'allowance' } : {}) } };
   }
 
-  async _barsFor(epic) {
+  async _barsFor(epic, since = null) {
     const today = new Date().toISOString().slice(0, 10);
     const entry = this.cache.bars[epic];
     // caches from before BARS_INITIAL was raised are refetched in full once
-    const short = entry && !entry.full && entry.bars.length < BARS_INITIAL * 0.9;
+    const short = entry && !entry.full && !entry.topUp && entry.bars.length < BARS_INITIAL * 0.9;
     if (entry?.fetchedOn === today && !short) return entry.bars;
 
     const key = `bars:${epic}`;
     if (this.cache.inflight.has(key)) return this.cache.inflight.get(key);
     const job = (async () => {
-      const last = short ? null : entry?.bars?.at(-1)?.t;
+      const last = short ? null : (entry?.bars?.at(-1)?.t || (since ? `${since}T00:00:00Z` : null));
       const qs = last
         ? `resolution=DAY&from=${last.slice(0, 10)}T00:00:00&to=${today}T23:59:59&pageSize=0`
         : `resolution=DAY&max=${BARS_INITIAL}&pageSize=0`;
@@ -600,6 +606,7 @@ class IGSession {
       if (r.status !== 200) {
         if (/allowance/i.test(r.body?.errorCode || r.body?.message || '')) {
           console.warn('[ig] historical price allowance exhausted — using cached bars');
+          this.allowanceHit = true;
         }
         return entry?.bars || [];
       }
@@ -614,7 +621,7 @@ class IGSession {
       const byDay = new Map((entry?.bars || []).map(b => [b.t.slice(0, 10), b]));
       for (const b of fetched) byDay.set(b.t.slice(0, 10), b);
       const bars = [...byDay.values()].sort((a, b) => a.t.localeCompare(b.t)).slice(-BARS_KEEP);
-      this.cache.bars[epic] = { bars, fetchedOn: today, full: entry?.full || !last };
+      this.cache.bars[epic] = { bars, fetchedOn: today, full: entry?.full || !last, topUp: entry?.topUp || (!entry && !!since) };
       saveJson(cachePath(`ig-bars-${this.env}.json`), this.cache.bars);
       const left = r.body.metadata?.allowance?.remainingAllowance;
       if (left != null && left < 1000) console.warn(`[ig] historical price allowance low: ${left} points left this week`);

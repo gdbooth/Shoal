@@ -109,6 +109,30 @@ test('bars come back in Alpaca shape and are cached on disk', async () => {
   assert.ok(fs.existsSync(path.join(cacheDir, 'ig-bars-paper.json')));
 });
 
+const coldCache = async () => { for (const s of sessions.values()) { const x = await s; if (x?.cache) for (const k of Object.keys(x.cache.bars)) delete x.cache.bars[k]; } };
+
+test('cold server with a browser copy only fetches the days since it', async () => {
+  await coldCache();
+  mock.state.priceQueries = [];
+  const r = await api('/api/bars?symbols=AAPL&since=2026-11-10');
+  assert.equal(r.status, 200);
+  const q = mock.state.priceQueries.at(-1);
+  assert.equal(q.max, undefined, 'no full-history request');
+  assert.match(q.from, /^2026-11-10T00:00:00/);
+  assert.ok(r.body.bars.AAPL.length >= 1);
+});
+
+test('exhausted history allowance is reported to the browser', async () => {
+  await coldCache();
+  mock.state.allowanceOut = true;
+  try {
+    const r = await api('/api/bars?symbols=AAPL,MSFT');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.bars, {});
+    assert.equal(r.body.warning, 'allowance');
+  } finally { mock.state.allowanceOut = false; }
+});
+
 test('stream pushes account, positions, clock and prices', async () => {
   const ctl = new AbortController();
   const r = await fetch(`${base}/api/stream?token=${token}`, { signal: ctl.signal });

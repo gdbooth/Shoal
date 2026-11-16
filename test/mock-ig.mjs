@@ -112,6 +112,8 @@ export function startMockIG() {
   });
 
   app.get('/prices/:epic', (req, res) => {
+    (state.priceQueries = state.priceQueries || []).push({ epic: req.params.epic, ...req.query });
+    if (state.allowanceOut) return res.status(403).json({ errorCode: 'error.public-api.exceeded-account-historical-data-allowance' });
     const n = req.query.max ? Number(req.query.max) : 2;
     const base = MARKETS[req.params.epic].bid;
     const prices = Array.from({ length: n }, (_, i) => {
