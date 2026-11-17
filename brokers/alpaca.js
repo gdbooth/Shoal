@@ -77,6 +77,26 @@ class AlpacaSession {
     return { status: 200, body: { bars: out } };
   }
 
+  // Intraday bars for the intraday lab. IEX feed (free plan): extended hours included, the caller keeps
+  // the regular session. ~190 bars per symbol per day at 5 minutes, so allow more pages than daily bars.
+  async intradayBars(symbols, timeframe = '5Min', days = 60) {
+    const start = new Date(Date.now() - days * 86_400_000).toISOString();
+    const out = {};
+    let token = null;
+    for (let page = 0; page < 80; page++) {
+      const qs = new URLSearchParams({
+        symbols: symbols.join(','), timeframe, start, limit: '10000', feed: 'iex', adjustment: 'split',
+        ...(token ? { page_token: token } : {}),
+      });
+      const r = await this.req(`/v2/stocks/bars?${qs}`, { base: DATA_BASE });
+      if (r.status !== 200) return r;
+      for (const [sym, b] of Object.entries(r.body?.bars || {})) (out[sym] = out[sym] || []).push(...b);
+      token = r.body?.next_page_token;
+      if (!token) break;
+    }
+    return { status: 200, body: { bars: out, timeframe } };
+  }
+
   async snapshot() {
     const [account, positions, orders, clock] = await Promise.all([
       this.req('/v2/account'),

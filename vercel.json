@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "installCommand": "npm ci",
-  "buildCommand": "mkdir -p public && cp index.html signals.js public/",
+  "buildCommand": "mkdir -p public && cp index.html signals.js intraday.js public/",
   "outputDirectory": "public",
   "rewrites": [{ "source": "/api/(.*)", "destination": "/api/index" }],
   "functions": { "api/index.js": { "maxDuration": 300 } }

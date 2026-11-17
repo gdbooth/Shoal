@@ -47,6 +47,16 @@ test('connect defaults to Alpaca and keeps the old response shape', async () => 
   assert.equal(r.body.account.buyingPower, 2000);
 });
 
+test('intraday bars: timeframe passed through, IEX feed, validated', async () => {
+  const r = await api('/api/bars?symbols=AAPL,SPY&timeframe=5Min&days=30');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.timeframe, '5Min');
+  const q = seen.filter(x => x.startsWith('GET /v2/stocks/bars')).at(-2);
+  assert.match(q, /timeframe=5Min/);
+  assert.match(q, /feed=iex/);
+  assert.equal((await api('/api/bars?symbols=AAPL&timeframe=1Min')).status, 400);
+});
+
 test('bad keys → 401', async () => {
   const r = await api('/api/connect', { method: 'POST', body: JSON.stringify({ keyId: 'PKWRONG', secret: 's', env: 'paper' }) });
   assert.equal(r.status, 401);

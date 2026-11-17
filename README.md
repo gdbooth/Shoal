@@ -102,6 +102,17 @@ Settings has four main controls; everything else is under *Advanced*.
   On 2015–2018 data it made 153% vs 175% for the plain trend score, which is why it's off.
 - **Costs**: every buy and sell pays a per-side cost (Alpaca 5bp, IG spread bets 12bp, fictional 5bp;
   adjustable under Advanced) in replays, backtests and the optimiser.
+- **Intraday lab** (Phase 1 of day trading, go / no-go): with Alpaca connected, loads 20–60 trading
+  days of 5-minute bars (IEX feed) for the stocks plus SPY, keeps the regular session, and has 11
+  price/volume agents (`intraday.js`: opening range, VWAP stretch, 30-minute momentum, 5-minute RSI,
+  volume surge, buying vs selling pressure, gap, market direction, relative strength, time of day,
+  multi-day trend) score every stock at every bar close using only what was known then. The first 60% of
+  days fit a combined model (ridge for the expected move, logistic for the probability of a rise); the
+  last 40% test it: each agent's predictive power and edge after costs, calibration of the confidence,
+  agent overlap, and a flat-overnight trading test (enter next bar's open, exit after 15/30/60 minutes).
+  GO needs a per-trade profit after costs on unseen days with daily t ≥ 2 and at least one agent that
+  predicts reliably on its own. Places no orders. A fictional random market is included as a demo (it
+  should come out NO-GO).
 - **Agent evidence**: Agent config shows each agent's next-month rank IC on the data in use. Agents without
   positive evidence (t ≥ 1) are advisory and don't vote; the model prunes the same way, walk-forward.
 - **Daily loss limit**: once equity is down this much in a day, no new positions until the next day.

@@ -149,6 +149,14 @@ app.delete('/api/orders/:id', auth, proxy(req => req.session.cancelOrder(req.par
 app.get('/api/bars', auth, proxy(req => {
   const symbols = (req.query.symbols || '').split(',').filter(s => SYMBOL_RE.test(s)).slice(0, 30);
   if (!symbols.length) return { status: 400, body: { error: 'symbols required' } };
+  // Intraday bars (5 or 15 minutes) for the intraday lab: Alpaca only, up to 90 calendar days back
+  const timeframe = req.query.timeframe || '1Day';
+  if (!['1Day', '5Min', '15Min'].includes(timeframe)) return { status: 400, body: { error: 'timeframe must be 1Day, 5Min or 15Min' } };
+  if (timeframe !== '1Day') {
+    if (typeof req.session.intradayBars !== 'function') return { status: 400, body: { error: 'Intraday history is only available with Alpaca' } };
+    const idays = Math.max(5, Math.min(90, parseInt(req.query.days, 10) || 60));
+    return req.session.intradayBars(symbols, timeframe, idays);
+  }
   // optional history length in calendar days (brokers that support it; capped at ~10 years)
   const days = Math.max(200, Math.min(3700, parseInt(req.query.days, 10) || 1100));
   // optional top-up: the browser keeps earlier bars and only asks for days from `since` on

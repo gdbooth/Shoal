@@ -1480,6 +1480,7 @@ window.addEventListener('unhandledrejection', function(e) {
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="signals.js"></script>
+<script src="intraday.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 <script type="text/babel" data-presets="react">
 // Mock data + sim engine for the Shoal trading bot prototype
@@ -4429,6 +4430,200 @@ const optimiserContext = (ctx) => {
   return { U, asOf, srcKey: replayKey(U), sim };
 };
 
+// ── Intraday lab (Phase 1): do the intraday agents predict the next 15–60 minutes well enough to beat costs? ──
+// Bars and the last result are kept for the session, so leaving the screen doesn't lose them.
+const INTRADAY_CACHE = { key: null, bars: null, P: null, result: null, meta: null };
+const ScreenIntraday = ({ alpaca }) => {
+  const IL = window.ShoalIntraday;
+  const isAlpaca = !!alpaca?.connected && (alpaca.brokerId || 'alpaca') === 'alpaca' && !!alpaca.token;
+  const [source, setSource] = React.useState(() => INTRADAY_CACHE.meta?.source || (isAlpaca ? 'alpaca' : 'fictional'));
+  const [tdays, setTdays] = React.useState(() => INTRADAY_CACHE.meta?.tdays || 40);
+  const [H, setH] = React.useState(() => INTRADAY_CACHE.meta?.H || 6);
+  const [cost, setCost] = React.useState(() => INTRADAY_CACHE.meta?.cost ?? 5);
+  const [shorts, setShorts] = React.useState(() => INTRADAY_CACHE.meta?.shorts ?? true);
+  const [busy, setBusy] = React.useState(null);
+  const [error, setError] = React.useState(null);
+  const [result, setResult] = React.useState(() => INTRADAY_CACHE.result);
+  const symbols = [...TICKERS.map(t => t.sym), 'SPY'];
+
+  const run = async () => {
+    setError(null);
+    try {
+      const key = `${source}:${tdays}`;
+      let P = INTRADAY_CACHE.key === key ? INTRADAY_CACHE.P : null;
+      if (!P) {
+        let bars;
+        if (source === 'alpaca') {
+          if (!isAlpaca) throw new Error('Connect an Alpaca account in Settings first (IG has no intraday history allowance to spare).');
+          setBusy(`Loading ${tdays} days of 5-minute bars for ${symbols.length} symbols from Alpaca…`);
+          const r = await fetch(`${BACKEND_URL}/api/bars?symbols=${symbols.join(',')}&timeframe=5Min&days=${Math.ceil(tdays * 1.45) + 3}`,
+            { headers: { Authorization: 'Bearer ' + alpaca.token }, signal: AbortSignal.timeout(280000) });
+          const body = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(body.message || body.error || `Alpaca returned HTTP ${r.status}`);
+          bars = body.bars || {};
+        } else {
+          setBusy('Generating a fictional 5-minute market…');
+          await new Promise(res => setTimeout(res, 30));
+          bars = IL.synthIntraday({ syms: TICKERS.slice(0, 12).map(t => t.sym), days: tdays, seed: 21 });
+        }
+        P = IL.prepare(bars);
+        if (P.dates.length > tdays) { // keep the most recent trading days
+          const keep = new Set(P.dates.slice(-tdays));
+          for (const s of P.syms) P.S[s] = P.S[s].filter(D => keep.has(D.date));
+          P.dates = P.dates.filter(d => keep.has(d));
+        }
+        if (!P.syms.length || P.dates.length < 15) throw new Error(`Only ${P.dates.length} full trading days came back; need at least 15.`);
+        Object.assign(INTRADAY_CACHE, { key, P, result: null });
+      }
+      setBusy(`Scoring ${P.syms.length} symbols × ${P.dates.length} days with ${IL.AGENTS.length} agents, then testing on the later days…`);
+      await new Promise(res => setTimeout(res, 30));
+      const R = IL.evaluate(P, { H, costBps: cost, shorts });
+      R.source = source;
+      INTRADAY_CACHE.result = R; INTRADAY_CACHE.meta = { source, tdays, H, cost, shorts };
+      setResult(R);
+    } catch (err) { setError(err.message || String(err)); }
+    setBusy(null);
+  };
+
+  const bp = (x, d = 1) => (Number.isFinite(x) ? `${x >= 0 ? '+' : ''}${x.toFixed(d)}bp` : '—');
+  const ic = (s) => (Number.isFinite(s.ic) && s.days ? <span>{s.ic.toFixed(3)} <span className="muted">t {s.icT.toFixed(1)}</span></span> : <span className="muted">—</span>);
+  const statusOf = (a) => {
+    const tr = a.train, te = a.test;
+    if (te.icT >= 2 && tr.icT >= 1) return { t: 'Predicts', c: 'var(--up)' };
+    if (te.icT <= -2 && tr.icT <= -1) return { t: 'Predicts in reverse', c: 'var(--warn)' };
+    return { t: 'No reliable signal', c: 'var(--ink-4)' };
+  };
+  const vColor = { go: 'var(--up)', borderline: 'var(--warn)', nogo: 'var(--down)', insufficient: 'var(--ink-3)' };
+  const R = result;
+  const pairs = R ? IL.AGENTS.flatMap((a, i) => IL.AGENTS.slice(i + 1).map((b, j) => ({ a: a.name, b: b.name, c: R.corr[i][i + 1 + j] }))).filter(x => Number.isFinite(x.c)).sort((x, y) => Math.abs(y.c) - Math.abs(x.c)) : [];
+  const avgAbs = pairs.length ? pairs.reduce((s, x) => s + Math.abs(x.c), 0) / pairs.length : 0;
+  const maxImpact = R?.combined ? Math.max(1e-9, ...R.combined.weights.map(w => w.impactBp)) : 1;
+
+  return (
+    <div className="page" data-screen-label="05c Intraday lab">
+      <div className="page-head">
+        <div className="page-eyebrow">Intraday lab · Phase 1 · go / no-go</div>
+        <h1 className="page-title">Can the agents call the next <em>{H * 5} minutes</em> well enough to pay for trading?</h1>
+        <p className="page-sub">Eleven agents score every stock at the close of every 5-minute bar, using only what was known then. The earlier days fit how to combine them; the later days, which the fit never saw, decide: does following them make money after costs? No orders are placed here.</p>
+      </div>
+
+      <div className="grid-2" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-head"><div className="card-title">Run the test</div><div className="card-meta">{source === 'alpaca' ? 'Alpaca 5-minute bars (IEX feed)' : 'fictional market'}</div></div>
+          <div className="field">
+            <div className="field-label" style={{marginBottom:8}}>Data</div>
+            <div className="tweak-opts">
+              <div className={'tweak-opt ' + (source === 'alpaca' ? 'on' : '')} onClick={() => setSource('alpaca')}>Alpaca history</div>
+              <div className={'tweak-opt ' + (source === 'fictional' ? 'on' : '')} onClick={() => setSource('fictional')}>Fictional (demo)</div>
+            </div>
+            <div className="mono tiny muted" style={{marginTop:6}}>{source === 'alpaca'
+              ? (isAlpaca ? `${symbols.length} symbols: your ${TICKERS.length} stocks plus SPY for the market.` : 'Needs an Alpaca connection (Settings).')
+              : 'Random prices with no pattern: shows how the lab works and should come out NO-GO.'}</div>
+          </div>
+          <div className="field">
+            <div className="field-label" style={{marginBottom:8}}>Trading days of history</div>
+            <div className="tweak-opts">{[20, 40, 60].map(d => <div key={d} className={'tweak-opt ' + (tdays === d ? 'on' : '')} onClick={() => setTdays(d)}>{d}</div>)}</div>
+            <div className="mono tiny muted" style={{marginTop:6}}>The first 60% fit the model; the last 40% test it. More days, firmer verdict.</div>
+          </div>
+          <div className="field">
+            <div className="field-label" style={{marginBottom:8}}>Predicting the next</div>
+            <div className="tweak-opts">{[[3, '15 min'], [6, '30 min'], [12, '60 min']].map(([h, l]) => <div key={h} className={'tweak-opt ' + (H === h ? 'on' : '')} onClick={() => setH(h)}>{l}</div>)}</div>
+          </div>
+          <div className="field">
+            <div className="field-label" style={{marginBottom:8}}>Cost per side <span className="muted">(spread + slippage)</span></div>
+            <div className="tweak-opts">{[2, 5, 10].map(c => <div key={c} className={'tweak-opt ' + (cost === c ? 'on' : '')} onClick={() => setCost(c)}>{c}bp</div>)}</div>
+            <div className="mono tiny muted" style={{marginTop:6}}>Each round trip pays {cost * 2}bp ({(cost * 2 / 100).toFixed(2)}%). Alpaca charges no commission; this is the spread and slippage.</div>
+          </div>
+          <div className="dialog-row" style={{marginBottom:12}}><span className="l">Allow short trades</span><button className={'tweak-opt ' + (shorts ? 'on' : '')} onClick={() => setShorts(!shorts)}>{shorts ? 'ON' : 'OFF'}</button></div>
+          <button className="btn primary" style={{width:'100%'}} disabled={!!busy} onClick={run}>{busy ? 'RUNNING…' : 'RUN THE TEST'}</button>
+          {busy && <div className="mono tiny muted" style={{marginTop:8}}>{busy}</div>}
+          {error && <div className="tiny" style={{color:'var(--down)',marginTop:10}}>{error}</div>}
+        </div>
+
+        <div className="card">
+          <div className="card-head"><div className="card-title">How to read it</div></div>
+          <div className="tiny" style={{color:'var(--ink-2)',lineHeight:1.6}}>
+            <p style={{margin:'0 0 8px'}}><b>Predictive power</b> (information coefficient, IC): how well an agent's score lines up with the move that followed. 0 is none; 0.02–0.05 is typical of anything real intraday. The <b>t</b> beside it is how consistent that was across days: about 2 or more is unlikely to be luck.</p>
+            <p style={{margin:'0 0 8px'}}><b>After costs</b>: the average result of following an agent's strong calls, minus the round-trip cost. Most agents land near minus the cost: they don't predict.</p>
+            <p style={{margin:'0 0 8px'}}><b>Combined</b>: all agents together, weighted by how much each actually helped on the earlier days. The bars show each agent's say in the decision.</p>
+            <p style={{margin:0}}><b>GO</b> needs the combined agents to make money per trade on unseen days after costs, consistently (daily t ≥ 2), with at least one agent predicting reliably on its own.</p>
+          </div>
+        </div>
+      </div>
+
+      {R && (<>
+        <div className="card" style={{marginBottom:16,borderColor:vColor[R.verdict.level]}}>
+          <div className="mono tiny" style={{color:vColor[R.verdict.level],letterSpacing:'0.12em',marginBottom:4}}>VERDICT · {R.source === 'alpaca' ? 'ALPACA HISTORY' : 'FICTIONAL MARKET'} · NEXT {R.minutes} MIN · {R.costBps}BP PER SIDE</div>
+          <div style={{color:'var(--ink-1)',fontSize:14,lineHeight:1.5}}>{R.verdict.text}</div>
+          <div className="mono tiny muted" style={{marginTop:6}}>{R.symbols.length} stocks · fitted on {R.from} → {R.testFromDate} ({R.trainDays} days) · tested on {R.testDays} later days to {R.to} · {R.rows.toLocaleString()} bar samples</div>
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-head"><div className="card-title">Each agent on its own</div><div className="card-meta">strong calls = score ≥ {R.thr} either way</div></div>
+          <table className="tbl">
+            <thead><tr><th>Agent</th><th style={{textAlign:'right'}}>IC · earlier days</th><th style={{textAlign:'right'}}>IC · unseen days</th><th style={{textAlign:'right'}}>Strong calls</th><th style={{textAlign:'right'}}>Before costs</th><th style={{textAlign:'right'}}>After costs</th><th>Verdict</th></tr></thead>
+            <tbody>{R.agents.map(a => { const st = statusOf(a); return (
+              <tr key={a.id}>
+                <td><b>{a.name}</b><div className="mono tiny muted">{a.desc}</div></td>
+                <td className="mono" style={{textAlign:'right'}}>{ic(a.train)}</td>
+                <td className="mono" style={{textAlign:'right'}}>{ic(a.test)}</td>
+                <td className="mono" style={{textAlign:'right'}}>{a.test.signals.toLocaleString()}</td>
+                <td className="mono" style={{textAlign:'right'}}>{a.test.signals ? bp(a.test.grossBp) : '—'}</td>
+                <td className="mono" style={{textAlign:'right',color: a.test.netBp > 0 ? 'var(--up)' : 'var(--down)'}}>{a.test.signals ? bp(a.test.netBp) : '—'}</td>
+                <td><span className="mono tiny" style={{color:st.c}}>{st.t}</span></td>
+              </tr>); })}</tbody>
+          </table>
+        </div>
+
+        {R.combined && (
+          <div className="grid-2" style={{marginBottom:16}}>
+            <div className="card">
+              <div className="card-head"><div className="card-title">Working together · each agent's say</div><div className="card-meta">IC on unseen days {R.combined.ic.toFixed(3)} · t {R.combined.icT.toFixed(1)}</div></div>
+              {R.combined.weights.slice().sort((a, b) => b.impactBp - a.impactBp).map(w => (
+                <div key={w.id} style={{display:'grid',gridTemplateColumns:'140px 1fr 72px',gap:8,alignItems:'center',fontSize:11,marginBottom:4}}>
+                  <span>{w.name}</span>
+                  <div style={{height:8,background:'var(--line-2)',borderRadius:2}}><div style={{height:8,width:`${(w.impactBp / maxImpact) * 100}%`,background: w.bpPerUnit >= 0 ? 'var(--up)' : 'var(--warn)',borderRadius:2}}></div></div>
+                  <span className="mono" style={{textAlign:'right'}}>{w.impactBp.toFixed(2)}bp</span>
+                </div>))}
+              <div className="mono tiny muted" style={{marginTop:8}}>Bar length: how far a typical score from that agent moves the expected {R.minutes}-minute return. Green: followed as designed; amber: the fit learned to use it the other way round. Direction calls right {(R.combined.hit * 100).toFixed(1)}% of the time (50% is a coin toss).</div>
+            </div>
+            <div className="card">
+              <div className="card-head"><div className="card-title">Confidence vs what happened</div><div className="card-meta">unseen days</div></div>
+              <table className="tbl">
+                <thead><tr><th>Confidence of a rise</th><th style={{textAlign:'right'}}>Bars</th><th style={{textAlign:'right'}}>Actually rose</th><th style={{textAlign:'right'}}>Avg move</th></tr></thead>
+                <tbody>{R.calibration.map(c => (
+                  <tr key={c.range}><td className="mono">{c.range}</td><td className="mono" style={{textAlign:'right'}}>{c.n.toLocaleString()}</td><td className="mono" style={{textAlign:'right'}}>{c.n ? `${(c.upRate * 100).toFixed(1)}%` : '—'}</td><td className="mono" style={{textAlign:'right'}}>{c.n ? bp(c.avgBp) : '—'}</td></tr>))}</tbody>
+              </table>
+              <div className="mono tiny muted" style={{marginTop:8}}>If confidence means anything, the "actually rose" column climbs as confidence does.</div>
+            </div>
+          </div>
+        )}
+
+        {R.backtest && (
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-head"><div className="card-title">Trading it on the unseen days</div><div className="card-meta">enter at the next bar's open, exit {R.minutes} min later or at the close; flat overnight</div></div>
+            <div style={{display:'flex',gap:28,flexWrap:'wrap',marginBottom:12}}>
+              {[['Trades', R.backtest.trades.toLocaleString()], ['Per day', R.backtest.perDay.toFixed(1)], ['Won', `${(R.backtest.winRate * 100).toFixed(0)}%`], ['Per trade after costs', bp(R.backtest.avgNetBp)],
+                ['Total', pct1(R.backtest.totalReturn)], ['Worst drop', pct1(R.backtest.maxDD)], ['Daily t', R.backtest.dailyT.toFixed(1)], ['Holding the stocks all day', pct1(R.backtest.holdReturn)]].map(([k, v]) => (
+                <div key={k}><div className="mono tiny muted" style={{letterSpacing:'0.08em'}}>{k.toUpperCase()}</div><div className="mono" style={{fontSize:16}}>{v}</div></div>))}
+            </div>
+            <div className="mono tiny muted">Trades when the combined confidence of a move is ≥ 55% and the expected move beats the {R.costBps * 2}bp round-trip cost{R.backtest.shorts ? ` (${R.backtest.longs} long, ${R.backtest.shorts} short)` : ''}. Each stock gets an equal share of the account. Other confidence levels, for information only (choosing the best of these would be fitting to the test):
+              {' '}{R.grid.map(g => `${Math.round(g.pThr * 100)}%: ${g.trades} trades, ${bp(g.avgNetBp)}/trade, ${pct1(g.totalReturn)}`).join(' · ')}</div>
+          </div>
+        )}
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-head"><div className="card-title">Independent or saying the same thing?</div><div className="card-meta">average |correlation| {avgAbs.toFixed(2)}</div></div>
+          <div className="tiny" style={{color:'var(--ink-2)',marginBottom:8}}>Pairs of agents whose scores move together most. Highly correlated agents are one opinion counted twice; the combined model shares the weight between them.</div>
+          <table className="tbl"><tbody>{pairs.slice(0, 6).map(x => (
+            <tr key={x.a + x.b}><td>{x.a} · {x.b}</td><td className="mono" style={{textAlign:'right',color: Math.abs(x.c) > 0.5 ? 'var(--warn)' : 'var(--ink-2)'}}>{x.c.toFixed(2)}</td></tr>))}</tbody></table>
+        </div>
+      </>)}
+    </div>
+  );
+};
+window.ScreenIntraday = ScreenIntraday;
+
 const ScreenOptimiser = ({ ctx, optimiser, onApplyFreeze, onUnfreeze, onRecordComparison }) => {
   const [days, setDays] = React.useState(250);
   const [running, setRunning] = React.useState(false);
@@ -6978,6 +7173,7 @@ const NAV = [
   { id: 'trade', label: 'Trade detail', icon: 'trade' },
   { id: 'backtest', label: 'Backtest', icon: 'back' },
   { id: 'optimiser', label: 'Optimiser', icon: 'trend' },
+  { id: 'intraday', label: 'Intraday lab', icon: 'perf' },
   { id: 'guide', label: 'How it works', icon: 'dash' },
   { id: 'market', label: 'Market map', icon: 'market' },
   { id: 'agentperf', label: 'Agent performance', icon: 'perf' },
@@ -8416,6 +8612,7 @@ const App = () => {
     learning:    <ScreenLearning mode={mode} ctx={ctx}/>,
     trade:       <ScreenTrade trade={selectedTrade || TRADES[0]} onBack={()=>setRoute('dashboard')} mode={mode} ctx={ctx}/>,
     backtest:    <ScreenBacktest mode={mode} ctx={ctx}/>,
+    intraday:    <ScreenIntraday alpaca={alpaca}/>,
     optimiser:   <ScreenOptimiser ctx={ctx} optimiser={optimiser} onApplyFreeze={applyAndFreeze} onUnfreeze={unfreeze} onRecordComparison={recordComparison}/>,
     market:      <ScreenMarket tick={tick} mode={mode} ctx={ctx}/>,
     agentperf:   <ScreenAgentPerf mode={mode} ctx={ctx}/>,
