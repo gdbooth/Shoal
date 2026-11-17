@@ -7864,9 +7864,23 @@ const App = () => {
         const curMonth = replay ? barDate(U, asOf).slice(0, 7) : new Date().toISOString().slice(0, 7);
         const tKey = replay ? 'replay' : 'broker';
         const monthEnds = replay ? (asOf < U.L - 1 && barDate(U, asOf + 1).slice(0, 7) !== curMonth) : (tiltStateRef.current[tKey] || {}).month !== curMonth;
-        if (!(heldBy.size === 0 || monthEnds)) {
-          if (!replay) sayStatus({ text: `Rank & tilt: holding ${heldBy.size} position${heldBy.size === 1 ? '' : 's'}, chosen this month. It re-ranks once a month, so the next trades come in the first market session of next month.` });
-          return;
+        // At the broker, sells and buys can't settle in one tick: buys only spend cash the account already has
+        // (proceeds of pending sells don't count yet). So after the monthly re-rank, keep working towards that
+        // month's picks — sell what's not in them, buy what's missing as cash frees up — until done.
+        const stT = tiltStateRef.current[tKey] || {};
+        const rerank = heldBy.size === 0 || monthEnds;
+        if (!rerank) {
+          const pick = !replay && stT.month === curMonth && Array.isArray(stT.keep) ? new Set(stT.keep) : null;
+          const missing = pick ? [...pick].filter(sym => !heldBy.has(sym)) : [];
+          const extra = pick ? open.filter(t => !pick.has(t.sym)) : [];
+          if (!missing.length && !extra.length) {
+            if (!replay) sayStatus({ text: `Rank & tilt: holding ${heldBy.size} position${heldBy.size === 1 ? '' : 's'}, chosen this month. It re-ranks once a month, so the next trades come in the first market session of next month.` });
+            return;
+          }
+          if ([...missing, ...extra.map(t => t.sym)].every(isPending)) {
+            sayStatus({ text: `Rank & tilt: finishing this month's re-rank — ${extra.length ? `selling ${extra.map(t => t.sym).join(', ')}` : ''}${extra.length && missing.length ? '; ' : ''}${missing.length ? `buying ${missing.join(', ')} as cash frees up` : ''}. Waiting for the broker.` });
+            return;
+          }
         }
         const scorer = scorerFor(U, book, !!riskNow.autopilot, agentParamsRef.current);
         const ranked = U.syms.filter(sym => !blacklist.has(sym))
@@ -7876,9 +7890,11 @@ const App = () => {
           if (!replay) sayStatus({ warn: true, text: `Rank & tilt needs at least 130 days of history for ${K} stocks to rank them; only ${ranked.length} have enough.` });
           return;
         }
-        const keep = new Set(ranked.slice(0, K).map(x => x[0]));
-        tiltStateRef.current = { ...tiltStateRef.current, [tKey]: { month: curMonth, keep: [...keep] } };
-        if (!replay) { try { localStorage.setItem('shoal_tilt_state_v1', JSON.stringify(tiltStateRef.current)); } catch (_) {} }
+        const keep = rerank ? new Set(ranked.slice(0, K).map(x => x[0])) : new Set(stT.keep);
+        if (rerank) {
+          tiltStateRef.current = { ...tiltStateRef.current, [tKey]: { month: curMonth, keep: [...keep] } };
+          if (!replay) { try { localStorage.setItem('shoal_tilt_state_v1', JSON.stringify(tiltStateRef.current)); } catch (_) {} }
+        }
         const topSigs = sigsFor(ranked[0][0]);
         if (topSigs) { const e = computeEnsemble(topSigs, agentWeightsRef.current, null); setSwarmFocus({ sym: ranked[0][0], votes: e.votes, dir: 'BUY', confidence: e.confidence, ts: Date.now() }); }
         const toSell = open.filter(t => !keep.has(t.sym) && !isPending(t.sym));
@@ -7907,11 +7923,17 @@ const App = () => {
         if (toBuy.length && !blockNew) {
           const equity = balanceRef.current ?? 0;
           const per = equity * frac / K;
-          let cashLeft = equity - open.reduce((sum, t) => sum + t.qty * t.price, 0) + freed;
+          const sellsOutstanding = !replay && open.some(t => !keep.has(t.sym));
+          // replay fills sells and buys together; at the broker only cash already in the account can be spent
+          const bp = parseFloat(alpacaNow?.balance);
+          let cashLeft = replay ? equity - open.reduce((sum, t) => sum + t.qty * t.price, 0) + freed
+            : Math.min(equity - open.reduce((sum, t) => sum + t.qty * t.price, 0), Number.isFinite(bp) && bp > 0 ? bp : Infinity);
           const newTrades = [];
           for (const sym of toBuy) {
             const px = priceFor(sym);
             if (!(px > 0)) continue;
+            // at the broker, while sells are still settling, wait for a full share instead of buying a sliver now
+            if (sellsOutstanding && cashLeft < per * 0.95) break;
             const notional = parseFloat(Math.min(per, cashLeft).toFixed(2));
             if (notional < 1) break;
             cashLeft -= notional;
@@ -7935,11 +7957,12 @@ const App = () => {
             else { setTrades(prev => [...newTrades, ...prev].slice(0, 5000)); tradesRef.current = [...newTrades, ...tradesRef.current]; }
           }
         }
+        const stillMissing = toBuy.filter(sym => !bought.includes(sym));
         if (!replay) sayStatus(blockNew && toBuy.length ? { warn: true, text: 'Daily loss limit hit: buys wait until the next trading day.' }
-          : { text: `Rank & tilt: re-ranked for ${curMonth}. ${bought.length ? `Sent buy orders for ${bought.join(', ')}.` : ''}${toSell.length ? ` Sent sells for ${toSell.map(t => t.sym).join(', ')}.` : ''}${!bought.length && !toSell.length ? 'Top stocks already held.' : ''}` });
+          : { text: `Rank & tilt: ${rerank ? `re-ranked for ${curMonth}.` : "finishing this month's re-rank."} ${bought.length ? `Sent buy orders for ${bought.join(', ')}.` : ''}${toSell.length ? ` Sent sells for ${toSell.map(t => t.sym).join(', ')}.` : ''}${stillMissing.length ? ` ${stillMissing.join(', ')} will be bought as cash frees up (after the sells fill).` : ''}${!bought.length && !toSell.length && !stillMissing.length ? 'Top stocks already held.' : ''}` });
         if (toSell.length || bought.length) {
           setAutopilotLog(prev => [{ ts: Date.now(), kind: 'info', when: replay ? barDate(U, asOf) : new Date().toISOString().slice(0, 10),
-            text: `Monthly re-rank (top ${K} by ${scoreName} score): ${toSell.length ? `sold ${toSell.map(t => t.sym).join(', ')}` : 'nothing sold'}; ${bought.length ? `bought ${bought.join(', ')}` : 'nothing bought'}.` }, ...prev].slice(0, 100));
+            text: `${rerank ? 'Monthly re-rank' : 'Re-rank continued'} (top ${K} by ${scoreName} score): ${toSell.length ? `sold ${toSell.map(t => t.sym).join(', ')}` : 'nothing sold'}; ${bought.length ? `bought ${bought.join(', ')}` : 'nothing bought'}.` }, ...prev].slice(0, 100));
         }
         return;
       }
