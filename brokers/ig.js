@@ -573,7 +573,8 @@ class IGSession {
   // ── Daily bars (Alpaca shape: { bars: { SYM: [{ t, o, h, l, c, v }] } }) ──
   // `since` (YYYY-MM-DD): the browser already holds bars up to that day, so a cold server with no cache
   // only fetches from then on instead of the full history (IG's weekly allowance is ~10,000 points).
-  async bars(symbols, _days, { since } = {}) {
+  async bars(symbolsIn, _days, { since } = {}) {
+    const symbols = (symbolsIn || []).slice(0, 40); // IG's weekly history allowance can't cover more
     const out = {};
     this.allowanceHit = false;
     for (const sym of symbols) {

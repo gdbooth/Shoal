@@ -1926,46 +1926,67 @@ const AGENTS = [
   { id: 'patt', short: 'Pattern', name: 'Pattern Memory',       glyph: '◊', desc: 'nearest past indicator setups + candlestick patterns',   weight: 0.0625, accuracy: 0.505, color: '#e08a8a', family: 'Pattern' },
 ];
 
-const TICKERS = [
-  { sym: 'NVDA', name: 'NVIDIA',     sector: 'Tech',   last: 482.16, chg:  1.34, weight: 0.18 },
-  { sym: 'AAPL', name: 'Apple',      sector: 'Tech',   last: 218.42, chg:  0.42, weight: 0.14 },
-  { sym: 'MSFT', name: 'Microsoft',  sector: 'Tech',   last: 419.07, chg: -0.18, weight: 0.12 },
-  { sym: 'TSLA', name: 'Tesla',      sector: 'Auto',   last: 256.81, chg:  2.81, weight: 0.10 },
-  { sym: 'JPM',  name: 'JPMorgan',   sector: 'Fin',    last: 198.55, chg:  0.07, weight: 0.07 },
-  { sym: 'XOM',  name: 'Exxon',      sector: 'Energy', last: 109.27, chg: -1.04, weight: 0.06 },
-  { sym: 'COST', name: 'Costco',     sector: 'Cons',   last: 884.50, chg:  0.91, weight: 0.05 },
-  { sym: 'AMD',  name: 'AMD',        sector: 'Tech',   last: 162.39, chg:  1.78, weight: 0.05 },
-  { sym: 'META', name: 'Meta',       sector: 'Tech',   last: 504.20, chg: -0.55, weight: 0.04 },
-  { sym: 'GOOG', name: 'Alphabet',   sector: 'Tech',   last: 174.92, chg:  0.18, weight: 0.04 },
-  // Additional tickers for sector diversification
-  { sym: 'BAC',  name: 'Bank of America', sector: 'Fin',    last:  38.24, chg:  0.32, weight: 0.03 },
-  { sym: 'WFC',  name: 'Wells Fargo',     sector: 'Fin',    last:  58.17, chg: -0.21, weight: 0.02 },
-  { sym: 'JNJ',  name: 'J&J',             sector: 'Health', last: 157.82, chg:  0.14, weight: 0.03 },
-  { sym: 'LLY',  name: 'Eli Lilly',       sector: 'Health', last: 841.30, chg:  1.22, weight: 0.03 },
-  { sym: 'UNH',  name: 'UnitedHealth',    sector: 'Health', last: 521.44, chg: -0.60, weight: 0.02 },
-  { sym: 'CVX',  name: 'Chevron',         sector: 'Energy', last: 155.76, chg: -0.82, weight: 0.03 },
-  { sym: 'COP',  name: 'ConocoPhillips',  sector: 'Energy', last: 111.43, chg:  0.55, weight: 0.02 },
-  { sym: 'WMT',  name: 'Walmart',         sector: 'Cons',   last:  69.84, chg:  0.44, weight: 0.03 },
-  { sym: 'PG',   name: 'Procter & Gamble',sector: 'Cons',   last: 163.27, chg:  0.11, weight: 0.02 },
-  { sym: 'CAT',  name: 'Caterpillar',     sector: 'Indus',  last: 347.18, chg:  0.78, weight: 0.02 },
-  { sym: 'HON',  name: 'Honeywell',       sector: 'Indus',  last: 203.45, chg: -0.33, weight: 0.02 },
-  { sym: 'NEE',  name: 'NextEra Energy',  sector: 'Util',   last:  71.38, chg:  0.25, weight: 0.02 },
-  { sym: 'SO',   name: 'Southern Co',     sector: 'Util',   last:  88.52, chg:  0.08, weight: 0.01 },
-  { sym: 'LIN',  name: 'Linde',           sector: 'Mat',    last: 450.22, chg:  0.36, weight: 0.02 },
-  { sym: 'FCX',  name: 'Freeport-McMoRan',sector: 'Mat',    last:  44.63, chg:  1.14, weight: 0.01 },
+// Stocks the app watches. Default: 100 large US stocks across 11 sectors (the original 25 first, so
+// IG — capped at 30 for its history allowance — and the intraday lab keep the most familiar names).
+// The list can be changed in Settings → Stocks watched; it is read once at start-up.
+// [symbol, name, sector, rough price (only seeds the fictional market)]
+const STOCK_CATALOG = [
+  ['NVDA','NVIDIA','Tech',140], ['AAPL','Apple','Tech',230], ['MSFT','Microsoft','Tech',420], ['TSLA','Tesla','Disc',250],
+  ['JPM','JPMorgan','Fin',220], ['XOM','Exxon','Energy',115], ['COST','Costco','Cons',890], ['AMD','AMD','Tech',150],
+  ['META','Meta','Comm',560], ['GOOG','Alphabet','Comm',175], ['BAC','Bank of America','Fin',42], ['WFC','Wells Fargo','Fin',65],
+  ['JNJ','J&J','Health',155], ['LLY','Eli Lilly','Health',800], ['UNH','UnitedHealth','Health',560], ['CVX','Chevron','Energy',155],
+  ['COP','ConocoPhillips','Energy',110], ['WMT','Walmart','Cons',80], ['PG','Procter & Gamble','Cons',165], ['CAT','Caterpillar','Indus',360],
+  ['HON','Honeywell','Indus',210], ['NEE','NextEra Energy','Util',75], ['SO','Southern Co','Util',88], ['LIN','Linde','Mat',450],
+  ['FCX','Freeport-McMoRan','Mat',45],
+  // 75 more
+  ['AMZN','Amazon','Disc',190], ['AVGO','Broadcom','Tech',170], ['ORCL','Oracle','Tech',170], ['CRM','Salesforce','Tech',280],
+  ['ADBE','Adobe','Tech',480], ['INTC','Intel','Tech',22], ['CSCO','Cisco','Tech',58], ['QCOM','Qualcomm','Tech',165],
+  ['TXN','Texas Instruments','Tech',200], ['IBM','IBM','Tech',220], ['NOW','ServiceNow','Tech',950], ['INTU','Intuit','Tech',640],
+  ['AMAT','Applied Materials','Tech',180], ['MU','Micron','Tech',100], ['ACN','Accenture','Tech',350],
+  ['NFLX','Netflix','Comm',750], ['DIS','Disney','Comm',100], ['CMCSA','Comcast','Comm',40], ['T','AT&T','Comm',22],
+  ['VZ','Verizon','Comm',42], ['TMUS','T-Mobile US','Comm',230],
+  ['HD','Home Depot','Disc',400], ['MCD',"McDonald's",'Disc',290], ['NKE','Nike','Disc',75], ['LOW',"Lowe's",'Disc',260],
+  ['SBUX','Starbucks','Disc',95], ['BKNG','Booking','Disc',4800], ['TJX','TJX','Disc',120], ['GM','General Motors','Disc',50],
+  ['KO','Coca-Cola','Cons',63], ['PEP','PepsiCo','Cons',160], ['PM','Philip Morris','Cons',125], ['MO','Altria','Cons',52], ['CL','Colgate-Palmolive','Cons',92],
+  ['C','Citigroup','Fin',65], ['GS','Goldman Sachs','Fin',520], ['MS','Morgan Stanley','Fin',120], ['BLK','BlackRock','Fin',950],
+  ['SCHW','Charles Schwab','Fin',70], ['AXP','American Express','Fin',270], ['V','Visa','Fin',290], ['MA','Mastercard','Fin',500],
+  ['USB','U.S. Bancorp','Fin',47], ['COF','Capital One','Fin',160],
+  ['PFE','Pfizer','Health',28], ['MRK','Merck','Health',100], ['ABBV','AbbVie','Health',180], ['TMO','Thermo Fisher','Health',560],
+  ['ABT','Abbott','Health',115], ['DHR','Danaher','Health',240], ['BMY','Bristol-Myers Squibb','Health',50], ['AMGN','Amgen','Health',300],
+  ['GILD','Gilead','Health',85], ['MDT','Medtronic','Health',85],
+  ['SLB','SLB','Energy',42], ['EOG','EOG Resources','Energy',125], ['OXY','Occidental','Energy',52],
+  ['GE','GE Aerospace','Indus',170], ['UPS','UPS','Indus',130], ['BA','Boeing','Indus',155], ['RTX','RTX','Indus',120],
+  ['LMT','Lockheed Martin','Indus',520], ['DE','Deere','Indus',400], ['UNP','Union Pacific','Indus',240], ['MMM','3M','Indus',125],
+  ['FDX','FedEx','Indus',280], ['EMR','Emerson','Indus',120],
+  ['NEM','Newmont','Mat',50], ['SHW','Sherwin-Williams','Mat',360],
+  ['DUK','Duke Energy','Util',112], ['AEP','American Electric Power','Util',98], ['EXC','Exelon','Util',38],
+  ['PLD','Prologis','RE',115], ['AMT','American Tower','RE',210], ['SPG','Simon Property','RE',170],
 ];
-
-const SECTORS = ['Tech', 'Fin', 'Energy', 'Health', 'Cons', 'Indus', 'Util', 'Mat'];
-const SECTOR_TICKERS = {
-  Tech: ['NVDA','AAPL','MSFT','META','GOOG','AMD','AVGO','ORCL'],
-  Fin:  ['JPM','BAC','GS','MS','C','WFC','BLK','SCHW'],
-  Energy: ['XOM','CVX','COP','SLB','EOG','PSX','OXY','MPC'],
-  Health: ['JNJ','UNH','LLY','PFE','MRK','ABBV','TMO','ABT'],
-  Cons: ['COST','WMT','PG','KO','PEP','MCD','NKE','SBUX'],
-  Indus: ['CAT','BA','HON','GE','UPS','RTX','LMT','DE'],
-  Util: ['NEE','SO','DUK','D','AEP','SRE','XEL','EXC'],
-  Mat: ['LIN','APD','SHW','FCX','ECL','NEM','DOW','PPG'],
+const CATALOG_BY = Object.fromEntries(STOCK_CATALOG.map(([sym, name, sector, price]) => [sym, { name, sector, price }]));
+const DEFAULT_WATCHLIST = STOCK_CATALOG.map(x => x[0]);
+const ORIGINAL_25 = DEFAULT_WATCHLIST.slice(0, 25);
+const WATCHLIST_MAX = 150, IG_MAX_SYMBOLS = 30, INTRADAY_MAX_SYMBOLS = 40;
+const WATCH_SYM_RE = /^[A-Z][A-Z0-9.]{0,9}$/;
+const parseWatchlist = (text) => [...new Set(String(text || '').toUpperCase().split(/[^A-Z0-9.]+/).filter(Boolean))];
+const loadWatchlist = () => {
+  try {
+    const w = JSON.parse(localStorage.getItem('shoal_watchlist_v1') || 'null');
+    if (Array.isArray(w)) { const ok = w.filter(x => WATCH_SYM_RE.test(x)).slice(0, WATCHLIST_MAX); if (ok.length >= 5) return ok; }
+  } catch (_) {}
+  return DEFAULT_WATCHLIST;
 };
+const SECTOR_NAMES = { Tech: 'Technology', Comm: 'Communication', Disc: 'Consumer discretionary', Cons: 'Consumer staples', Fin: 'Financials', Health: 'Health care', Energy: 'Energy', Indus: 'Industrials', Mat: 'Materials', Util: 'Utilities', RE: 'Real estate', Other: 'Other' };
+const TICKERS = (() => {
+  const list = loadWatchlist();
+  // stable pseudo "today's change" for demo views until live prices arrive
+  const h = (s) => { let x = 7; for (const ch of s) x = (x * 31 + ch.charCodeAt(0)) % 997; return x; };
+  return list.map(sym => { const c = CATALOG_BY[sym]; return { sym, name: c ? c.name : sym, sector: c ? c.sector : 'Other', last: c ? c.price : 100, chg: +(((h(sym) % 41) - 20) / 10).toFixed(2), weight: 1 / list.length }; });
+})();
+// Symbols sent to the broker: IG only gets the first 30 (its weekly history allowance), Alpaca all
+const brokerSymbols = (a) => TICKERS.slice(0, a && a.brokerId === 'ig' ? IG_MAX_SYMBOLS : WATCHLIST_MAX).map(t => t.sym);
+
+const SECTORS = [...new Set(TICKERS.map(t => t.sector))];
+const SECTOR_TICKERS = Object.fromEntries(SECTORS.map(sec => [sec, TICKERS.filter(t => t.sector === sec).map(t => t.sym)]));
 
 // Fictional market: generated OHLCV bars (no real prices, no network) dated on weekdays ending today.
 // The last ~2 years are what SIMULATED mode replays when no broker is connected; the ~330 calendar days
@@ -4471,7 +4492,7 @@ const ScreenIntraday = ({ alpaca }) => {
   const [busy, setBusy] = React.useState(null);
   const [error, setError] = React.useState(null);
   const [result, setResult] = React.useState(() => INTRADAY_CACHE.result);
-  const symbols = [...TICKERS.map(t => t.sym), 'SPY'];
+  const symbols = [...TICKERS.slice(0, INTRADAY_MAX_SYMBOLS).map(t => t.sym), 'SPY'];
 
   const run = async () => {
     setError(null);
@@ -4544,7 +4565,7 @@ const ScreenIntraday = ({ alpaca }) => {
               <div className={'tweak-opt ' + (source === 'fictional' ? 'on' : '')} onClick={() => setSource('fictional')}>Fictional (demo)</div>
             </div>
             <div className="mono tiny muted" style={{marginTop:6}}>{source === 'alpaca'
-              ? (isAlpaca ? `${symbols.length} symbols: your ${TICKERS.length} stocks plus SPY for the market.` : 'Needs an Alpaca connection (Settings).')
+              ? (isAlpaca ? `${symbols.length} symbols: the first ${symbols.length - 1} of your ${TICKERS.length} watched stocks (5-minute history is large) plus SPY for the market.` : 'Needs an Alpaca connection (Settings).')
               : 'Random prices with no pattern: shows how the lab works and should come out NO-GO.'}</div>
           </div>
           <div className="field">
@@ -5345,6 +5366,53 @@ window.ScreenMarket = ScreenMarket;
 <script type="text/babel" data-presets="react">
 // Settings screen — Alpaca connection + risk parameters
 
+// Settings → Stocks watched: edit the list the whole app uses (saved in this browser, applied on reload)
+const WatchlistEditor = ({ brokerId }) => {
+  const current = TICKERS.map(t => t.sym);
+  const [text, setText] = React.useState(current.join(' '));
+  const [open, setOpen] = React.useState(false);
+  const list = parseWatchlist(text);
+  const bad = list.filter(x => !WATCH_SYM_RE.test(x));
+  const good = list.filter(x => WATCH_SYM_RE.test(x)).slice(0, WATCHLIST_MAX);
+  const unknown = good.filter(x => !CATALOG_BY[x]);
+  const changed = good.join(' ') !== current.join(' ');
+  const tooFew = good.length < 5;
+  const save = (syms) => {
+    try { localStorage.setItem('shoal_watchlist_v1', JSON.stringify(syms)); } catch (_) {}
+    location.reload();
+  };
+  const bySector = SECTORS.map(sec => `${SECTOR_NAMES[sec] || sec} ${SECTOR_TICKERS[sec].length}`).join(' · ');
+  return (
+    <div className="field">
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
+        <div className="field-label">Stocks watched</div>
+        <div className="mono" style={{fontSize:13}}>{TICKERS.length}</div>
+      </div>
+      <div className="mono tiny muted" style={{marginTop:4}}>{bySector}</div>
+      {!open && <button className="btn" style={{fontSize:10,padding:'4px 10px',marginTop:8}} onClick={() => setOpen(true)}>EDIT THE LIST…</button>}
+      {open && (<>
+        <textarea className="field-input mono" rows={6} value={text} onChange={e => setText(e.target.value)} spellCheck={false}
+          style={{width:'100%',marginTop:8,fontSize:11,lineHeight:1.5,resize:'vertical'}}/>
+        <div className="mono tiny" style={{marginTop:6,color: bad.length || tooFew ? 'var(--down)' : 'var(--ink-3)'}}>
+          {good.length} valid symbol{good.length === 1 ? '' : 's'}{list.length > WATCHLIST_MAX ? ` (only the first ${WATCHLIST_MAX} are used)` : ''}
+          {bad.length ? ` · not valid: ${bad.slice(0, 8).join(', ')}` : ''}{tooFew ? ' · need at least 5' : ''}
+          {unknown.length ? ` · not in the built-in list (sector "Other", name = symbol): ${unknown.slice(0, 8).join(', ')}${unknown.length > 8 ? '…' : ''}` : ''}
+        </div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
+          <button className="btn primary" style={{fontSize:10,padding:'4px 10px'}} disabled={!changed || tooFew} onClick={() => save(good)}>SAVE &amp; RELOAD</button>
+          <button className="btn" style={{fontSize:10,padding:'4px 10px'}} onClick={() => setText(DEFAULT_WATCHLIST.join(' '))}>DEFAULT 100</button>
+          <button className="btn" style={{fontSize:10,padding:'4px 10px'}} onClick={() => setText(ORIGINAL_25.join(' '))}>ORIGINAL 25</button>
+          <button className="btn ghost" style={{fontSize:10,padding:'4px 10px'}} onClick={() => { setText(current.join(' ')); setOpen(false); }}>CANCEL</button>
+        </div>
+      </>)}
+      <div className="mono tiny muted" style={{marginTop:6}}>
+        US stock symbols separated by spaces or commas, most important first. Used by every mode, the backtest and the labs; the app reloads to apply a change. With Rank &amp; tilt, sells at the next re-rank anything held that's no longer on the list or in the top group. Order matters:
+        {brokerId === 'ig' ? ` with IG only the first ${IG_MAX_SYMBOLS} are used (IG's weekly price-history allowance).` : ` IG uses only the first ${IG_MAX_SYMBOLS} (its weekly price-history allowance)`}; the Intraday lab the first {INTRADAY_MAX_SYMBOLS}. More stocks means slower start-up and replays, and a longer first history download.
+      </div>
+    </div>
+  );
+};
+
 const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset, onResetWeights, onExportWeights, onImportWeights, backendOk, autopilotLog = [], frozen = null, onOpenOptimiser, importedUniverse = null, onImportCsv, onRemoveImport, autoCostBps = 5 }) => {
   const [showAdvanced, setShowAdvanced] = React.useState(false);
   const [importMsg, setImportMsg] = React.useState(null);
@@ -5423,7 +5491,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
       const resp = await fetch(`${BACKEND_URL}/api/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ broker: 'ig', env: form.env, apiKey, username, password: form.password, accountId: accountId || undefined, symbols: TICKERS.map(t => t.sym) }),
+        body: JSON.stringify({ broker: 'ig', env: form.env, apiKey, username, password: form.password, accountId: accountId || undefined, symbols: brokerSymbols({ brokerId: 'ig' }) }),
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -5575,6 +5643,8 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
                 : `Stay fully invested in the ${risk.topK || 12} stocks with the strongest trend (return from 6 months to 1 month ago), re-ranked at each month end. Tested on real daily data after costs, it is not a reliable way to beat simply holding everything. On 12 stocks and sector funds over 2017–2026 it made about the same (+1153% vs +1178%) with a smaller worst drop (−39% vs −49%). On 6 sector funds alone it trailed (+119% vs +176%). Its earlier wins came mostly from riding a few big winners such as NVDA. Expect it to help most in long bear markets like 2022; watch the buy-and-hold comparison and paper-trade before going live.`}
             </div>
           </div>
+
+          <WatchlistEditor brokerId={alpaca?.brokerId}/>
 
           <div className="field">
             <div className="field-label" style={{marginBottom:8}}>Replay data <span className="muted">(SIMULATED mode)</span></div>
@@ -7385,7 +7455,7 @@ const ScreenGuide = ({ onGo }) => {
 
         <Sec n="2" title="What the testing has shown so far (real prices, after costs)">
           <T head={['Approach', 'Result']} rows={[
-            ['Rank & tilt (default)', 'About the same as buy & hold with smaller worst drops: 12 stocks + sector funds 2017–2026 +1153% vs +1178%, worst drop −39% vs −49%. Trailed on sector funds alone. Helps most in long bear markets (2022).'],
+            ['Rank & tilt (default)', 'About the same as buy & hold with smaller worst drops: 12 stocks + sector funds 2017–2026 +1153% vs +1178%, worst drop −39% vs −49%. Trailed on sector funds alone. Helps most in long bear markets (2022). Not yet tested on the 100-stock list: run the Backtest on broker history to check.'],
             ['Day trading (Intraday lab, Alpaca 5-minute, 40 days)', 'NO-GO. No agent predicted the next 30 minutes; the best made ~4bp before a 10bp round-trip cost.'],
             ['Agents together, 2 days – 1 month (Swing lab)', 'NO-GO on 2013–2018 and 2016–2026 data, as votes or ranked readings: no reliable stock picking on unseen years.'],
             ['Autopilot (combination model)', '153% vs 175% for the trend score alone (2015–2018), so it is off by default.'],
@@ -7437,13 +7507,14 @@ const ScreenGuide = ({ onGo }) => {
             [<Go to="agentperf">Agent performance</Go>, 'Each agent\'s hit rate on the trades the bot closed (a record, not the weights).'],
             [<Go to="pnltrend">P/L trend</Go>, 'Cumulative profit and loss of closed trades.'],
             [<Go to="market">Market map</Go>, 'Quick overview: today\'s move and how strongly the agents agree, per stock.'],
-            [<Go to="sectors">Sector / Universe</Go>, 'The stocks the bot watches, by sector.'],
+            [<Go to="sectors">Sector / Universe</Go>, 'The stocks the bot watches, by sector (edit the list in Settings → Stocks watched).'],
           ]}/>
         </Sec>
 
         <Sec n="7" title="Settings that matter (and the ones to leave alone)">
           <ul style={{margin:'0 0 0 18px',padding:0}}>
             <li><b>Style</b> and <b>Risk level</b>: the two that change results. Risk level sets stocks held (Cautious 16 · Balanced 12 · Bold 8), share invested, daily loss limit and position sizes.</li>
+            <li><b>Stocks watched</b>: 100 large US stocks across 11 sectors by default. Edit the list (or go back to the original 25) in Settings; the app reloads to apply it. Order matters: IG uses the first 30, the Intraday lab the first 40. Re-check Rank &amp; tilt in the Backtest after changing it.</li>
             <li><b>Replay data</b> (SIMULATED): Broker, Imported CSV or Fictional. Fictional prices show behaviour, never evidence.</li>
             <li><b>Daily loss limit</b>: stops new positions for the day once equity is down by it.</li>
             <li><b>Autopilot</b>: leave off unless the Swing lab shows the agents together beat the trend score on your data.</li>
@@ -7806,7 +7877,7 @@ const App = () => {
       setLivePrices({});
       return;
     }
-    const symbols = TICKERS.map(t => t.sym).join(',');
+    const wanted = brokerSymbols(alpaca), wantedSet = new Set(wanted);
     // Bars are kept in this browser (IndexedDB) per broker account type, so a cold server only needs the
     // newest days — IG allows ~10,000 historical points a week and a full load of 25 stocks costs ~5,500.
     const cacheKey = `bars_${alpaca.brokerId || 'alpaca'}_${alpaca.env || 'paper'}${alpaca.brokerId === 'ig' ? '' : `_${riskRef.current?.historyDays || 1100}`}`;
@@ -7815,6 +7886,7 @@ const App = () => {
     const useBars = (bySym) => {
       const barsBySym = {}, prices = {};
       for (const sym of Object.keys(bySym)) {
+        if (!wantedSet.has(sym)) continue; // removed from the watchlist
         const b = bySym[sym].filter(x => x.c > 0);
         if (b.length >= 60) { barsBySym[sym] = b; prices[sym] = b[b.length - 1].c; }
       }
@@ -7833,17 +7905,25 @@ const App = () => {
           cached = c && c.bars ? c.bars : {};
           if (Object.keys(cached).length) useBars(cached);
         }
-        // top up from the earliest last day across cached symbols (re-fetching that day refreshes a partial bar)
-        const lasts = Object.values(cached).map(b => dayOf(b[b.length - 1] || {})).filter(Boolean).sort();
-        const since = lasts.length >= Math.ceil(TICKERS.length * 0.8) ? lasts[0] : null;
-        const r = await fetch(
-          `${BACKEND_URL}/api/bars?symbols=${encodeURIComponent(symbols)}&days=${riskRef.current?.historyDays || 1100}${since ? `&since=${since}` : ''}`,
-          // IG's first load resolves ticker→epic and fetches history under tight rate limits (~2 min); later loads hit the backend's cache
-          { headers: { 'Authorization': 'Bearer ' + alpaca.token }, signal: AbortSignal.timeout(alpaca.brokerId === 'ig' ? 180000 : 15000) }
-        );
-        if (!r.ok) { liveBarsNoteRef.current = `The broker's price history request failed (HTTP ${r.status}). Retrying every 10 minutes.`; return; }
-        const data = await r.json();
-        if (!data.bars) return;
+        // Symbols this browser already holds get a top-up from the earliest of their last days (re-fetching
+        // that day refreshes a partial bar); symbols new to the watchlist get their full history.
+        const have = wanted.filter(sym => (cached[sym] || []).length >= 60), missing = wanted.filter(sym => !have.includes(sym));
+        const lasts = have.map(sym => dayOf(cached[sym][cached[sym].length - 1] || {})).filter(Boolean).sort();
+        const groups = [];
+        if (have.length) groups.push({ syms: have, since: lasts[0] || null });
+        if (missing.length) groups.push({ syms: missing, since: null });
+        const data = { bars: {}, warning: null };
+        for (const grp of groups) {
+          const r = await fetch(
+            `${BACKEND_URL}/api/bars?symbols=${encodeURIComponent(grp.syms.join(','))}&days=${riskRef.current?.historyDays || 1100}${grp.since ? `&since=${grp.since}` : ''}`,
+            // IG's first load resolves ticker→epic and fetches history under tight rate limits (~2 min); later loads hit the backend's cache
+            { headers: { 'Authorization': 'Bearer ' + alpaca.token }, signal: AbortSignal.timeout(alpaca.brokerId === 'ig' ? 180000 : 120000) }
+          );
+          if (!r.ok) { liveBarsNoteRef.current = `The broker's price history request failed (HTTP ${r.status}). Retrying every 10 minutes.`; return; }
+          const d = await r.json();
+          Object.assign(data.bars, d.bars || {});
+          if (d.warning) data.warning = d.warning;
+        }
         // Merge new bars over the cached ones by day. Keep full OHLCV bars: the agents use opens (gaps),
         // highs/lows (ATR, squeezes) and volume.
         const merged = { ...cached };

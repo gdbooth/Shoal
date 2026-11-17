@@ -147,7 +147,7 @@ app.delete('/api/orders/:id', auth, proxy(req => req.session.cancelOrder(req.par
 // Returns up to 252 daily closes per symbol so the client can recompute all
 // 16 agent signals from real prices instead of the synthetic seed data.
 app.get('/api/bars', auth, proxy(req => {
-  const symbols = (req.query.symbols || '').split(',').filter(s => SYMBOL_RE.test(s)).slice(0, 30);
+  const symbols = (req.query.symbols || '').split(',').filter(s => SYMBOL_RE.test(s)).slice(0, 150);
   if (!symbols.length) return { status: 400, body: { error: 'symbols required' } };
   // Intraday bars (5 or 15 minutes) for the intraday lab: Alpaca only, up to 90 calendar days back
   const timeframe = req.query.timeframe || '1Day';

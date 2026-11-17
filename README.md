@@ -11,6 +11,12 @@ months), what the testing has shown so far, every mode, style, screen and settin
 (GO / BORDERLINE / NO-GO, IC, t, bp, Sharpe), and the limits. The menu is split into **Workspace** (everyday
 screens) and **Test & tune** (backtest, optimiser, labs, agent detail).
 
+**Stocks watched**: 100 large US stocks across 11 sectors by default (`STOCK_CATALOG` in `index.html`;
+the original 25 come first). Settings → Stocks watched edits the list (5–150 symbols, saved in the browser
+as `shoal_watchlist_v1`, applied on reload); "Default 100" and "Original 25" reset it. IG gets only the first
+30 (its weekly history allowance), the Intraday lab the first 40. History already cached in the browser is
+topped up; symbols new to the list get their full history.
+
 ## Running
 
 ```

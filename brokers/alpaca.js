@@ -63,7 +63,7 @@ class AlpacaSession {
     const start = since || new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
     const out = {};
     let token = null;
-    for (let page = 0; page < 20; page++) {
+    for (let page = 0; page < 80; page++) {
       const qs = new URLSearchParams({
         symbols: symbols.join(','), timeframe: '1Day', start, limit: '10000', feed: 'iex', adjustment: 'split',
         ...(token ? { page_token: token } : {}),
