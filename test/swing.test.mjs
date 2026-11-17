@@ -46,3 +46,32 @@ test('walk-forward fits only use outcomes known before the fit day', async () =>
   const R = await W.evaluateSwing(U, { signalsAt: flip, ids: ['flip'], trendId: 'flip', H, costBps: 5, refit: 1000, start: 300, window: 750 });
   assert.ok(R.combined.ic < 0.2, String(R.combined.ic)); // mixed: right before 600, wrong after
 });
+
+test('continuous readings: every agent, no future data', () => {
+  const sec = Object.fromEntries(syms.map((s, k) => [s, k < 5 ? 'X' : 'Y']));
+  const bars = S.synthUniverseBars(syms, sec, 4, 500);
+  const U1 = S.buildUniverse(bars, sec);
+  const cut = 380;
+  const later = Object.fromEntries(Object.entries(bars).map(([s, b]) => [s, { ...b, c: b.c.map((x, i) => (i > cut ? x * 1.4 : x)), h: b.h.map((x, i) => (i > cut ? x * 1.5 : x)), l: b.l.map((x, i) => (i > cut ? x * 1.3 : x)), o: b.o.map((x, i) => (i > cut ? x * 1.4 : x)) }]));
+  const U2 = S.buildUniverse(later, sec);
+  for (const sym of syms) for (const i of [200, 300, cut]) {
+    const a = S.agentReadings(U1, sym, i), b = S.agentReadings(U2, sym, i);
+    for (const id of S.AGENT_IDS) assert.ok((Number.isNaN(a[id]) && Number.isNaN(b[id])) || Math.abs(a[id] - b[id]) < 1e-9, `${sym} ${id} @${i}`);
+  }
+  const r = S.agentReadings(U1, 'A1', 300);
+  assert.equal(Object.keys(r).length, 16);
+  assert.equal(S.roleOf('macr'), 'timing'); assert.equal(S.roleOf('vol'), 'risk'); assert.equal(S.roleOf('earn'), 'picker');
+});
+
+test('ranked mode: relative target, pickers only in the model, stricter bar, an informative reading is found', async () => {
+  const readingsAt = (sym, i) => { const sg = signalsAt(sym, i); return { noise: sg.noise.dir * sg.noise.strength, peek: sg.peek.dir * (0.5 + 0.5 * rnd()), mkt: 0.1 }; };
+  const roleOf = (id) => (id === 'mkt' ? 'timing' : 'picker');
+  const R = await W.evaluateSwing(U, { mode: 'ranked', readingsAt, roleOf, ids: ['noise', 'peek', 'mkt'], trendId: 'noise', H, costBps: 5 });
+  assert.equal(R.relative, true);
+  assert.deepEqual(R.weights.map(w => w.id), ['noise', 'peek']); // the timing agent isn't a stock picker
+  assert.equal(R.timing.length, 1);
+  const peek = R.agents.find(a => a.id === 'peek'), noise = R.agents.find(a => a.id === 'noise');
+  assert.equal(peek.status, 'predicts');
+  assert.notEqual(noise.status, 'predicts');
+  assert.ok(R.model.sharpe > R.trendOnly.sharpe);
+});

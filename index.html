@@ -2780,6 +2780,23 @@ const ToastOverlay = ({ toasts, onRemove }) => (
 
 // Dashboard screen — portfolio overview, swarm, KPIs, recent trades
 
+// "Where to start" pointer on the dashboard, until dismissed
+const StartHere = ({ ctx }) => {
+  const [hidden, setHidden] = React.useState(() => { try { return localStorage.getItem('shoal_starthere_v1') === 'hidden'; } catch (_) { return false; } });
+  if (hidden) return null;
+  const hide = () => { setHidden(true); try { localStorage.setItem('shoal_starthere_v1', 'hidden'); } catch (_) {} };
+  return (
+    <div className="card" style={{padding:'10px 16px',marginBottom:10,display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+      <div className="tiny" style={{color:'var(--ink-2)',flex:1,minWidth:240}}>
+        <span className="mono" style={{color:'var(--info)',letterSpacing:'0.12em'}}>WHERE TO START · </span>
+        Keep the default style (Rank &amp; tilt), check it against buy &amp; hold in SIMULATED, then paper trade in VIRTUAL and judge it over months. The <b>Guide</b> (top of the menu) explains every screen, setting and result.
+      </div>
+      {ctx?.goTo && <button className="btn" style={{fontSize:10,padding:'4px 10px'}} onClick={() => ctx.goTo('guide')}>OPEN THE GUIDE</button>}
+      <button className="btn ghost" style={{fontSize:10,padding:'4px 10px'}} onClick={hide}>HIDE</button>
+    </div>
+  );
+};
+
 // Banners (no data to replay, daily loss limit hit) and the bot-vs-buy-and-hold comparison
 const StatusStrip = ({ ctx, mode }) => {
   const U = mode === 'SIMULATED' ? ctx?.replayUniverse : ctx?.liveUniverse, info = ctx?.replayInfo, hit = ctx?.lossHit;
@@ -2939,7 +2956,7 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
       <div className="page-head" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
         <div>
           <div className="page-eyebrow">Dashboard · {mode === 'LIVE' ? 'Live trading' : mode === 'VIRTUAL' ? 'Broker paper · virtual' : 'History replay'} · {styleLabel(ctx?.risk?.style)}{ctx?.risk?.autopilot ? ' · Autopilot' : ''}</div>
-          <h1 className="page-title">A swarm of {AGENTS.length} agents <em>currently disagreeing about the next 12 hours.</em></h1>
+          <h1 className="page-title">{(ctx?.risk?.style || 'tilt') === 'tilt' ? <>Holding the strongest trends, <em>re-ranked monthly.</em></> : ctx?.risk?.style === 'invested' ? <>Holding everything, <em>selling on weakness.</em></> : <>{AGENTS.length} agents voting, <em>trading both ways.</em></>}</h1>
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
           <button className="btn ghost" style={{fontSize:10,padding:'5px 10px',letterSpacing:'0.08em'}} onClick={()=>setShowWhyModal(true)}>
@@ -2948,6 +2965,7 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
           <div className="mono tiny muted">SHOAL ENGINE v0.4.2 · {TICKERS.length} stocks · Last sync 3s ago</div>
         </div>
       </div>
+      <StartHere ctx={ctx}/>
       <StatusStrip ctx={ctx} mode={mode} />
 
 
@@ -3027,8 +3045,16 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
               <button style={{color:'var(--ink-3)',fontSize:18}} onClick={()=>setShowWhyModal(false)}>×</button>
             </div>
             <div className="modal-body" style={{padding:'0 0 8px',maxHeight:'60vh',overflowY:'auto'}}>
+              <div className="tiny" style={{padding:'12px 24px 4px',color:'var(--ink-2)',lineHeight:1.55}}>
+                {(ctx?.risk?.style || 'tilt') === 'tilt'
+                  ? 'Rank & tilt trades only at the monthly re-rank (and to finish it as cash frees up). Between re-ranks it holds, so no trades is normal.'
+                  : ctx?.risk?.style === 'invested'
+                  ? 'Stay invested buys every stock once, then only sells when Trend Persistence signals weakness and buys back when that clears.'
+                  : 'Trade both ways opens a trade when enough agents agree with enough confidence; the list below shows which filter stopped each stock.'}
+                {' '}In VIRTUAL and LIVE, orders are only placed while the US market is open. The <b>BOT STATUS</b> line on the dashboard says exactly what the bot is waiting for.
+              </div>
               <div style={{padding:'12px 24px 8px',fontFamily:'var(--mono)',fontSize:10,color:'var(--ink-3)',letterSpacing:'0.1em'}}>
-                FILTER ANALYSIS · {TICKERS.length} tickers · {whyReasons.filter(r=>!r.filter).length} candidates passing all filters
+                {(ctx?.risk?.style || 'tilt') !== 'both' && 'FOR TRADE BOTH WAYS · '}FILTER ANALYSIS · {TICKERS.length} tickers · {whyReasons.filter(r=>!r.filter).length} candidates passing all filters
               </div>
               {whyReasons.map(r => (
                 <div key={r.sym} className="why-row">
@@ -3307,7 +3333,7 @@ const ScreenActivity = ({ mode, tick, onTradeClick, running, ctx }) => {
       <div className="page-head">
         <div className="page-eyebrow">Live activity · {mode === 'LIVE' ? 'real orders' : 'paper orders'}</div>
         <h1 className="page-title">Every decision, <em>annotated.</em></h1>
-        <p className="page-sub">Each row is a vote that crossed the swarm's confidence threshold. Click any row to see the agents that argued for it, what they each weighed, and how the trade is performing.</p>
+        <p className="page-sub">Each row is a trade the bot placed and why: for Rank &amp; tilt the monthly re-rank, for Stay invested a weakness sell or buy-back, for Trade both ways the agents' vote. Click a row for the detail.</p>
       </div>
 
       <div className="grid-3" style={{marginBottom:16}}>
@@ -4651,6 +4677,7 @@ const ScreenSwing = ({ ctx }) => {
   const [cost, setCost] = React.useState(() => SWING_CACHE.meta?.cost ?? 5);
   const [maxPos, setMaxPos] = React.useState(() => SWING_CACHE.meta?.maxPos || 10);
   const [shorts, setShorts] = React.useState(() => SWING_CACHE.meta?.shorts ?? false);
+  const [mode, setMode] = React.useState(() => SWING_CACHE.meta?.mode || 'ranked');
   const [busy, setBusy] = React.useState(null);
   const [error, setError] = React.useState(null);
   const [R, setR] = React.useState(() => SWING_CACHE.result);
@@ -4662,10 +4689,11 @@ const ScreenSwing = ({ ctx }) => {
     setBusy(0);
     try {
       const book = SS.createScoreBook(U, ctx?.agentParams);
-      const res = await SW.evaluateSwing(U, { signalsAt: book.signalsAt, ids: AGENTS.map(a => a.id), names: AGENTS.map(a => a.name), H, costBps: cost, maxPos, shorts,
+      const res = await SW.evaluateSwing(U, { mode, readingsAt: (sym, i) => SS.agentReadings(U, sym, i), roleOf: SS.roleOf,
+        signalsAt: book.signalsAt, ids: AGENTS.map(a => a.id), names: AGENTS.map(a => a.name), H, costBps: cost, maxPos, shorts,
         dateOf: (g) => barDate(U, g), onProgress: (x) => setBusy(x) });
       res.source = source; res.symbols = U.syms.length;
-      SWING_CACHE.result = res; SWING_CACHE.meta = { source, H, cost, maxPos, shorts };
+      SWING_CACHE.result = res; SWING_CACHE.meta = { source, H, cost, maxPos, shorts, mode };
       setR(res);
     } catch (err) { setError(err.message || String(err)); }
     setBusy(null);
@@ -4673,10 +4701,8 @@ const ScreenSwing = ({ ctx }) => {
 
   const bp = (x, d = 0) => (Number.isFinite(x) ? `${x >= 0 ? '+' : ''}${x.toFixed(d)}bp` : '—');
   const vColor = { go: 'var(--up)', borderline: 'var(--warn)', nogo: 'var(--down)' };
-  const statusOf = (a) => {
-    const t = a.marketWide && a.timing ? a.timing.icT : a.icT;
-    return t >= 2 ? { t: 'Predicts', c: 'var(--up)' } : t <= -2 ? { t: 'Predicts in reverse', c: 'var(--warn)' } : { t: 'No reliable signal', c: 'var(--ink-4)' };
-  };
+  const statusOf = (a) => ({ predicts: { t: 'Predicts (t ≥ 3)', c: 'var(--up)' }, promising: { t: 'Promising (t 2–3)', c: 'var(--info)' }, reverse: { t: 'Predicts in reverse', c: 'var(--warn)' } }[a.status] || { t: 'No reliable signal', c: 'var(--ink-4)' });
+  const rel = R?.relative;
   const maxImpact = R ? Math.max(1e-9, ...R.weights.map(w => w.impactBp)) : 1;
   const row = (label, x, note) => (
     <tr><td><b>{label}</b>{note && <div className="mono tiny muted">{note}</div>}</td>
@@ -4690,7 +4716,7 @@ const ScreenSwing = ({ ctx }) => {
     <div className="page" data-screen-label="05d Swing lab">
       <div className="page-head">
         <div className="page-eyebrow">Swing lab · agents together · {H}-day holds</div>
-        <h1 className="page-title">Do the agents, <em>together</em>, call the next {H} days?</h1>
+        <h1 className="page-title">Do the agents, <em>together</em>, call the next {H === 21 ? 'month' : `${H} days`}?</h1>
         <p className="page-sub">Every day each of the 16 agents scores every stock. A combined model turns the scores into a probability of a rise and an expected move, weighting each agent by how much it actually helped. It is refitted every quarter on past data only and tested on the days after, so every result below is from days it hadn't seen. No orders are placed.</p>
       </div>
 
@@ -4704,7 +4730,17 @@ const ScreenSwing = ({ ctx }) => {
           </div>
           <div className="field">
             <div className="field-label" style={{marginBottom:8}}>Hold for</div>
-            <div className="tweak-opts">{[2, 5, 10].map(h => <div key={h} className={'tweak-opt ' + (H === h ? 'on' : '')} onClick={() => setH(h)}>{h} days</div>)}</div>
+            <div className="tweak-opts">{[2, 5, 10, 21].map(h => <div key={h} className={'tweak-opt ' + (H === h ? 'on' : '')} onClick={() => setH(h)}>{h === 21 ? '1 month' : `${h} days`}</div>)}</div>
+          </div>
+          <div className="field">
+            <div className="field-label" style={{marginBottom:8}}>Agent scores</div>
+            <div className="tweak-opts">
+              <div className={'tweak-opt ' + (mode === 'ranked' ? 'on' : '')} onClick={() => setMode('ranked')}>Ranked readings</div>
+              <div className={'tweak-opt ' + (mode === 'votes' ? 'on' : '')} onClick={() => setMode('votes')}>Votes (old)</div>
+            </div>
+            <div className="mono tiny muted" style={{marginTop:6}}>{mode === 'ranked'
+              ? 'Every agent ranks every stock every day (−1 weakest … +1 strongest). Stock pickers are judged on beating the other stocks; market timing and risk agents on their own tests. Trading test: always hold the top-ranked stocks.'
+              : 'Each agent votes buy/sell only when its rule triggers. Judged on the stock going up. Trading test: buy when the combined probability is high enough.'}</div>
           </div>
           <div className="field">
             <div className="field-label" style={{marginBottom:8}}>Cost per side</div>
@@ -4724,8 +4760,11 @@ const ScreenSwing = ({ ctx }) => {
           <div className="tiny" style={{color:'var(--ink-2)',lineHeight:1.6}}>
             <p style={{margin:'0 0 8px'}}><b>Each agent</b> gives every stock a score from −1 (expects a fall) to +1 (expects a rise), or 0 when it has no view.</p>
             <p style={{margin:'0 0 8px'}}><b>Together</b>: the scores are combined into the <b>probability of a rise</b> over the next {H} days and an <b>expected move</b>. An agent's say depends on how well its scores lined up with what happened next on the earlier days; agents that never helped get almost none, and an agent that worked the wrong way round is used the wrong way round.</p>
-            <p style={{margin:'0 0 8px'}}><b>Buy</b> when the probability is at least 55% and the expected move beats the {cost * 2}bp round-trip cost; hold {H} days; best probabilities first, up to {maxPos} at once.</p>
-            <p style={{margin:0}}><b>GO</b> needs reliable stock-picking on unseen days (t ≥ 2), a profit per trade after costs, and a better risk-adjusted return than both buy &amp; hold and the trend score alone.</p>
+            {mode === 'ranked'
+              ? <p style={{margin:'0 0 8px'}}><b>Trade</b>: every {H} days hold the {maxPos} stocks (at most half of them) the combined model ranks best, equal weights, always invested; costs paid on the names that change. That isolates stock picking: the fair comparison is holding all of them.</p>
+              : <p style={{margin:'0 0 8px'}}><b>Buy</b> when the probability is at least 55% and the expected move beats the {cost * 2}bp round-trip cost; hold {H} days; best probabilities first, up to {maxPos} at once.</p>}
+            <p style={{margin:'0 0 8px'}}><b>An agent counts</b> only with t ≥ 3 on unseen days (2–3 is "promising"): with 16 agents, one or two will look good by luck at t ≈ 2.</p>
+            <p style={{margin:0}}><b>GO</b> needs reliable stock picking by the agents together on unseen days (t ≥ 2), a profit per trade after costs, and a better risk-adjusted return than both buy &amp; hold and the trend score alone.</p>
           </div>
         </div>
       </div>
@@ -4740,7 +4779,9 @@ const ScreenSwing = ({ ctx }) => {
 
         <div className="card" style={{marginBottom:16}}>
           <div className="card-head"><div className="card-title">Today's decisions</div><div className="card-meta">latest close · model fitted on all days with a known outcome</div></div>
-          <div className="tiny muted" style={{marginBottom:10}}>Each card: the combined probability that the stock is higher in {R.H} days, the expected move, and which agents pushed for and against. Green bars push towards a rise, red towards a fall.</div>
+          <div className="tiny muted" style={{marginBottom:10}}>{rel
+            ? `Each card: the combined probability that the stock beats the average of these stocks over the next ${R.H} days, the expected margin, and which agents pushed for and against. Green bars push towards beating them, red towards lagging.`
+            : `Each card: the combined probability that the stock is higher in ${R.H} days, the expected move, and which agents pushed for and against. Green bars push towards a rise, red towards a fall.`}</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:12}}>
             {R.decisions.slice(0, 9).map(d => {
               const mx = Math.max(1e-9, ...d.contrib.slice(0, 5).map(c => Math.abs(c.logit)));
@@ -4751,7 +4792,7 @@ const ScreenSwing = ({ ctx }) => {
                     <span className="mono" style={{fontSize:15}}>{d.sym}</span>
                     <span className="mono tiny" style={{color:ac,letterSpacing:'0.1em'}}>{d.action}</span>
                   </div>
-                  <div className="mono tiny muted" style={{margin:'4px 0 8px'}}>rise {(d.p * 100).toFixed(0)}% · expected {bp(d.e)} · {d.agree} for, {d.against} against</div>
+                  <div className="mono tiny muted" style={{margin:'4px 0 8px'}}>{rel ? 'beats the rest' : 'rise'} {(d.p * 100).toFixed(0)}% · expected {rel ? 'margin ' : ''}{bp(d.e)} · {d.agree} for, {d.against} against</div>
                   {d.contrib.slice(0, 5).map(c => (
                     <div key={c.id} style={{display:'grid',gridTemplateColumns:'110px 1fr',gap:6,alignItems:'center',fontSize:10,marginBottom:3}}>
                       <span className="muted">{c.name}</span>
@@ -4767,8 +4808,8 @@ const ScreenSwing = ({ ctx }) => {
           <table className="tbl">
             <thead><tr><th></th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'right'}}>Per year</th><th style={{textAlign:'right'}}>Sharpe</th><th style={{textAlign:'right'}}>Worst drop</th><th style={{textAlign:'right'}}>Trades</th><th style={{textAlign:'right'}}>Won</th><th style={{textAlign:'right'}}>Per trade</th></tr></thead>
             <tbody>
-              {row('All agents together', R.model, 'buy when the combined probability ≥ 55% and the expected move beats costs')}
-              {R.trendOnly && row('Trend score only', R.trendOnly, 'the same rules using Trend Persistence alone')}
+              {row('All agents together', R.model, rel ? `hold the ${R.maxPos} best-ranked stocks, re-ranked every ${R.H} days` : 'buy when the combined probability ≥ 55% and the expected move beats costs')}
+              {R.trendOnly && row('Trend score only', R.trendOnly, 'the same rules using Trend Persistence alone (Rank & tilt is this idea)')}
               {row('Buy & hold', R.hold, 'every stock, equal weights, never sold')}
             </tbody>
           </table>
@@ -4789,7 +4830,7 @@ const ScreenSwing = ({ ctx }) => {
           <div className="card">
             <div className="card-head"><div className="card-title">Confidence vs what happened</div><div className="card-meta">unseen days</div></div>
             <table className="tbl">
-              <thead><tr><th>Probability of a rise</th><th style={{textAlign:'right'}}>Calls</th><th style={{textAlign:'right'}}>Actually rose</th><th style={{textAlign:'right'}}>Avg move</th></tr></thead>
+              <thead><tr><th>{rel ? 'Probability of beating the rest' : 'Probability of a rise'}</th><th style={{textAlign:'right'}}>Calls</th><th style={{textAlign:'right'}}>Actually rose</th><th style={{textAlign:'right'}}>Avg move</th></tr></thead>
               <tbody>{R.calibration.map(c => (
                 <tr key={c.range}><td className="mono">{c.range}</td><td className="mono" style={{textAlign:'right'}}>{c.n.toLocaleString()}</td><td className="mono" style={{textAlign:'right'}}>{c.n ? `${(c.upRate * 100).toFixed(0)}%` : '—'}</td><td className="mono" style={{textAlign:'right'}}>{c.n ? bp(c.avgBp) : '—'}</td></tr>))}</tbody>
             </table>
@@ -4797,11 +4838,28 @@ const ScreenSwing = ({ ctx }) => {
           </div>
         </div>
 
+        {R.mode === 'ranked' && (R.timing.length > 0 || R.risk.length > 0) && (
+          <div className="grid-2" style={{marginBottom:16}}>
+            <div className="card">
+              <div className="card-head"><div className="card-title">Market timing agents</div><div className="card-meta">the whole market's next {R.H} days</div></div>
+              {R.timing.map(a => { const st = statusOf(a); return (
+                <div key={a.id} className="tiny" style={{marginBottom:8}}><b>{a.name}</b> · today {Number.isFinite(a.today) ? (a.today > 0.1 ? 'positive' : a.today < -0.1 ? 'negative' : 'neutral') : '—'}<div className="mono tiny muted">timing IC {a.timing ? `${fmtIc(a.timing.ic)} · t ${a.timing.icT.toFixed(1)}` : '—'} · <span style={{color:st.c}}>{st.t}</span></div></div>); })}
+              <div className="mono tiny muted">Judged on whether its reading came before market rises or falls. Kept out of the stock-picking model; could later set how much to invest.</div>
+            </div>
+            <div className="card">
+              <div className="card-head"><div className="card-title">Risk agents</div><div className="card-meta">calm vs turbulent, not direction</div></div>
+              {R.risk.map(a => { const st = statusOf(a); return (
+                <div key={a.id} className="tiny" style={{marginBottom:8}}><b>{a.name}</b><div className="mono tiny muted">calm-ahead IC {fmtIc(a.ic)} · t {a.icT.toFixed(1)} · <span style={{color:st.c}}>{st.t}</span></div></div>); })}
+              <div className="mono tiny muted">Judged on whether a high score came before smaller moves. Kept out of the stock-picking model; could later size positions.</div>
+            </div>
+          </div>
+        )}
+
         <div className="card" style={{marginBottom:16}}>
-          <div className="card-head"><div className="card-title">Each agent on its own · unseen days</div><div className="card-meta">strong calls = score ≥ 0.5 either way</div></div>
+          <div className="card-head"><div className="card-title">{R.mode === 'ranked' ? 'Each stock picker on its own · unseen days' : 'Each agent on its own · unseen days'}</div><div className="card-meta">{R.mode === 'ranked' ? 'IC: ranking vs the next move relative to the others' : 'strong calls = score ≥ 0.5 either way'}</div></div>
           <table className="tbl">
             <thead><tr><th>Agent</th><th style={{textAlign:'right'}}>Stock picking (IC)</th><th style={{textAlign:'right'}}>Strong calls</th><th style={{textAlign:'right'}}>Before costs</th><th style={{textAlign:'right'}}>After costs</th><th>Verdict</th></tr></thead>
-            <tbody>{R.agents.map(a => { const st = statusOf(a); return (
+            <tbody>{R.agents.filter(a => R.mode !== 'ranked' || a.role === 'picker').map(a => { const st = statusOf(a); return (
               <tr key={a.id}>
                 <td><b>{a.name}</b>{a.marketWide && <div className="mono tiny muted">market-wide: judged on timing the whole market</div>}</td>
                 <td className="mono" style={{textAlign:'right'}}>{a.marketWide && a.timing ? <span>{fmtIc(a.timing.ic)} <span className="muted">t {a.timing.icT.toFixed(1)}</span></span> : <span>{fmtIc(a.ic)} <span className="muted">t {a.icT.toFixed(1)}</span></span>}</td>
@@ -5198,7 +5256,7 @@ const ScreenMarket = ({ tick, mode, ctx }) => {
       <div className="page-head">
         <div className="page-eyebrow">Market analysis · sector correlation map</div>
         <h1 className="page-title">The whole market, <em>at one glance.</em></h1>
-        <p className="page-sub">Color = today's return. Brightness = swarm confidence. The bot scans every cell every minute, looking for clusters where multiple agents simultaneously agree.</p>
+        <p className="page-sub">Colour = today's return. Brightness = how strongly the agents agree on that stock. A quick overview only: trades come from the style chosen in Settings.</p>
       </div>
 
       <div className="grid-2-1" style={{marginBottom:16}}>
@@ -5398,6 +5456,7 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
       <div className="page-head">
         <div className="page-eyebrow">Settings</div>
         <h1 className="page-title">Broker, risk, <em>and the rules of the game.</em></h1>
+        <p className="page-sub">The settings that change results are <b>Style</b> and <b>Risk level</b>. Replay data chooses the history SIMULATED uses. Leave Autopilot off and Advanced at the defaults unless a lab or the Optimiser's held-out check says otherwise; the Guide explains each one.</p>
       </div>
 
       <div className="grid-2" style={{marginBottom:16}}>
@@ -6018,25 +6077,25 @@ const ScreenOnboarding = ({ onDone }) => {
     {
       eyebrow: 'Welcome to Shoal',
       title: <>A trading bot that <em>learns from itself.</em></>,
-      body: 'Shoal runs a swarm of small specialist agents — one watches momentum, one watches news, one hunts patterns from history. Each gets a vote. The system keeps score and tunes their weights based on what actually worked.',
+      body: 'Shoal runs 16 specialist agents that read daily prices and volume: trend, Bollinger bands, volume, gaps, volatility, market breadth and more. Its default strategy, Rank & tilt, holds the stocks with the strongest trends and re-ranks once a month. Built-in labs test every idea on days it was not fitted to, so you can see what actually works.',
       art: 'swarm',
     },
     {
       eyebrow: 'Step 1 of 3 · Safety',
       title: <>You'll always start in <em>virtual mode.</em></>,
-      body: 'Every Shoal account begins paper-trading. The bot makes the same decisions it would with real money, but no orders touch the market. You watch the swarm operate, the agents adapt, the equity curve grow — at zero financial risk.',
+      body: 'Start in SIMULATED: the bot replays real or fictional price history in your browser, with no orders sent. Then connect an Alpaca paper account and switch to VIRTUAL to trade with play money at the real market. Judge it against simply holding the same stocks.',
       art: 'virtual',
     },
     {
       eyebrow: 'Step 2 of 3 · Connect',
       title: <>When ready, plug in <em>Alpaca.</em></>,
-      body: "Switching to live trading requires an Alpaca account. We use their open trading API — broker authorization happens once, you can revoke it anytime. The interface turns orange whenever real money is at stake. There's no way to forget which mode you're in.",
+      body: "Brokers: Alpaca (paper and live) or IG (demo and live spread bets). Your keys are used only to talk to the broker and can be revoked at any time. The interface turns orange whenever real money is at stake, so you always know which mode you're in.",
       art: 'broker',
     },
     {
       eyebrow: 'Step 3 of 3 · Watch & adapt',
       title: <>The swarm <em>tells you what it's thinking.</em></>,
-      body: 'Every trade comes with a reasoning graph: which agent voted what, what regime the market was in, what the predicted return was. Over time you can see weights drifting, win-rate climbing, and confidence calibrating. You stay in control — pause it, adjust risk, or stop it cold.',
+      body: 'Every trade comes with its reason, and the dashboard shows what the bot is waiting for and how it compares with buy & hold. You stay in control: pause it, change the risk level, or stop it. The Guide at the top of the menu explains every screen and setting.',
       art: 'reasoning',
     },
   ];
@@ -6472,7 +6531,7 @@ const ScreenAgentPerf = ({ mode, ctx }) => {
       <div className="page-head">
         <div className="page-eyebrow">Agent intelligence · win/loss accuracy over time</div>
         <h1 className="page-title">Which agents are <em>earning their weight</em>?</h1>
-        <p className="page-sub">Rolling accuracy is computed from each agent's last 30 closed calls. Weights shift via reinforcement after every close — strong agents grow, weak agents shrink. All enabled agents always contribute to every consensus call; use the Agent Config screen to manually disable any agent.</p>
+        <p className="page-sub">Each agent's hit rate on its last 30 calls in trades the bot closed. This is a record, not what sets the weights: weights change only when Autopilot adopts a refitted model (Strategy / learning). For a proper test of an agent use the Swing lab; switch agents off in Agent config.</p>
       </div>
 
       <div className="card" style={{marginBottom:16}}>
@@ -7050,7 +7109,7 @@ const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnab
       <div className="page-head">
         <div className="page-eyebrow">Agent configuration · {enabledCount}/{AGENTS.length} active</div>
         <h1 className="page-title">Toggle, tune, and <em>optimise</em> each agent.</h1>
-        <p className="page-sub">Enable or disable agents, adjust their signal parameters, and run a walk-forward grid search to find the best setting for each param against your price history.</p>
+        <p className="page-sub">Enable or disable agents, adjust their signal parameters, and run a walk-forward grid search for each parameter on your price history. Tuned parameters often fit the past only: confirm any change in the Swing lab before relying on it.</p>
       </div>
 
       <div className="card" style={{marginBottom:16,padding:14}}>
@@ -7285,98 +7344,158 @@ const ScreenAgentConfig = ({ agentParams, setAgentParams, enabledAgents, setEnab
 };
 
 // ── ScreenGuide ──────────────────────────────────────────────────────────────
-const ScreenGuide = () => {
-  const sections = [
-    {
-      title: 'What is Shoal?',
-      body: 'Shoal is an autonomous trading bot that scans a universe of S&P 500 stocks every few seconds. Instead of using a single indicator, it runs 16 specialist AI "agents" simultaneously. Their votes are combined into a weighted consensus — and only when enough agents agree does the bot place a trade.',
-    },
-    {
-      title: 'The 16 agents',
-      body: 'Each agent focuses on one signal type: momentum, mean-reversion, volume, volatility, sentiment, options flow, earnings drift, and more. Agents have different weights — stronger performers are trusted more. Weights update after every closed trade via reinforcement learning.',
-    },
-    {
-      title: 'Swarm consensus',
-      body: 'A trade fires only when the weighted ensemble confidence exceeds the threshold you set in Settings (default 55%). If 10 agents vote BUY and 3 vote SELL, confidence might be 72%. The swarm dashboard shows each agent as a node — green means BUY vote, red means SELL, grey means no opinion. Excluded agents are shown dimmed.',
-    },
-    {
-      title: 'Three operating modes',
-      items: [
-        { label: 'SIMULATED', desc: 'Replays daily history with local fills — no orders sent. Uses your broker\'s history when connected, otherwise a fictional 2-year market.' },
-        { label: 'VIRTUAL', desc: 'Real orders are sent to your Alpaca paper-trading account. Full broker round-trip, zero real money.' },
-        { label: 'LIVE', desc: 'Real money, real fills through your Alpaca live account. Use with care.' },
-      ],
-    },
-    {
-      title: 'Risk controls',
-      body: 'The Settings page lets you cap the maximum trade size as a percentage of equity, set a daily loss limit, choose LONG/SHORT/BOTH bias, and raise or lower the confidence threshold. The bot will never place a trade larger than the configured equity percentage, even if it means skipping a ticker entirely.',
-    },
-    {
-      title: 'Learning & adaptation',
-      body: 'After each trade closes, the bot records which agents voted correctly. Over time it shifts weight toward accurate agents and auto-excludes agents that fall below the accuracy threshold (default 35%). Excluded agents are reinstated automatically once their rolling accuracy recovers — you can watch this on the Agent Performance page.',
-    },
-    {
-      title: 'Equity curve & backtest',
-      body: 'The equity curve on the dashboard shows simulated bot performance vs the S&P 500 over the past 180 trading days using real technical signals from the same agents. The Backtest page lets you test four strategies over different periods — it replays PRICE_HISTORY using the same agent ensemble, stochastic exits, and the same risk controls.',
-    },
-    {
-      title: 'Fractional shares',
-      body: 'In VIRTUAL and LIVE modes, orders are sent as notional (dollar) amounts, so the bot can trade any stock regardless of share price. A 5% max trade with $100k equity limits each trade to $5,000 notional — correctly buying 0.26 shares of a $1,900 stock.',
-    },
-  ];
-
+const ScreenGuide = ({ onGo }) => {
+  const Sec = ({ n, title, children }) => (
+    <div className="card" style={{padding:'16px 20px'}}>
+      <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
+        <div style={{minWidth:24,height:24,borderRadius:'50%',background:'var(--virtual)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--mono)',fontSize:10,color:'var(--bg)',fontWeight:700,marginTop:2,flexShrink:0}}>{n}</div>
+        <div style={{flex:1,fontFamily:'var(--sans)',fontSize:13,color:'var(--ink-2)',lineHeight:1.6}}>
+          <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:600,color:'var(--ink)',marginBottom:8,letterSpacing:'0.04em'}}>{title}</div>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+  const Go = ({ to, children }) => <a href="#" onClick={e => { e.preventDefault(); onGo && onGo(to); }} style={{color:'var(--info)'}}>{children}</a>;
+  const T = ({ rows, head }) => (
+    <table className="tbl" style={{marginTop:6}}>
+      {head && <thead><tr>{head.map(h => <th key={h}>{h}</th>)}</tr></thead>}
+      <tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j} style={{verticalAlign:'top',fontSize:12}}>{c}</td>)}</tr>)}</tbody>
+    </table>
+  );
   return (
     <div className="page" data-screen-label="00 Guide">
       <div className="page-head">
-        <div className="page-eyebrow">How it works · Shoal v0.4</div>
-        <h1 className="page-title">Your field guide to <em>the swarm.</em></h1>
-        <p className="page-sub">Everything you need to understand what the bot is doing and why — from the individual agents all the way to live order execution.</p>
+        <div className="page-eyebrow">Guide · start here</div>
+        <h1 className="page-title">How to get the most out of <em>Shoal.</em></h1>
+        <p className="page-sub">What to do, in what order, what the testing has shown so far, and what every screen and setting is for.</p>
       </div>
 
       <div style={{display:'flex',flexDirection:'column',gap:12}}>
-        {sections.map((s, i) => (
-          <div key={i} className="card" style={{padding:'16px 20px'}}>
-            <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
-              <div style={{minWidth:24,height:24,borderRadius:'50%',background:'var(--virtual)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--mono)',fontSize:10,color:'var(--bg)',fontWeight:700,marginTop:2,flexShrink:0}}>{i+1}</div>
-              <div style={{flex:1}}>
-                <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:600,color:'var(--ink)',marginBottom:6,letterSpacing:'0.04em'}}>{s.title}</div>
-                {s.body && <p style={{fontFamily:'var(--sans)',fontSize:13,color:'var(--ink-2)',lineHeight:1.6,margin:0}}>{s.body}</p>}
-                {s.items && (
-                  <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:4}}>
-                    {s.items.map((it,j) => (
-                      <div key={j} style={{display:'flex',gap:10,alignItems:'flex-start'}}>
-                        <span className={'pill ' + (it.label === 'LIVE' ? 'live' : 'virtual')} style={{flexShrink:0,marginTop:1}}>{it.label === 'LIVE' ? '◉ LIVE' : it.label === 'VIRTUAL' ? '◑ VIRTUAL' : '◐ SIMULATED'}</span>
-                        <span style={{fontFamily:'var(--sans)',fontSize:12,color:'var(--ink-2)',lineHeight:1.5}}>{it.desc}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        ))}
+        <Sec n="1" title="Start here: the recommended way to use Shoal">
+          <ol style={{margin:'0 0 0 18px',padding:0}}>
+            <li><b>Connect Alpaca paper trading</b> in <Go to="settings">Settings</Go> (free; IG works too but allows little price history per week).</li>
+            <li><b>Keep the defaults</b>: style <b>Rank &amp; tilt</b>, risk level <b>Balanced</b>, Autopilot off. They're the settings with the most evidence behind them.</li>
+            <li><b>Check it on history first</b>: mode SIMULATED, Replay data <b>Broker</b> (or an imported 10-year CSV), speed 100×. Watch <b>Shoal vs buy &amp; hold</b> on the <Go to="dashboard">Dashboard</Go>. The <Go to="backtest">Backtest</Go> gives the same answer in seconds.</li>
+            <li><b>Paper trade</b>: switch the mode to VIRTUAL. At the next US market open (14:30–21:00 UK time) it buys its top stocks, then re-ranks once a month. If nothing happens, read the <b>BOT STATUS</b> line on the dashboard.</li>
+            <li><b>Judge it over months, against buy &amp; hold</b>, not day by day. Consider LIVE only after paper results hold up, and start small.</li>
+            <li><b>Test ideas in the labs before changing anything live</b>: <Go to="swing">Swing lab</Go>, <Go to="intraday">Intraday lab</Go>, <Go to="optimiser">Optimiser</Go>. Each says GO or NO-GO on days the idea wasn't fitted to.</li>
+          </ol>
+        </Sec>
+
+        <Sec n="2" title="What the testing has shown so far (real prices, after costs)">
+          <T head={['Approach', 'Result']} rows={[
+            ['Rank & tilt (default)', 'About the same as buy & hold with smaller worst drops: 12 stocks + sector funds 2017–2026 +1153% vs +1178%, worst drop −39% vs −49%. Trailed on sector funds alone. Helps most in long bear markets (2022).'],
+            ['Day trading (Intraday lab, Alpaca 5-minute, 40 days)', 'NO-GO. No agent predicted the next 30 minutes; the best made ~4bp before a 10bp round-trip cost.'],
+            ['Agents together, 2 days – 1 month (Swing lab)', 'NO-GO on 2013–2018 and 2016–2026 data, as votes or ranked readings: no reliable stock picking on unseen years.'],
+            ['Autopilot (combination model)', '153% vs 175% for the trend score alone (2015–2018), so it is off by default.'],
+            ['Crash guard', 'Cut the drops but missed the rebounds; not used.'],
+          ]}/>
+          <p style={{margin:'8px 0 0'}}><b>Bottom line:</b> the trend score behind Rank &amp; tilt is the only part with consistent evidence. Treat the other agents as commentary unless a lab says otherwise. Past results don't guarantee future ones.</p>
+        </Sec>
+
+        <Sec n="3" title="Modes">
+          <T rows={[
+            [<span className="pill virtual">◐ SIMULATED</span>, 'Replays daily history in the browser (broker, imported CSV or a fictional market) with local fills. No orders sent. Use it to see how a style behaves.'],
+            [<span className="pill virtual">◑ VIRTUAL</span>, 'Real orders to your Alpaca paper or IG demo account. No real money. Only trades while the US market is open.'],
+            [<span className="pill live">◉ LIVE</span>, 'Real money through your live account. Daily loss limit and Autopilot caps apply. Use with care.'],
+          ]}/>
+          <p style={{margin:'8px 0 0'}}>The bot runs in this browser tab: <b>keep the tab open</b> for VIRTUAL and LIVE to keep trading.</p>
+        </Sec>
+
+        <Sec n="4" title="Styles (Settings → Style)">
+          <T head={['Style', 'What it does', 'When to use']} rows={[
+            ['Rank & tilt (default)', 'Fully invested in the top stocks by trend score (6-month return, skipping the last month), re-ranked once a month. Dropped names sold, new ones bought.', 'The default. Low trading, best evidence.'],
+            ['Stay invested', 'Holds every stock; sells one when Trend Persistence signals weakness, buys it back when that clears.', 'If you want to own everything and only step aside from weak names.'],
+            ['Trade both ways', 'Long and short trades when enough agents agree, with stops, targets and a maximum holding period.', 'Experimental: it lost to buy & hold in testing.'],
+          ]}/>
+        </Sec>
+
+        <Sec n="5" title="The agents">
+          <p style={{margin:'0 0 6px'}}>16 agents each read one thing from daily prices and volume (trend, Bollinger bands, volume, gaps, volatility, breadth and so on). Each gives a <b>vote</b> (buy/sell with a strength, when its rule triggers) and a continuous <b>reading</b> every day.</p>
+          <ul style={{margin:'0 0 0 18px',padding:0}}>
+            <li><b>Roles</b>: 14 are <b>stock pickers</b> (which stocks beat the others), Market Breadth is <b>market timing</b> (the whole market), Volatility Regime is <b>risk</b> (calm or turbulent ahead).</li>
+            <li><b>How they're used</b>: Rank &amp; tilt uses the trend score only (or Autopilot's model when Autopilot is on); Stay invested uses Trend Persistence to sell; Trade both ways uses the weighted vote of all agents.</li>
+            <li><b>Weights</b> change only when Autopilot adopts a refitted model (a few times a year), never per trade. <Go to="learning">Strategy / learning</Go> shows every agent's weight and why it's 0%.</li>
+            <li><b>Evidence</b>: <Go to="agentconfig">Agent config</Go> marks each agent CORE, ADVISORY or MARKET-WIDE from its record on your data; the <Go to="swing">Swing lab</Go> is the full test.</li>
+          </ul>
+        </Sec>
+
+        <Sec n="6" title="Every screen, and when to use it">
+          <T head={['Screen', 'What it is for']} rows={[
+            [<Go to="dashboard">Dashboard</Go>, 'Equity, BOT STATUS (why it is or isn\'t trading), Shoal vs buy & hold, open positions. Check this first.'],
+            [<Go to="activity">Live activity</Go>, 'Each trade as it happens, with the reason.'],
+            [<Go to="history">Trade history</Go>, 'Every order and outcome for the current mode; export to CSV.'],
+            [<Go to="trade">Trade detail</Go>, 'One trade: the reason, the agents\' views at the time, the result.'],
+            [<Go to="learning">Strategy / learning</Go>, 'Agent weights over time and the reason for each, plus Autopilot\'s log.'],
+            [<Go to="settings">Settings</Go>, 'Broker connection, style, risk level, replay data, CSV import, Autopilot, advanced options.'],
+            [<Go to="backtest">Backtest</Go>, 'The current style on the history in use, against buy & hold.'],
+            [<Go to="optimiser">Optimiser</Go>, 'Finds the best settings for the last N days, then checks them on days they weren\'t chosen on. Apply only if that check passes.'],
+            [<Go to="swing">Swing lab</Go>, 'Do the agents together call the next 2 days – 1 month? Decision cards per stock, GO / NO-GO.'],
+            [<Go to="intraday">Intraday lab</Go>, 'Do intraday agents call the next 15–60 minutes after costs? Plus the SPY open → close test. Alpaca only.'],
+            [<Go to="agentconfig">Agent config</Go>, 'Switch agents on/off, tune their parameters, see their evidence.'],
+            [<Go to="agentperf">Agent performance</Go>, 'Each agent\'s hit rate on the trades the bot closed (a record, not the weights).'],
+            [<Go to="pnltrend">P/L trend</Go>, 'Cumulative profit and loss of closed trades.'],
+            [<Go to="market">Market map</Go>, 'Quick overview: today\'s move and how strongly the agents agree, per stock.'],
+            [<Go to="sectors">Sector / Universe</Go>, 'The stocks the bot watches, by sector.'],
+          ]}/>
+        </Sec>
+
+        <Sec n="7" title="Settings that matter (and the ones to leave alone)">
+          <ul style={{margin:'0 0 0 18px',padding:0}}>
+            <li><b>Style</b> and <b>Risk level</b>: the two that change results. Risk level sets stocks held (Cautious 16 · Balanced 12 · Bold 8), share invested, daily loss limit and position sizes.</li>
+            <li><b>Replay data</b> (SIMULATED): Broker, Imported CSV or Fictional. Fictional prices show behaviour, never evidence.</li>
+            <li><b>Daily loss limit</b>: stops new positions for the day once equity is down by it.</li>
+            <li><b>Autopilot</b>: leave off unless the Swing lab shows the agents together beat the trend score on your data.</li>
+            <li><b>Advanced</b> (trading cost, history length, stocks held, max holding period, agent pruning): leave at the defaults unless a lab or the Optimiser's held-out check says otherwise. Max holding period only affects Trade both ways.</li>
+          </ul>
+        </Sec>
+
+        <Sec n="8" title="Reading the labs and results">
+          <T rows={[
+            ['GO / BORDERLINE / NO-GO', 'GO: it made money after costs on days it hadn\'t seen, consistently, and beat the simple alternative. BORDERLINE: positive but not reliable. NO-GO: don\'t trade it.'],
+            ['Unseen days', 'Days the model or settings were not fitted on. Only these count; results on fitted days always look good.'],
+            ['bp (basis point)', '0.01%. A 5bp cost per side is 10bp (0.1%) per round trip.'],
+            ['IC (information coefficient)', 'How well scores line up with what happened next. 0 = none; 0.02–0.05 is typical of anything real.'],
+            ['t', 'How consistent an effect was across periods. About 2 or more is unlikely to be luck; agents need 3 in the Swing lab because many are tested at once.'],
+            ['Sharpe', 'Return per unit of risk (higher is better). Buy & hold of these stocks is around 1.0.'],
+            ['Worst drop', 'The largest fall from a peak before recovering.'],
+            ['Buy & hold', 'Owning every stock in equal amounts and never selling: the bar every strategy should beat.'],
+          ]}/>
+        </Sec>
+
+        <Sec n="9" title="Limits and safety">
+          <ul style={{margin:'0 0 0 18px',padding:0}}>
+            <li><b>Market hours</b>: VIRTUAL and LIVE only place orders 9:30–16:00 New York time (14:30–21:00 UK).</li>
+            <li><b>Day-trade rule</b>: accounts under $25,000 may make at most 3 same-day round trips in 5 business days.</li>
+            <li><b>Data</b>: Alpaca's free feed covers part of US volume; IG allows ~10,000 historical price points a week (this browser keeps a copy so only new days are fetched).</li>
+            <li><b>Costs</b>: every buy and sell pays spread and slippage; frequent trading needs a bigger edge to pay for it.</li>
+            <li>This is a research and paper-trading tool. Nothing here is financial advice.</li>
+          </ul>
+        </Sec>
       </div>
     </div>
   );
 };
 
+// First 7 = everyday use ("Workspace"); the rest = testing and detail ("Test & tune")
 const NAV = [
+  { id: 'guide', label: 'Guide · start here', icon: 'dash' },
   { id: 'dashboard', label: 'Dashboard', icon: 'dash' },
   { id: 'activity', label: 'Live activity', icon: 'feed' },
   { id: 'history', label: 'Trade history', icon: 'history' },
-  { id: 'learning', label: 'Strategy / learning', icon: 'brain' },
   { id: 'trade', label: 'Trade detail', icon: 'trade' },
+  { id: 'learning', label: 'Strategy / learning', icon: 'brain' },
+  { id: 'settings', label: 'Settings', icon: 'gear' },
   { id: 'backtest', label: 'Backtest', icon: 'back' },
   { id: 'optimiser', label: 'Optimiser', icon: 'trend' },
-  { id: 'intraday', label: 'Intraday lab', icon: 'perf' },
   { id: 'swing', label: 'Swing lab', icon: 'perf' },
-  { id: 'guide', label: 'How it works', icon: 'dash' },
-  { id: 'market', label: 'Market map', icon: 'market' },
+  { id: 'intraday', label: 'Intraday lab', icon: 'perf' },
+  { id: 'agentconfig', label: 'Agent config', icon: 'gear' },
   { id: 'agentperf', label: 'Agent performance', icon: 'perf' },
   { id: 'pnltrend', label: 'P/L trend', icon: 'trend' },
+  { id: 'market', label: 'Market map', icon: 'market' },
   { id: 'sectors', label: 'Sector / Universe', icon: 'market' },
-  { id: 'agentconfig', label: 'Agent config', icon: 'gear' },
-  { id: 'settings', label: 'Settings', icon: 'gear' },
 ];
 
 const App = () => {
@@ -8796,12 +8915,12 @@ const App = () => {
   }
 
   const alpacaConnected = !!(alpaca?.connected && alpaca?.token);
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades: modeTrades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected, liveUniverse, agentParams, agentEvidence: agentEvidenceDisplay, replayInfo, tradeStatus: running ? tradeStatus : { warn: true, text: 'Paused. Press RESUME to let the bot trade.' }, lossHit, autopilotLog, mode,
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades: modeTrades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected, liveUniverse, agentParams, agentEvidence: agentEvidenceDisplay, goTo: (r) => setRoute(r), replayInfo, tradeStatus: running ? tradeStatus : { warn: true, text: 'Paused. Press RESUME to let the bot trade.' }, lossHit, autopilotLog, mode,
     replayUniverse: replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse),
     analysisUniverse: (mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : liveUniverse) || SIM_U,
     importedUniverse, costBps: costBpsFor(risk, mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : null, alpaca?.brokerId) };
   const screens = {
-    guide:       <ScreenGuide/>,
+    guide:       <ScreenGuide onGo={(r) => { setRoute(r); window.scrollTo && window.scrollTo(0, 0); }}/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
     activity:    <ScreenActivity mode={mode} tick={tick} onTradeClick={handleTradeClick} running={running} ctx={ctx}/>,
     history:     <ScreenHistory mode={mode} tick={tick} onTradeClick={handleTradeClick} ctx={ctx}/>,
@@ -8869,7 +8988,7 @@ const App = () => {
         {/* Collapsible system group */}
         <div className="nav-section">
           <div className="nav-group-header" onClick={()=>setNavGroups(g=>({...g, system: !g.system}))}>
-            <div className="nav-label" style={{paddingLeft:0,paddingTop:0,paddingBottom:0}}>System</div>
+            <div className="nav-label" style={{paddingLeft:0,paddingTop:0,paddingBottom:0}}>Test &amp; tune</div>
             <span className={'nav-chevron ' + (navGroups.system ? 'open' : '')}>▶</span>
           </div>
           {navGroups.system && NAV.slice(7).map(n => (

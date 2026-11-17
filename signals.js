@@ -750,6 +750,71 @@
     },
   };
 
+  // ── Continuous readings (step 1 of the agent redesign) ─────────────────────
+  // The same quantity each agent judges, before any threshold turns it into a vote: available every day,
+  // signed so that positive means what the agent expects to be good for the stock. The swing lab ranks
+  // these across stocks each day. Roles: 'picker' (which stocks beat the others), 'timing' (the whole
+  // market), 'risk' (calm vs turbulent ahead, not direction).
+  const AGENT_ROLE = { macr: 'timing', vol: 'risk' };
+  const roleOf = (id) => AGENT_ROLE[id] || 'picker';
+  const AGENT_RAW = {
+    momo(F, i) { const m = F.macd(12, 26, 9), atr = F.atr(14)[i]; return atr > 0 ? m.hist[i] / atr : NaN; },
+    mean(F, i) { const pb = F.bb(20, 2).pctB[i], r = F.rsi(14)[i]; return fin(pb) && fin(r) ? -((pb - 0.5) / 0.5 + (r - 50) / 20) / 2 : NaN; },
+    brkt(F, i) { const b = F.bb(20, 2), rank = F.bwRank(20, 2, 120)[i], w = b.up[i] - b.lo[i]; return w > 0 && fin(rank) ? ((F.c[i] - (b.up[i] + b.lo[i]) / 2) / w) * (1 - rank) : NaN; },
+    vwap(F, i) { const vw = F.vwap(20)[i], atr = F.atr(14)[i]; return fin(vw) && atr > 0 ? -(F.c[i] - vw) / atr : NaN; },
+    vol(F, i) { const ap = F.atrPct(14); return i >= 10 && ap[i] > 0 && ap[i - 10] > 0 ? -Math.log(ap[i] / ap[i - 10]) : NaN; },
+    skew(F, i) { const sk = F.skew(20)[i]; return fin(sk) ? -sk : NaN; },
+    flow(F, i) { const c = F.cmf(20)[i]; return fin(c) ? c : NaN; },
+    mm(F, i) { const rank = F.atrRank(14, 120)[i], e = F.ema(20), loc = F.clv()[i]; return fin(rank) && fin(loc) && e[i - 5] > 0 ? loc * (1 - rank) * (e[i] >= e[i - 5] ? 1 : -1) : NaN; },
+    corr(F, i, U, sym) {
+      if (!U) return NaN;
+      const g = i + U.off[sym], S = U.ctx.sectorR20[U.sectorOf[sym] || 'Other'], r20 = F.rN(20)[i];
+      if (!fin(r20)) return NaN;
+      return S.cnt[g] >= 2 ? r20 - (S.sum[g] - r20) / (S.cnt[g] - 1) : r20 - (fin(U.ctx.mktRet20?.[g]) ? U.ctx.mktRet20[g] : 0);
+    },
+    pair(F, i, U, sym) {
+      const s = AGENT_FNS.pair(F, i, DEFAULT_PARAMS.pair && { ...DEFAULT_PARAMS.pair, zEntry: 0 }, U, sym);
+      const m = /spread z (-?[\d.]+)/.exec(s.note || '');
+      return m ? -parseFloat(m[1]) : NaN;
+    },
+    macr(F, i, U, sym) { if (!U) return NaN; const b = U.ctx.breadth50[i + U.off[sym]]; return fin(b) ? b - 0.5 : NaN; },
+    earn(F, i) {
+      const lb = Math.min(126, i - 1); if (lb < 61) return NaN;
+      const r = F.c[i - 21] / F.c[i - lb] - 1, vol = F.vol(60)[i];
+      return fin(r) && vol > 0 ? r / (vol * Math.sqrt((lb - 21) / 252)) : NaN;
+    },
+    fund(F, i) { const s = F.sortino(60)[i]; return fin(s) ? s : NaN; },
+    news(F, i) {
+      const atr = F.atr(14);
+      for (let back = 0; back < 3; back++) {
+        const j = i - back; if (j < 1 || !fin(atr[j - 1])) return NaN;
+        const gap = (F.o[j] - F.c[j - 1]) / atr[j - 1];
+        if (Math.abs(gap) < 0.5) continue;
+        const held = (F.c[i] - F.c[j - 1]) / (F.o[j] - F.c[j - 1]);
+        return gap * (held >= 0.5 ? 1 : -1) * (1 - back * 0.25);
+      }
+      return 0;
+    },
+    soc(F, i) {
+      const atr = F.atr(14)[i - 1]; if (!(atr > 0)) return NaN;
+      const move = (F.c[i] - F.c[i - 1]) / atr;
+      const surge = F.hasVolume ? F.volZ(20)[i] : F.tr()[i] / atr - 1;
+      return fin(surge) ? Math.max(0, surge) * move : NaN;
+    },
+    patt(F, i) {
+      const s = AGENT_FNS.patt(F, i, DEFAULT_PARAMS.patt);
+      const m = /avg (-?[\d.]+)%/.exec(s.note || '') || /analogs (-?[\d.]+)%/.exec(s.note || '');
+      return m ? parseFloat(m[1]) / 100 : NaN;
+    },
+  };
+  function agentReadings(U, sym, i) {
+    const F = U.F[sym];
+    if (!F || i == null || i < 60) return null;
+    const out = {};
+    for (const id of AGENT_IDS) { let v; try { v = AGENT_RAW[id](F, i, U, sym); } catch (e) { v = NaN; } out[id] = fin(v) ? v : NaN; }
+    return out;
+  }
+
   // Feature vectors for Pattern Memory (cached per symbol). Each reading is centred and scaled with
   // fixed constants rather than statistics of the whole series, so no future data leaks in.
   function pattFeatures(F) {
@@ -1765,7 +1830,7 @@
   const api = {
     ind, normalizeBars, makeFeatures, buildUniverse, pairFor,
     REGIME_KEYS, REGIME_LABELS, regimeAt,
-    AGENT_IDS, DEFAULT_PARAMS, mergeParams, agentSignals, AGENT_FNS,
+    AGENT_IDS, DEFAULT_PARAMS, mergeParams, agentSignals, AGENT_FNS, agentReadings, AGENT_ROLE, roleOf,
     ensemble, correlationAdjust, regimeMultipliers, atrPlan,
     runBacktest, evaluateAgents, synthUniverseBars,
     TUNE_KEYS, AUTOPILOT, createScoreBook, proposeWeights, tuneParam, runInvested,

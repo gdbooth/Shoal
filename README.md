@@ -3,6 +3,14 @@ Trading App
 Shoal is a trading app that allows users to buy and sell stocks, cryptocurrencies, and other financial instruments. 
 It provides real-time market data, advanced charting tools, and a user-friendly interface for managing your portfolio.
 
+## Using the app
+
+Start with **Guide · start here** at the top of the app's menu: the recommended workflow (keep Rank & tilt
+and the Balanced risk level, check it against buy & hold in SIMULATED, paper trade in VIRTUAL, judge it over
+months), what the testing has shown so far, every mode, style, screen and setting, how to read the labs
+(GO / BORDERLINE / NO-GO, IC, t, bp, Sharpe), and the limits. The menu is split into **Workspace** (everyday
+screens) and **Test & tune** (backtest, optimiser, labs, agent detail).
+
 ## Running
 
 ```
@@ -123,6 +131,15 @@ Settings has four main controls; everything else is under *Advanced*.
   and each agent on its own. Runs on broker daily history, an imported CSV or the fictional market. On
   real data so far (12 stocks and sector funds 2016–2026; 24 stocks 2013–2018; 2-, 5- and 10-day holds)
   it was NO-GO every time: no reliable stock picking on unseen years and a lower Sharpe than buy & hold.
+  **Ranked readings** (default; step 1 of the agent redesign): besides its vote, every agent now reports a
+  continuous reading every day (`agentReadings` in `signals.js`: the quantity it judges, before any
+  threshold), ranked across the stocks to −1…+1. Agents have roles: 14 stock pickers (judged on the move
+  relative to the other stocks), Market Breadth for market timing and Volatility Regime for risk (calm vs
+  turbulent ahead), each reported on its own test. The combined model uses the pickers only, fitted to the
+  relative return; the trading test then always holds the best-ranked stocks (at most half), re-ranked
+  every H days, so it measures stock picking against holding them all. Horizons 2, 5, 10 and 21 days. An
+  individual agent counts only with t ≥ 3 on unseen days (2–3 is "promising"). Result on real data so
+  far: still NO-GO (no agent reached even "promising"; the trend score alone was the closest to buy & hold).
 - **Agent evidence**: Agent config shows each agent's next-month rank IC on the data in use. Agents without
   positive evidence (t ≥ 1) are advisory and don't vote; the model prunes the same way, walk-forward.
 - **Daily loss limit**: once equity is down this much in a day, no new positions until the next day.

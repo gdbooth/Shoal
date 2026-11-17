@@ -58,22 +58,50 @@
   }
 
   // Score matrix: X[sym][g] = agent scores at the close of global day g; R[sym][g] = return from that
-  // close to the close H days later (NaN if not yet known)
-  async function scoreMatrix(U, { signalsAt, ids, H, onProgress }) {
-    const X = {}, R = {};
+  // close to the close H days later (NaN if not yet known).
+  // mode 'votes': the agents' votes (direction × strength, 0 when the rule doesn't fire).
+  // mode 'ranked': each agent's continuous reading, ranked across the stocks that day to −1…+1 (stock
+  // pickers and risk agents); market-wide timing readings are scaled instead, since they're the same for
+  // every stock. Missing readings count as 0 (no view).
+  async function scoreMatrix(U, { signalsAt, readingsAt, ids, roles, H, mode = 'votes', onProgress }) {
+    const X = {}, R = {}, raw = {};
     for (let s = 0; s < U.syms.length; s++) {
       const sym = U.syms[s], F = U.F[sym], off = U.off[sym];
       X[sym] = new Array(U.L).fill(null); R[sym] = new Float64Array(U.L).fill(NaN);
+      if (mode === 'ranked') raw[sym] = new Array(U.L).fill(null);
       for (let g = off + 60; g < U.L; g++) {
-        const i = g - off, sg = signalsAt(sym, i);
-        if (!sg) continue;
-        X[sym][g] = ids.map(id => { const v = sg[id]; return v && v.dir ? v.dir * (fin(v.strength) ? v.strength : 0.5) : 0; });
+        const i = g - off;
+        if (mode === 'ranked') { const rd = readingsAt(sym, i); if (!rd) continue; raw[sym][g] = ids.map(id => rd[id]); }
+        else { const sg = signalsAt(sym, i); if (!sg) continue; X[sym][g] = ids.map(id => { const v = sg[id]; return v && v.dir ? v.dir * (fin(v.strength) ? v.strength : 0.5) : 0; }); }
         if (i + H < F.n) R[sym][g] = F.c[i + H] / F.c[i] - 1;
       }
       if (onProgress) onProgress((s + 1) / U.syms.length);
       await tick();
     }
+    if (mode === 'ranked') {
+      for (let g = 0; g < U.L; g++) {
+        const here = U.syms.filter(sym => raw[sym][g]);
+        if (!here.length) continue;
+        for (const sym of here) X[sym][g] = new Array(ids.length).fill(0);
+        ids.forEach((id, j) => {
+          if (roles[j] === 'timing') { for (const sym of here) { const v = raw[sym][g][j]; X[sym][g][j] = fin(v) ? Math.max(-1, Math.min(1, v * 2)) : 0; } return; }
+          const vals = here.map(sym => [sym, raw[sym][g][j]]).filter(x => fin(x[1])).sort((a, b) => a[1] - b[1]);
+          if (vals.length < 3) return;
+          vals.forEach(([sym], q) => { X[sym][g][j] = (q / (vals.length - 1)) * 2 - 1; });
+        });
+      }
+    }
     return { X, R };
+  }
+  // Return relative to the average of the stocks over the same H days (what a stock picker is judged on)
+  function relativeTo(U, R) {
+    const out = Object.fromEntries(U.syms.map(s => [s, new Float64Array(U.L).fill(NaN)]));
+    for (let g = 0; g < U.L; g++) {
+      let sum = 0, n = 0; for (const sym of U.syms) { const r = R[sym][g]; if (fin(r)) { sum += r; n++; } }
+      if (n < 3) continue;
+      for (const sym of U.syms) { const r = R[sym][g]; if (fin(r)) out[sym][g] = r - sum / n; }
+    }
+    return out;
   }
 
   // Walk-forward predictions: a model refitted every `refit` days on the previous `window` days with known
@@ -128,6 +156,28 @@
     }
     return summarise(daily.map(x => x.r), trades, daily.length ? daily[0].g : start);
   }
+  // Stock-picking test: every H days hold the `maxPos` stocks with the best predicted relative return,
+  // equal weights, always invested; pay the cost on the names that change. Compared with holding all.
+  function tradeRank(U, pred, { H, cost, maxPos, start }) {
+    const dr = [], trades = [];
+    let prev = new Set();
+    for (let d = start; d + 1 < U.L; d += H) {
+      const ranked = U.syms.map(sym => [sym, pred[sym][d]]).filter(x => x[1] && U.F[x[0]] && d - U.off[x[0]] >= 1).sort((a, b) => b[1].e - a[1].e);
+      if (!ranked.length) continue;
+      const pick = ranked.slice(0, Math.min(maxPos, Math.ceil(ranked.length / 2))).map(x => x[0]);
+      const changed = pick.filter(s => !prev.has(s)).length + [...prev].filter(s => !pick.includes(s)).length;
+      const end = Math.min(U.L - 1, d + H);
+      for (let g = d + 1; g <= end; g++) {
+        let r = 0; for (const sym of pick) { const F = U.F[sym], i = g - U.off[sym]; r += F.c[i] / F.c[i - 1] - 1; }
+        r /= pick.length;
+        if (g === d + 1) r -= (changed / pick.length) * cost;
+        dr.push(r);
+      }
+      for (const sym of pick) { const F = U.F[sym]; trades.push({ sym, ret: F.c[end - U.off[sym]] / F.c[d - U.off[sym]] - 1 - (prev.has(sym) ? 0 : 2 * cost) }); }
+      prev = new Set(pick);
+    }
+    return summarise(dr, trades, start + 1);
+  }
   function summarise(dr, trades, firstG) {
     let eq = 1, peak = 1, maxDD = 0; for (const r of dr) { eq *= 1 + r; peak = Math.max(peak, eq); maxDD = Math.min(maxDD, eq / peak - 1); }
     const m = mean(dr), sd = Math.sqrt(mean(dr.map(r => (r - m) ** 2)));
@@ -145,7 +195,13 @@
   // Per agent on unseen days: stock-picking power (cross-sectional IC each H days) and the edge of
   // following its strong calls after costs; market-wide agents (same score for every stock) get a
   // timing measure instead
-  function agentStats(U, X, R, j, { start, H, cost, thr = 0.5 }) {
+  function agentStats(U, X, R, j, { start, H, cost, thr = 0.5, role = 'picker' }) {
+    if (role === 'risk') {
+      // does a higher score come before calmer moves? (score vs minus the size of the next H-day move)
+      const ics = [];
+      for (let g = start; g < U.L; g += H) { const xs = [], ys = []; for (const sym of U.syms) { const x = X[sym][g], r = R[sym][g]; if (x && fin(r)) { xs.push(x[j]); ys.push(-Math.abs(r)); } } if (xs.length >= 5) { const c = pearson(xs, ys); if (fin(c)) ics.push(c); } }
+      return { role, ic: mean(ics), icT: tstat(ics), dates: ics.length, marketWide: false, timing: null, signals: 0, grossBp: 0, netBp: 0, edgeT: 0 };
+    }
     const ics = [], edges = [], all = []; let spread = 0, nDates = 0;
     for (let g = start; g < U.L; g += H) {
       const xs = [], rs = [];
@@ -157,7 +213,7 @@
       const e = []; xs.forEach((v, q) => { if (Math.abs(v) >= thr) e.push(Math.sign(v) * rs[q]); });
       if (e.length) { edges.push(mean(e)); all.push(...e); }
     }
-    const marketWide = nDates > 0 && spread / nDates < 0.2;
+    const marketWide = role === 'timing' || (nDates > 0 && spread / nDates < 0.2);
     // timing: does the average score predict the average H-day move?
     let timing = null;
     if (marketWide) {
@@ -166,25 +222,30 @@
       const c = pearson(xs, rs); timing = { ic: c, icT: fin(c) && xs.length > 3 ? c * Math.sqrt((xs.length - 2) / Math.max(1e-9, 1 - c * c)) : 0 };
     }
     const gross = all.length ? mean(all) * 1e4 : 0;
-    return { ic: mean(ics), icT: tstat(ics), dates: ics.length, marketWide, timing, signals: all.length, grossBp: gross, netBp: all.length ? gross - 2 * cost * 1e4 : 0, edgeT: tstat(edges) };
+    return { role, ic: mean(ics), icT: tstat(ics), dates: ics.length, marketWide, timing, signals: all.length, grossBp: gross, netBp: all.length ? gross - 2 * cost * 1e4 : 0, edgeT: tstat(edges) };
   }
 
   async function evaluateSwing(U, o = {}) {
     const ids = o.ids, names = o.names || ids, H = o.H || 5, cost = (o.costBps ?? 5) / 1e4;
     const refit = o.refit || 63, window = o.window || 750, pThr = o.pThr ?? 0.55, maxPos = o.maxPos || 10, shorts = !!o.shorts;
+    const mode = o.mode || 'votes', relative = o.relative ?? (mode === 'ranked');
+    const roles = ids.map(id => (o.roleOf ? o.roleOf(id) : 'picker'));
     const start = Math.max(o.start || 0, Math.min(U.L - 60, 60 + Math.max(250, Math.round(U.L * 0.3))));
     if (U.L - start < 60) throw new Error(`Only ${U.L} days of history; the swing lab needs at least ${start + 60}.`);
     const prog = (a, b) => (x) => o.onProgress && o.onProgress(a + (b - a) * x);
-    const { X, R } = await scoreMatrix(U, { signalsAt: o.signalsAt, ids, H, onProgress: prog(0, 0.6) });
+    const { X, R } = await scoreMatrix(U, { signalsAt: o.signalsAt, readingsAt: o.readingsAt, ids, roles, H, mode, onProgress: prog(0, 0.6) });
     o.onProgress && o.onProgress(0.62);
-    const all = ids.map((_, j) => j), trendJ = ids.indexOf(o.trendId || 'earn');
-    const W = await walkForward(U, X, R, { cols: all, H, start, refit, window });
+    // the combined model: stock pickers (all agents in votes mode), fitted to the relative return when asked
+    const Rt = relative ? relativeTo(U, R) : R;
+    const all = ids.map((_, j) => j).filter(j => mode !== 'ranked' || roles[j] === 'picker'), trendJ = ids.indexOf(o.trendId || 'earn');
+    const W = await walkForward(U, X, Rt, { cols: all, H, start, refit, window });
     o.onProgress && o.onProgress(0.8);
-    const WT = trendJ >= 0 ? await walkForward(U, X, R, { cols: [trendJ], H, start, refit, window }) : null;
+    const WT = trendJ >= 0 ? await walkForward(U, X, Rt, { cols: [trendJ], H, start, refit, window }) : null;
     o.onProgress && o.onProgress(0.9);
     const opts = { H, cost, pThr, maxPos, shorts, start };
-    const model = trade(U, W.pred, opts), trendOnly = WT ? trade(U, WT.pred, opts) : null, hold = buyHold(U, start);
-    const agents = ids.map((id, j) => ({ id, name: names[j], ...agentStats(U, X, R, j, { start, H, cost }) }));
+    const tr = relative ? tradeRank : trade;
+    const model = tr(U, W.pred, opts), trendOnly = WT ? tr(U, WT.pred, opts) : null, hold = buyHold(U, start);
+    const agents = ids.map((id, j) => ({ id, name: names[j], ...agentStats(U, X, R, j, { start, H, cost, role: mode === 'ranked' ? roles[j] : 'picker' }) }));
     // the combined model's own picking power and calibration on unseen days
     const ics = [], cal = [0, 0.45, 0.5, 0.55, 0.6, 1.01].slice(0, -1).map(() => ({ n: 0, up: 0, sum: 0, ps: 0 }));
     const edgesCal = [0, 0.45, 0.5, 0.55, 0.6, 1.01];
@@ -194,26 +255,34 @@
       if (es.length >= 5) { const c = pearson(es, rs); if (fin(c)) ics.push(c); }
     }
     for (let g = start; g < U.L; g++) for (const sym of U.syms) {
-      const pr = W.pred[sym][g], r = R[sym][g]; if (!pr || !fin(r)) continue;
+      const pr = W.pred[sym][g], r = Rt[sym][g]; if (!pr || !fin(r)) continue;
       const b = edgesCal.findIndex((lo, q) => q < edgesCal.length - 1 && pr.p >= lo && pr.p < edgesCal[q + 1]); if (b < 0) continue;
       cal[b].n++; cal[b].up += r > 0 ? 1 : 0; cal[b].sum += r; cal[b].ps += pr.p;
     }
     const calibration = cal.map((c, b) => ({ range: `${Math.round(edgesCal[b] * 100)}–${Math.min(100, Math.round(edgesCal[b + 1] * 100))}%`, n: c.n, meanP: c.n ? c.ps / c.n : NaN, upRate: c.n ? c.up / c.n : NaN, avgBp: c.n ? (c.sum / c.n) * 1e4 : NaN }));
     // today's decisions: a model fitted on everything whose outcome is known, applied to the last close
-    const rowsNow = []; for (const sym of U.syms) for (let g = Math.max(0, U.L - 1 - H - window); g <= U.L - 1 - H; g++) { const x = X[sym][g], r = R[sym][g]; if (x && fin(r)) rowsNow.push({ x, r }); }
-    const Mnow = fit(rowsNow, ids.length);
+    const pickCols = (x) => all.map(j => x[j]), cids = all.map(j => ids[j]), cnames = all.map(j => names[j]);
+    const rowsNow = []; for (const sym of U.syms) for (let g = Math.max(0, U.L - 1 - H - window); g <= U.L - 1 - H; g++) { const x = X[sym][g], r = Rt[sym][g]; if (x && fin(r)) rowsNow.push({ x: pickCols(x), r }); }
+    const Mnow = fit(rowsNow, all.length);
     const last = U.L - 1;
     const decisions = Mnow ? U.syms.map(sym => {
-      const x = X[sym][last]; if (!x) return null;
+      const x0 = X[sym][last]; if (!x0) return null;
+      const x = pickCols(x0);
       const pr = predict(Mnow, x);
       const action = pr.p >= pThr && pr.e > 2 * cost * 1e4 ? 'BUY' : pr.p <= 1 - pThr && pr.e < -2 * cost * 1e4 ? (shorts ? 'SELL SHORT' : 'AVOID / SELL') : 'WAIT';
-      const contrib = ids.map((id, j) => ({ id, name: names[j], score: x[j], bp: Mnow.beta[j + 1] * x[j], logit: Mnow.w[j + 1] * x[j] }))
+      const contrib = cids.map((id, j) => ({ id, name: cnames[j], score: x[j], bp: Mnow.beta[j + 1] * x[j], logit: Mnow.w[j + 1] * x[j] }))
         .filter(c => Math.abs(c.logit) > 1e-6 || Math.abs(c.bp) > 1e-6).sort((a, b) => Math.abs(b.logit) - Math.abs(a.logit));
       const agree = contrib.filter(c => Math.sign(c.logit) === Math.sign(pr.p - 0.5)).length;
       return { sym, p: pr.p, e: pr.e, action, contrib, agree, against: contrib.length - agree, voting: contrib.length };
     }).filter(Boolean).sort((a, b) => Math.abs(b.p - 0.5) - Math.abs(a.p - 0.5)) : [];
-    const weights = Mnow ? ids.map((id, j) => ({ id, name: names[j], bpPerUnit: Mnow.beta[j + 1], logit: Mnow.w[j + 1], impactBp: Math.abs(Mnow.beta[j + 1]) * Mnow.sd[j] })) : [];
+    const weights = Mnow ? cids.map((id, j) => ({ id, name: cnames[j], bpPerUnit: Mnow.beta[j + 1], logit: Mnow.w[j + 1], impactBp: Math.abs(Mnow.beta[j + 1]) * Mnow.sd[j] })) : [];
+    // market timing and risk agents, reported on their own tests (today's readings too)
+    const today = (j) => { const v = U.syms.map(sym => X[sym][last]).filter(Boolean).map(x => x[j]); return v.length ? mean(v) : NaN; };
+    const timing = mode === 'ranked' ? agents.filter(a => a.role === 'timing').map(a => ({ ...a, today: today(ids.indexOf(a.id)) })) : [];
+    const risk = mode === 'ranked' ? agents.filter(a => a.role === 'risk') : [];
     const combined = { ic: mean(ics), icT: tstat(ics), dates: ics.length };
+    // stricter bar for an individual agent: t ≥ 3 on unseen days counts, 2–3 is only promising
+    for (const a of agents) { const t = a.marketWide && a.timing ? a.timing.icT : a.icT; a.status = t >= 3 ? 'predicts' : t >= 2 ? 'promising' : t <= -3 ? 'reverse' : 'none'; }
     // verdict on unseen days
     const beatsHold = model.sharpe > hold.sharpe + 0.05, beatsTrend = !trendOnly || model.sharpe > trendOnly.sharpe + 0.05;
     let verdict;
@@ -222,7 +291,7 @@
     else if (model.avgNetBp > 0 && (beatsHold || combined.icT >= 2)) verdict = { level: 'borderline', text: `BORDERLINE: profitable after costs (${model.avgNetBp.toFixed(0)}bp per trade, Sharpe ${model.sharpe.toFixed(2)} vs ${hold.sharpe.toFixed(2)} for buy & hold) but ${combined.icT < 2 ? `the stock-picking power isn't reliable (t ${combined.icT.toFixed(1)}; needs 2)` : !beatsHold ? 'not better than simply holding the stocks' : `no better than the trend score alone (Sharpe ${trendOnly.sharpe.toFixed(2)})`}.` };
     else verdict = { level: 'nogo', text: `NO-GO: on unseen days, trading the agents' calls ${model.avgNetBp > 0 ? `made ${model.avgNetBp.toFixed(0)}bp per trade but with a worse risk-adjusted return (Sharpe ${model.sharpe.toFixed(2)}) than buy & hold (${hold.sharpe.toFixed(2)})` : `lost ${(-model.avgNetBp).toFixed(0)}bp per trade after costs`}.` };
     o.onProgress && o.onProgress(1);
-    return { H, costBps: cost * 1e4, pThr, maxPos, shorts, start, startDate: o.dateOf ? o.dateOf(start) : start, endDate: o.dateOf ? o.dateOf(U.L - 1) : U.L - 1, fits: W.fits.length,
+    return { mode, relative, timing, risk, H, costBps: cost * 1e4, pThr, maxPos, shorts, start, startDate: o.dateOf ? o.dateOf(start) : start, endDate: o.dateOf ? o.dateOf(U.L - 1) : U.L - 1, fits: W.fits.length,
       agents, combined, calibration, model, trendOnly, hold, weights, decisions, verdict };
   }
 
