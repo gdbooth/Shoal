@@ -1985,6 +1985,10 @@ const RISK_LEVELS = {
   balanced: { perTrade: 1.0, maxTradePct: 5,  maxPos: 25, confidence: 55, dailyLoss: 3, atrStop: 2,   atrTarget: 3,   investFraction: 0.9, topK: 12, ddCap: 0.15 },
   bold:     { perTrade: 2.0, maxTradePct: 10, maxPos: 40, confidence: 45, dailyLoss: 5, atrStop: 1.5, atrTarget: 3,   investFraction: 1.0, topK: 8,  ddCap: 0.25 },
 };
+// Max holding period choices, in hours: 5 minutes up to 7 days
+const HOLD_STEPS = [5 / 60, 10 / 60, 15 / 60, 30 / 60, 1, 2, 3, 4, 6, 8, 12, 16, 24, 36, 48, 72, 96, 120, 144, 168];
+const holdStepIndex = (h) => HOLD_STEPS.reduce((best, v, k) => (Math.abs(v - h) < Math.abs(HOLD_STEPS[best] - h) ? k : best), 0);
+const fmtHold = (h) => (h < 1 ? `${Math.round(h * 60)}m` : h >= 48 && h % 24 === 0 ? `${h / 24}d (${h}h)` : `${+h.toFixed(2)}h`);
 const RISK_DEFAULTS = {
   riskLevel: 'balanced', ...RISK_LEVELS.balanced,
   style: 'tilt', autopilot: false, autopilotFrozen: false, replaySource: 'auto', costBps: 'auto', historyDays: 1100, pruneAgents: true,
@@ -5378,10 +5382,10 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
           <div className="field">
             <div style={{display:'flex',justifyContent:'space-between'}}>
               <div className="field-label">Max holding period</div>
-              <div className="mono" style={{fontSize:13}}>{risk.maxHoldHours ?? 48}h</div>
+              <div className="mono" style={{fontSize:13}}>{fmtHold(risk.maxHoldHours ?? 48)}</div>
             </div>
-            <input type="range" min="4" max="168" step="4" value={risk.maxHoldHours ?? 48} onChange={e=>setRisk({...risk, maxHoldHours: +e.target.value})}/>
-            <div className="mono tiny muted" style={{marginTop:4}}>Time-stop: force-close positions that have been open longer than this. Prevents stale capital sitting in sideways trades.</div>
+            <input type="range" min="0" max={HOLD_STEPS.length - 1} step="1" value={holdStepIndex(risk.maxHoldHours ?? 48)} onChange={e=>setRisk({...risk, maxHoldHours: HOLD_STEPS[+e.target.value]})}/>
+            <div className="mono tiny muted" style={{marginTop:4}}>Time-stop for Trade both ways: force-close positions open longer than this (5 minutes to 7 days). Rank & tilt and Stay invested don't use it. Replays step one day at a time, so there anything under a trading day closes at the next day's close. With a broker account under $25,000, a buy and sell on the same day counts as a day trade (at most 3 in 5 business days).</div>
           </div>
 
           <div className="divider"></div>
