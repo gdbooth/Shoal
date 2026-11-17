@@ -1481,6 +1481,7 @@ window.addEventListener('unhandledrejection', function(e) {
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="signals.js"></script>
 <script src="intraday.js"></script>
+<script src="swing.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 <script type="text/babel" data-presets="react">
 // Mock data + sim engine for the Shoal trading bot prototype
@@ -4558,6 +4559,22 @@ const ScreenIntraday = ({ alpaca }) => {
           <div className="mono tiny muted" style={{marginTop:6}}>{R.symbols.length} stocks · fitted on {R.from} → {R.testFromDate} ({R.trainDays} days) · tested on {R.testDays} later days to {R.to} · {R.rows.toLocaleString()} bar samples</div>
         </div>
 
+        {R.openClose && R.openClose.enough && (
+          <div className="card" style={{marginBottom:16,borderColor: R.openClose.verdict.level === 'go' ? 'var(--up)' : 'var(--line-2)'}}>
+            <div className="card-head"><div className="card-title">Market open → close · {R.openClose.sym}</div><div className="card-meta">{R.openClose.n} days · {R.openClose.from} → {R.openClose.to} · nothing fitted</div></div>
+            <div className="tiny" style={{color:'var(--ink-2)',marginBottom:10}}>A published effect: the market's first half hour (yesterday's close → 10:00) points the way of its last half hour (15:30 → 16:00). The rule is fixed in advance, so every day counts as a test: at 15:30 trade {R.openClose.sym} in the direction of the first half hour and close at 16:00.</div>
+            <div style={{color:'var(--ink-1)',marginBottom:10}}>{R.openClose.verdict.text}</div>
+            <table className="tbl">
+              <thead><tr><th>Rule</th><th style={{textAlign:'right'}}>Days traded</th><th style={{textAlign:'right'}}>Right way</th><th style={{textAlign:'right'}}>Before costs</th><th style={{textAlign:'right'}}>After costs</th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'right'}}>t</th></tr></thead>
+              <tbody>{[['First half hour', R.openClose.simple], ['… only when 15:00–15:30 agrees', R.openClose.both]].map(([l, x]) => (
+                <tr key={l}><td>{l}</td><td className="mono" style={{textAlign:'right'}}>{x.trades}</td><td className="mono" style={{textAlign:'right'}}>{(x.hit * 100).toFixed(0)}%</td>
+                  <td className="mono" style={{textAlign:'right'}}>{bp(x.grossBp)}</td><td className="mono" style={{textAlign:'right',color: x.netBp > 0 ? 'var(--up)' : 'var(--down)'}}>{bp(x.netBp)}</td>
+                  <td className="mono" style={{textAlign:'right'}}>{pct1(x.total)}</td><td className="mono" style={{textAlign:'right'}}>{x.t.toFixed(1)}</td></tr>))}</tbody>
+            </table>
+            <div className="mono tiny muted" style={{marginTop:8}}>Correlation of the first and last half hours: {R.openClose.corr.toFixed(3)} (t {R.openClose.corrT.toFixed(1)}). One trade a day at most, so {R.openClose.n} days is a small sample: use 60 days, and treat a GO as a hypothesis to confirm on later days.</div>
+          </div>
+        )}
+
         <div className="card" style={{marginBottom:16}}>
           <div className="card-head"><div className="card-title">Each agent on its own</div><div className="card-meta">strong calls = score ≥ {R.thr} either way</div></div>
           <table className="tbl">
@@ -4623,6 +4640,184 @@ const ScreenIntraday = ({ alpaca }) => {
   );
 };
 window.ScreenIntraday = ScreenIntraday;
+
+// ── Swing lab: the 16 daily agents together, probability and confidence per stock, 2–10 day holds ──
+const SWING_CACHE = { result: null, meta: null };
+const ScreenSwing = ({ ctx }) => {
+  const SW = window.ShoalSwing;
+  const sources = [['broker', 'Broker history', ctx?.liveUniverse], ['imported', 'Imported CSV', ctx?.importedUniverse], ['fictional', 'Fictional', SIM_U]];
+  const [source, setSource] = React.useState(() => SWING_CACHE.meta?.source || (ctx?.liveUniverse ? 'broker' : ctx?.importedUniverse ? 'imported' : 'fictional'));
+  const [H, setH] = React.useState(() => SWING_CACHE.meta?.H || 5);
+  const [cost, setCost] = React.useState(() => SWING_CACHE.meta?.cost ?? 5);
+  const [maxPos, setMaxPos] = React.useState(() => SWING_CACHE.meta?.maxPos || 10);
+  const [shorts, setShorts] = React.useState(() => SWING_CACHE.meta?.shorts ?? false);
+  const [busy, setBusy] = React.useState(null);
+  const [error, setError] = React.useState(null);
+  const [R, setR] = React.useState(() => SWING_CACHE.result);
+  const U = (sources.find(x => x[0] === source) || [])[2] || null;
+
+  const run = async () => {
+    setError(null);
+    if (!U) { setError(source === 'broker' ? 'Connect a broker first (Settings).' : 'Import a CSV first (Settings → Replay data → Import CSV).'); return; }
+    setBusy(0);
+    try {
+      const book = SS.createScoreBook(U, ctx?.agentParams);
+      const res = await SW.evaluateSwing(U, { signalsAt: book.signalsAt, ids: AGENTS.map(a => a.id), names: AGENTS.map(a => a.name), H, costBps: cost, maxPos, shorts,
+        dateOf: (g) => barDate(U, g), onProgress: (x) => setBusy(x) });
+      res.source = source; res.symbols = U.syms.length;
+      SWING_CACHE.result = res; SWING_CACHE.meta = { source, H, cost, maxPos, shorts };
+      setR(res);
+    } catch (err) { setError(err.message || String(err)); }
+    setBusy(null);
+  };
+
+  const bp = (x, d = 0) => (Number.isFinite(x) ? `${x >= 0 ? '+' : ''}${x.toFixed(d)}bp` : '—');
+  const vColor = { go: 'var(--up)', borderline: 'var(--warn)', nogo: 'var(--down)' };
+  const statusOf = (a) => {
+    const t = a.marketWide && a.timing ? a.timing.icT : a.icT;
+    return t >= 2 ? { t: 'Predicts', c: 'var(--up)' } : t <= -2 ? { t: 'Predicts in reverse', c: 'var(--warn)' } : { t: 'No reliable signal', c: 'var(--ink-4)' };
+  };
+  const maxImpact = R ? Math.max(1e-9, ...R.weights.map(w => w.impactBp)) : 1;
+  const row = (label, x, note) => (
+    <tr><td><b>{label}</b>{note && <div className="mono tiny muted">{note}</div>}</td>
+      <td className="mono" style={{textAlign:'right'}}>{pct1(x.totalReturn)}</td><td className="mono" style={{textAlign:'right'}}>{pct1(x.cagr)}</td>
+      <td className="mono" style={{textAlign:'right'}}>{x.sharpe.toFixed(2)}</td><td className="mono" style={{textAlign:'right'}}>{pct1(x.maxDD)}</td>
+      <td className="mono" style={{textAlign:'right'}}>{x.trades != null ? x.trades.toLocaleString() : '—'}</td>
+      <td className="mono" style={{textAlign:'right'}}>{x.winRate != null ? `${(x.winRate * 100).toFixed(0)}%` : '—'}</td>
+      <td className="mono" style={{textAlign:'right'}}>{x.avgNetBp != null ? bp(x.avgNetBp) : '—'}</td></tr>);
+
+  return (
+    <div className="page" data-screen-label="05d Swing lab">
+      <div className="page-head">
+        <div className="page-eyebrow">Swing lab · agents together · {H}-day holds</div>
+        <h1 className="page-title">Do the agents, <em>together</em>, call the next {H} days?</h1>
+        <p className="page-sub">Every day each of the 16 agents scores every stock. A combined model turns the scores into a probability of a rise and an expected move, weighting each agent by how much it actually helped. It is refitted every quarter on past data only and tested on the days after, so every result below is from days it hadn't seen. No orders are placed.</p>
+      </div>
+
+      <div className="grid-2" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-head"><div className="card-title">Run the test</div><div className="card-meta">{U ? `${U.syms.length} stocks · ${barDate(U, 0)} → ${barDate(U, U.L - 1)}` : 'no data'}</div></div>
+          <div className="field">
+            <div className="field-label" style={{marginBottom:8}}>Daily history</div>
+            <div className="tweak-opts" style={{flexWrap:'wrap'}}>{sources.map(([k, l, u]) => <div key={k} className={'tweak-opt ' + (source === k ? 'on' : '')} style={{opacity: u ? 1 : 0.5}} onClick={() => setSource(k)}>{l}</div>)}</div>
+            <div className="mono tiny muted" style={{marginTop:6}}>Longer is better: the first ~30% only warms up and fits; the rest is tested. Broker history length is set under Settings → Advanced; an imported 10-year CSV gives the firmest answer.</div>
+          </div>
+          <div className="field">
+            <div className="field-label" style={{marginBottom:8}}>Hold for</div>
+            <div className="tweak-opts">{[2, 5, 10].map(h => <div key={h} className={'tweak-opt ' + (H === h ? 'on' : '')} onClick={() => setH(h)}>{h} days</div>)}</div>
+          </div>
+          <div className="field">
+            <div className="field-label" style={{marginBottom:8}}>Cost per side</div>
+            <div className="tweak-opts">{[2, 5, 10].map(c => <div key={c} className={'tweak-opt ' + (cost === c ? 'on' : '')} onClick={() => setCost(c)}>{c}bp</div>)}</div>
+          </div>
+          <div className="field">
+            <div className="field-label" style={{marginBottom:8}}>Most positions at once</div>
+            <div className="tweak-opts">{[5, 10].map(m => <div key={m} className={'tweak-opt ' + (maxPos === m ? 'on' : '')} onClick={() => setMaxPos(m)}>{m}</div>)}</div>
+          </div>
+          <div className="dialog-row" style={{marginBottom:12}}><span className="l">Allow short trades</span><button className={'tweak-opt ' + (shorts ? 'on' : '')} onClick={() => setShorts(!shorts)}>{shorts ? 'ON' : 'OFF'}</button></div>
+          <button className="btn primary" style={{width:'100%'}} disabled={busy != null} onClick={run}>{busy != null ? `RUNNING… ${Math.round(busy * 100)}%` : 'RUN THE TEST'}</button>
+          {busy != null && <div style={{height:3,background:'var(--line-2)',marginTop:8}}><div style={{height:3,width:`${busy * 100}%`,background:'var(--virtual)'}}></div></div>}
+          {error && <div className="tiny" style={{color:'var(--down)',marginTop:10}}>{error}</div>}
+        </div>
+        <div className="card">
+          <div className="card-head"><div className="card-title">How it decides</div></div>
+          <div className="tiny" style={{color:'var(--ink-2)',lineHeight:1.6}}>
+            <p style={{margin:'0 0 8px'}}><b>Each agent</b> gives every stock a score from −1 (expects a fall) to +1 (expects a rise), or 0 when it has no view.</p>
+            <p style={{margin:'0 0 8px'}}><b>Together</b>: the scores are combined into the <b>probability of a rise</b> over the next {H} days and an <b>expected move</b>. An agent's say depends on how well its scores lined up with what happened next on the earlier days; agents that never helped get almost none, and an agent that worked the wrong way round is used the wrong way round.</p>
+            <p style={{margin:'0 0 8px'}}><b>Buy</b> when the probability is at least 55% and the expected move beats the {cost * 2}bp round-trip cost; hold {H} days; best probabilities first, up to {maxPos} at once.</p>
+            <p style={{margin:0}}><b>GO</b> needs reliable stock-picking on unseen days (t ≥ 2), a profit per trade after costs, and a better risk-adjusted return than both buy &amp; hold and the trend score alone.</p>
+          </div>
+        </div>
+      </div>
+
+      {R && (<>
+        <div className="card" style={{marginBottom:16,borderColor:vColor[R.verdict.level]}}>
+          <div className="mono tiny" style={{color:vColor[R.verdict.level],letterSpacing:'0.12em',marginBottom:4}}>VERDICT · {R.source.toUpperCase()} · {R.H}-DAY HOLDS · {R.costBps}BP PER SIDE</div>
+          <div style={{color:'var(--ink-1)',fontSize:14,lineHeight:1.5}}>{R.verdict.text}</div>
+          <div className="mono tiny muted" style={{marginTop:6}}>{R.symbols} stocks · tested {R.startDate} → {R.endDate} · model refitted {R.fits} times on earlier days only</div>
+          {R.source === 'fictional' && <div className="tiny" style={{color:'var(--warn)',marginTop:6}}>The fictional market is generated with trends and reversals built in, so agents can find patterns here that real prices may not have. Treat this as a demonstration; only broker or imported history counts.</div>}
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-head"><div className="card-title">Today's decisions</div><div className="card-meta">latest close · model fitted on all days with a known outcome</div></div>
+          <div className="tiny muted" style={{marginBottom:10}}>Each card: the combined probability that the stock is higher in {R.H} days, the expected move, and which agents pushed for and against. Green bars push towards a rise, red towards a fall.</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:12}}>
+            {R.decisions.slice(0, 9).map(d => {
+              const mx = Math.max(1e-9, ...d.contrib.slice(0, 5).map(c => Math.abs(c.logit)));
+              const ac = d.action === 'BUY' ? 'var(--up)' : d.action === 'WAIT' ? 'var(--ink-3)' : 'var(--down)';
+              return (
+                <div key={d.sym} style={{border:'1px solid var(--line-2)',borderRadius:6,padding:12}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
+                    <span className="mono" style={{fontSize:15}}>{d.sym}</span>
+                    <span className="mono tiny" style={{color:ac,letterSpacing:'0.1em'}}>{d.action}</span>
+                  </div>
+                  <div className="mono tiny muted" style={{margin:'4px 0 8px'}}>rise {(d.p * 100).toFixed(0)}% · expected {bp(d.e)} · {d.agree} for, {d.against} against</div>
+                  {d.contrib.slice(0, 5).map(c => (
+                    <div key={c.id} style={{display:'grid',gridTemplateColumns:'110px 1fr',gap:6,alignItems:'center',fontSize:10,marginBottom:3}}>
+                      <span className="muted">{c.name}</span>
+                      <div style={{height:6,background:'var(--line-2)',position:'relative'}}><div style={{position:'absolute',left: c.logit >= 0 ? '50%' : `${50 - (Math.abs(c.logit) / mx) * 50}%`,width:`${(Math.abs(c.logit) / mx) * 50}%`,height:6,background: c.logit >= 0 ? 'var(--up)' : 'var(--down)'}}></div></div>
+                    </div>))}
+                </div>);
+            })}
+          </div>
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-head"><div className="card-title">Trading it on the unseen days</div><div className="card-meta">{R.startDate} → {R.endDate}</div></div>
+          <table className="tbl">
+            <thead><tr><th></th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'right'}}>Per year</th><th style={{textAlign:'right'}}>Sharpe</th><th style={{textAlign:'right'}}>Worst drop</th><th style={{textAlign:'right'}}>Trades</th><th style={{textAlign:'right'}}>Won</th><th style={{textAlign:'right'}}>Per trade</th></tr></thead>
+            <tbody>
+              {row('All agents together', R.model, 'buy when the combined probability ≥ 55% and the expected move beats costs')}
+              {R.trendOnly && row('Trend score only', R.trendOnly, 'the same rules using Trend Persistence alone')}
+              {row('Buy & hold', R.hold, 'every stock, equal weights, never sold')}
+            </tbody>
+          </table>
+          <div className="mono tiny muted" style={{marginTop:8}}>Sharpe: return per unit of risk (higher is better). Per trade is after the {R.costBps * 2}bp round-trip cost.</div>
+        </div>
+
+        <div className="grid-2" style={{marginBottom:16}}>
+          <div className="card">
+            <div className="card-head"><div className="card-title">Each agent's say today</div><div className="card-meta">in the latest model</div></div>
+            {R.weights.slice().sort((a, b) => b.impactBp - a.impactBp).map(w => (
+              <div key={w.id} style={{display:'grid',gridTemplateColumns:'140px 1fr 64px',gap:8,alignItems:'center',fontSize:11,marginBottom:4}}>
+                <span>{w.name}</span>
+                <div style={{height:8,background:'var(--line-2)',borderRadius:2}}><div style={{height:8,width:`${(w.impactBp / maxImpact) * 100}%`,background: w.bpPerUnit >= 0 ? 'var(--up)' : 'var(--warn)',borderRadius:2}}></div></div>
+                <span className="mono" style={{textAlign:'right'}}>{w.impactBp.toFixed(1)}bp</span>
+              </div>))}
+            <div className="mono tiny muted" style={{marginTop:8}}>How far a typical score from each agent moves the expected {R.H}-day return. Amber: the model uses that agent the other way round.</div>
+          </div>
+          <div className="card">
+            <div className="card-head"><div className="card-title">Confidence vs what happened</div><div className="card-meta">unseen days</div></div>
+            <table className="tbl">
+              <thead><tr><th>Probability of a rise</th><th style={{textAlign:'right'}}>Calls</th><th style={{textAlign:'right'}}>Actually rose</th><th style={{textAlign:'right'}}>Avg move</th></tr></thead>
+              <tbody>{R.calibration.map(c => (
+                <tr key={c.range}><td className="mono">{c.range}</td><td className="mono" style={{textAlign:'right'}}>{c.n.toLocaleString()}</td><td className="mono" style={{textAlign:'right'}}>{c.n ? `${(c.upRate * 100).toFixed(0)}%` : '—'}</td><td className="mono" style={{textAlign:'right'}}>{c.n ? bp(c.avgBp) : '—'}</td></tr>))}</tbody>
+            </table>
+            <div className="mono tiny muted" style={{marginTop:8}}>Stock-picking power of the combined model on unseen days: IC {R.combined.ic.toFixed(3)}, t {R.combined.icT.toFixed(1)}.</div>
+          </div>
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-head"><div className="card-title">Each agent on its own · unseen days</div><div className="card-meta">strong calls = score ≥ 0.5 either way</div></div>
+          <table className="tbl">
+            <thead><tr><th>Agent</th><th style={{textAlign:'right'}}>Stock picking (IC)</th><th style={{textAlign:'right'}}>Strong calls</th><th style={{textAlign:'right'}}>Before costs</th><th style={{textAlign:'right'}}>After costs</th><th>Verdict</th></tr></thead>
+            <tbody>{R.agents.map(a => { const st = statusOf(a); return (
+              <tr key={a.id}>
+                <td><b>{a.name}</b>{a.marketWide && <div className="mono tiny muted">market-wide: judged on timing the whole market</div>}</td>
+                <td className="mono" style={{textAlign:'right'}}>{a.marketWide && a.timing ? <span>{fmtIc(a.timing.ic)} <span className="muted">t {a.timing.icT.toFixed(1)}</span></span> : <span>{fmtIc(a.ic)} <span className="muted">t {a.icT.toFixed(1)}</span></span>}</td>
+                <td className="mono" style={{textAlign:'right'}}>{a.signals.toLocaleString()}</td>
+                <td className="mono" style={{textAlign:'right'}}>{a.signals ? bp(a.grossBp) : '—'}</td>
+                <td className="mono" style={{textAlign:'right',color: a.netBp > 0 ? 'var(--up)' : 'var(--down)'}}>{a.signals ? bp(a.netBp) : '—'}</td>
+                <td><span className="mono tiny" style={{color:st.c}}>{st.t}</span></td>
+              </tr>); })}</tbody>
+          </table>
+        </div>
+      </>)}
+    </div>
+  );
+};
+const fmtIc = (x) => (Number.isFinite(x) ? x.toFixed(3) : '—');
+window.ScreenSwing = ScreenSwing;
 
 const ScreenOptimiser = ({ ctx, optimiser, onApplyFreeze, onUnfreeze, onRecordComparison }) => {
   const [days, setDays] = React.useState(250);
@@ -7174,6 +7369,7 @@ const NAV = [
   { id: 'backtest', label: 'Backtest', icon: 'back' },
   { id: 'optimiser', label: 'Optimiser', icon: 'trend' },
   { id: 'intraday', label: 'Intraday lab', icon: 'perf' },
+  { id: 'swing', label: 'Swing lab', icon: 'perf' },
   { id: 'guide', label: 'How it works', icon: 'dash' },
   { id: 'market', label: 'Market map', icon: 'market' },
   { id: 'agentperf', label: 'Agent performance', icon: 'perf' },
@@ -8613,6 +8809,7 @@ const App = () => {
     trade:       <ScreenTrade trade={selectedTrade || TRADES[0]} onBack={()=>setRoute('dashboard')} mode={mode} ctx={ctx}/>,
     backtest:    <ScreenBacktest mode={mode} ctx={ctx}/>,
     intraday:    <ScreenIntraday alpaca={alpaca}/>,
+    swing:       <ScreenSwing ctx={ctx}/>,
     optimiser:   <ScreenOptimiser ctx={ctx} optimiser={optimiser} onApplyFreeze={applyAndFreeze} onUnfreeze={unfreeze} onRecordComparison={recordComparison}/>,
     market:      <ScreenMarket tick={tick} mode={mode} ctx={ctx}/>,
     agentperf:   <ScreenAgentPerf mode={mode} ctx={ctx}/>,

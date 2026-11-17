@@ -54,3 +54,24 @@ test('a planted 30-minute momentum effect is found, by the right agent, on unsee
   const R2 = I.evaluate(I.prepare(I.synthIntraday({ days: 50, seed: 11, plant: 0.15, endDate: '2026-11-13' })), { H: 6, costBps: 15 });
   assert.ok(R2.agents.find(a => a.id === 'mom').test.netBp < mom.test.netBp);
 });
+
+test('open → close test: a planted first-half-hour → last-half-hour effect is found; none in noise', () => {
+  const mk = (strength) => {
+    const bars = I.synthIntraday({ days: 120, seed: 4, endDate: '2026-11-13' });
+    if (strength) { // make SPY's last half hour follow its first half hour
+      const byDay = new Map();
+      for (const b of bars.SPY) { const { date, min } = I.etParts(Date.parse(b.t)); if (min >= 570 && min < 960) (byDay.get(date) || byDay.set(date, []).get(date)).push(b); }
+      let prevClose = null;
+      for (const day of byDay.values()) {
+        if (prevClose) { const first = day[5].c / prevClose - 1; const shift = 1 + strength * first;
+          for (let k = 72; k < 78; k++) { day[k].o *= shift; day[k].h *= shift; day[k].l *= shift; day[k].c *= shift; } }
+        prevClose = day[77].c;
+      }
+    }
+    return I.openCloseTest(I.prepare(bars), { costBps: 1 });
+  };
+  const planted = mk(0.8), noise = mk(0);
+  assert.ok(planted.corr > 0.2 && planted.corrT > 2, String(planted.corr));
+  assert.equal(planted.verdict.level, 'go');
+  assert.ok(Math.abs(noise.corrT) < 3);
+});

@@ -113,6 +113,16 @@ Settings has four main controls; everything else is under *Advanced*.
   GO needs a per-trade profit after costs on unseen days with daily t ≥ 2 and at least one agent that
   predicts reliably on its own. Places no orders. A fictional random market is included as a demo (it
   should come out NO-GO).
+  The lab also runs a fixed, published test on SPY: the first half hour (yesterday's close → 10:00)
+  predicting the last half hour (15:30 → 16:00), trading at 15:30 and out at the close.
+- **Swing lab** (`swing.js`): the 16 daily agents together over 2–10 day holds. Every day each agent
+  scores every stock (−1…1); a combined model (ridge for the expected move, logistic for the probability
+  of a rise) is refitted every quarter on past outcomes only and used on the following days. Shows the
+  verdict, decision cards for the latest close (probability, expected move, which agents pushed for and
+  against), a trading test against buy & hold and the trend score alone, each agent's say, calibration,
+  and each agent on its own. Runs on broker daily history, an imported CSV or the fictional market. On
+  real data so far (12 stocks and sector funds 2016–2026; 24 stocks 2013–2018; 2-, 5- and 10-day holds)
+  it was NO-GO every time: no reliable stock picking on unseen years and a lower Sharpe than buy & hold.
 - **Agent evidence**: Agent config shows each agent's next-month rank IC on the data in use. Agents without
   positive evidence (t ≥ 1) are advisory and don't vote; the model prunes the same way, walk-forward.
 - **Daily loss limit**: once equity is down this much in a day, no new positions until the next day.

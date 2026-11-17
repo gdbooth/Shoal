@@ -293,6 +293,39 @@
       longs: trades.filter(t => t.side > 0).length, shorts: trades.filter(t => t.side < 0).length, sample: trades.slice(-20) };
   }
 
+  // ── Market open → close test (a published effect, fixed in advance, nothing fitted) ──
+  // The market's first half hour (yesterday's close → 10:00, overnight included) predicting its last half
+  // hour (15:30 → 16:00). Trade SPY at 15:30 in the direction of the first half hour, out at the close.
+  // A second version only trades when 15:00–15:30 points the same way.
+  function openCloseTest(P, o = {}) {
+    const cost = (o.costBps ?? 5) / 1e4, sym = o.sym || P.market;
+    const days = sym && P.S[sym];
+    if (!days || P.tf !== 5) return null;
+    const k10 = 5, k1500 = 65, k1530 = 71, kEnd = P.slots - 1;
+    const rows = [];
+    for (let d = 1; d < days.length; d++) {
+      const D = days[d], prev = days[d - 1].c[kEnd];
+      if (!D.real[kEnd] || !D.real[k1530]) continue;
+      rows.push({ date: D.date, first: D.c[k10] / prev - 1, late: D.c[k1530] / D.c[k1500] - 1, last: D.c[kEnd] / D.c[k1530] - 1 });
+    }
+    const n = rows.length;
+    if (n < 10) return { sym, n, enough: false };
+    const corr = pearson(rows.map(r => r.first), rows.map(r => r.last));
+    const corrT = Number.isFinite(corr) ? corr * Math.sqrt((n - 2) / Math.max(1e-9, 1 - corr * corr)) : 0;
+    const run = (useLate) => {
+      const tr = rows.filter(r => r.first !== 0 && (!useLate || Math.sign(r.late) === Math.sign(r.first))).map(r => ({ date: r.date, gross: Math.sign(r.first) * r.last }));
+      const net = tr.map(t => t.gross - 2 * cost);
+      return { trades: tr.length, hit: tr.length ? tr.filter(t => t.gross > 0).length / tr.length : 0, grossBp: tr.length ? mean(tr.map(t => t.gross)) * 1e4 : 0,
+        netBp: tr.length ? mean(net) * 1e4 : 0, total: net.reduce((a, r) => a * (1 + r), 1) - 1, t: tstat(net) };
+    };
+    const simple = run(false), both = run(true);
+    const best = [simple, both].find(x => x.netBp > 0 && x.t >= 2);
+    const verdict = best ? { level: 'go', text: `GO: following ${sym}'s first half hour into the last half hour made ${best.netBp.toFixed(1)}bp per day after costs (t ${best.t.toFixed(1)}) over ${n} days.` }
+      : simple.grossBp > 0 ? { level: 'nogo', text: `NO-GO: the first half hour pointed the right way ${(simple.hit * 100).toFixed(0)}% of the time for +${simple.grossBp.toFixed(1)}bp a day before costs, not enough to pay the ${(cost * 2e4).toFixed(0)}bp round trip.` }
+      : { level: 'nogo', text: `NO-GO: over these ${n} days the first half hour didn't predict the last (${simple.grossBp.toFixed(1)}bp a day before costs).` };
+    return { sym, n, enough: true, corr, corrT, simple, both, verdict, from: rows[0].date, to: rows[n - 1].date };
+  }
+
   // ── The whole Phase 1 test ──
   function evaluate(P, o = {}) {
     const H = o.H || 6, cost = (o.costBps ?? 5) / 1e4, thr = o.thr ?? 0.5, split = o.split ?? 0.6;
@@ -331,7 +364,8 @@
     else if (bt.avgNetBp > 0 && bt.dailyT >= 2 && strong.length) verdict = { level: 'go', text: `GO: after ${(cost * 2e4).toFixed(0)}bp round-trip costs the combined agents made ${bt.avgNetBp.toFixed(1)}bp per trade on days they hadn't seen (daily t ${bt.dailyT.toFixed(1)}), and ${strong.map(a => a.name).join(', ')} predicted reliably on their own.` };
     else if (bt.avgNetBp > 0) verdict = { level: 'borderline', text: `BORDERLINE: positive after costs (${bt.avgNetBp.toFixed(1)}bp per trade on unseen days) but not reliably (daily t ${bt.dailyT.toFixed(1)}; needs 2${strong.length ? '' : ', and no single agent predicted reliably'}). Collect more days before building on it.` };
     else verdict = { level: 'nogo', text: `NO-GO: on days they hadn't seen, the combined agents lost ${(-bt.avgNetBp).toFixed(1)}bp per trade after ${(cost * 2e4).toFixed(0)}bp round-trip costs${strong.length ? `, although ${strong.map(a => a.name).join(', ')} showed some predictive power before costs` : ''}.` };
-    return { H, minutes: H * P.tf, costBps: cost * 1e4, thr, split, trainDays: testFrom, testDays: P.dates.length - testFrom, from: P.dates[0], to: P.dates[P.dates.length - 1], testFromDate: P.dates[testFrom],
+    const openClose = openCloseTest(P, { costBps: cost * 1e4 });
+    return { openClose, H, minutes: H * P.tf, costBps: cost * 1e4, thr, split, trainDays: testFrom, testDays: P.dates.length - testFrom, from: P.dates[0], to: P.dates[P.dates.length - 1], testFromDate: P.dates[testFrom],
       symbols: P.syms.filter(s => s !== P.market), market: P.market, rows: rows.length, agents, corr, combined, calibration, backtest: bt, grid, verdict };
   }
 
@@ -372,5 +406,5 @@
     return out;
   }
 
-  root.ShoalIntraday = { AGENTS, IDS, etParts, prepare, computeScores, fillTimeOfDay, collect, fitCombiner, predict, backtest, evaluate, synthIntraday };
+  root.ShoalIntraday = { AGENTS, IDS, etParts, prepare, computeScores, fillTimeOfDay, collect, fitCombiner, predict, backtest, evaluate, openCloseTest, synthIntraday };
 })(typeof window !== 'undefined' ? window : globalThis);
