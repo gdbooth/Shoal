@@ -7433,7 +7433,7 @@ const App = () => {
         }
 
         // Real positions → merge with local fills in VIRTUAL mode; replace in LIVE mode
-        if (Array.isArray(positions) && positions.length > 0) {
+        if (Array.isArray(positions)) {
           const realPos = positions.map(p => ({
             id:     'POS-' + p.symbol,
             ts:     Date.now() - 7200000,
@@ -7457,10 +7457,21 @@ const App = () => {
               const closedHistory = prev.filter(t => t._real && t.status !== 'OPEN');
               return [...realPos, ...closedHistory].slice(0, 5000);
             }
-            // VIRTUAL: keep all local swarm fills; just merge in real positions without wiping
-            const localFills = prev.filter(t => !t._real);
+            // VIRTUAL: keep Shoal's own fills (they carry the reason and agent votes) and add only the broker
+            // positions Shoal didn't open; a fill whose stock the broker no longer holds was sold.
+            const brokerBy = new Map(realPos.map(p => [p.sym, p]));
+            const localFills = prev.filter(t => !t._real).map(t => {
+              if (t.status !== 'OPEN' || t.replay || !t._brokerSent) return t;
+              const bp = brokerBy.get(t.sym);
+              if (bp) return { ...t, _upnl: bp._upnl, _upnlPct: bp._upnlPct };
+              if (Date.now() - (t.ts || 0) < 120_000) return t; // order may not have filled yet
+              const exit = livePricesRef.current[t.sym] || t.price;
+              const pnlAmt = (exit - t.price) * t.qty * (t.side === 'BUY' ? 1 : -1);
+              return { ...t, status: pnlAmt > 0 ? 'WIN' : 'LOSS', pnl: pnlAmt, pnlPct: pnlAmt / (t.qty * t.price), exit, exitTs: Date.now(), isNew: false, closeReason: t.closeReason || 'CLOSED AT BROKER' };
+            });
+            const ownSyms = new Set(localFills.filter(t => t.status === 'OPEN' && !t.replay && t._brokerSent).map(t => t.sym));
             const closedReal = prev.filter(t => t._real && t.status !== 'OPEN');
-            return [...realPos, ...localFills, ...closedReal].slice(0, 5000);
+            return [...realPos.filter(p => !ownSyms.has(p.sym)), ...localFills, ...closedReal].slice(0, 5000);
           });
           if (account?.portfolio_value) setBalance(parseFloat(account.portfolio_value));
         }
@@ -8027,9 +8038,7 @@ const App = () => {
         if (blockNew) return;
         const balanceNow = balanceRef.current ?? 0;
         const maxVal     = balanceNow * (riskNow.maxTradePct ?? 5) / 100;
-        const openExposure = tradesRef.current
-          .filter(t => t.status === 'OPEN')
-          .reduce((s, t) => s + t.qty * t.price, 0);
+        const openExposure = mineOpen().reduce((s, t) => s + t.qty * t.price, 0);
         const freeCash = balanceNow - openExposure;
         if (balanceNow <= 100 || freeCash <= 0) return;
 
@@ -8324,21 +8333,26 @@ const App = () => {
     }).map(a => a.id));
   }, [enabledAgents, agentHistory, risk.minAgentAccuracy, risk.autoDisableAgents]);
 
+  // Each mode shows only its own trades: a replay's in SIMULATED, the broker account's in VIRTUAL / LIVE.
+  // (Replayed positions stay frozen while another mode runs; listing them there looked like stuck trades.)
+  const modeTrades = React.useMemo(() => trades.filter(t => mode === 'SIMULATED'
+    ? (!!t.replay || (!t._real && t.mode === 'SIMULATED'))
+    : (!t.replay && t.mode !== 'SIMULATED')), [trades, mode]);
   // Session P&L: realized closed trades since ET midnight (US market day boundary)
   const sessionPnl = React.useMemo(() => {
     const now = new Date();
     const etNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
     const etMidnight = new Date(etNow); etMidnight.setHours(0, 0, 0, 0);
     const midnight = etMidnight.getTime() + (now.getTime() - etNow.getTime());
-    return trades.filter(t => t.pnl != null && (t.exitTs || 0) >= midnight).reduce((s, t) => s + t.pnl, 0);
-  }, [trades]);
+    return modeTrades.filter(t => t.pnl != null && (t.exitTs || 0) >= midnight).reduce((s, t) => s + t.pnl, 0);
+  }, [modeTrades]);
 
   // Available balance = equity − notional locked in open positions.
   // This is the free cash the swarm can deploy on the next trade. Matches the
   // free-cash guard inside the swarm tick.
   const openExposure = React.useMemo(() => (
-    trades.filter(t => t.status === 'OPEN').reduce((s, t) => s + t.qty * t.price, 0)
-  ), [trades]);
+    modeTrades.filter(t => t.status === 'OPEN').reduce((s, t) => s + t.qty * t.price, 0)
+  ), [modeTrades]);
   const availableBalance = Math.max(0, balance - openExposure);
 
   // Agent evidence for display: next-month rank IC on the whole history of the data being analysed
@@ -8363,7 +8377,7 @@ const App = () => {
   }
 
   const alpacaConnected = !!(alpaca?.connected && alpaca?.token);
-  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected, liveUniverse, agentParams, agentEvidence: agentEvidenceDisplay, replayInfo, tradeStatus: running ? tradeStatus : { warn: true, text: 'Paused. Press RESUME to let the bot trade.' }, lossHit, autopilotLog, mode,
+  const ctx = { activeSymbol, setActiveSymbol, direction, balance, startingBalance, availableBalance, openExposure, pnl, tradesResetAt, trades: modeTrades, agentWeights, agentHistory, agentAccuracySeries, lastSignals, setSelectedTrade, risk, setRisk, marketStatus, dynamicExcluded, confHistory, blacklistedSymbols, setBlacklistedSymbols, slippageLog, liveSignals, livePrices, handleCloseAll, swarmFocus, weightHistory, setWeightHistory, alpacaConnected, liveUniverse, agentParams, agentEvidence: agentEvidenceDisplay, replayInfo, tradeStatus: running ? tradeStatus : { warn: true, text: 'Paused. Press RESUME to let the bot trade.' }, lossHit, autopilotLog, mode,
     replayUniverse: replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse),
     analysisUniverse: (mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : liveUniverse) || SIM_U,
     importedUniverse, costBps: costBpsFor(risk, mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : null, alpaca?.brokerId) };
