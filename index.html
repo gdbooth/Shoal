@@ -1479,6 +1479,7 @@ window.addEventListener('unhandledrejection', function(e) {
 </script>
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="watchlist.js"></script>
 <script src="signals.js"></script>
 <script src="intraday.js"></script>
 <script src="swing.js"></script>
@@ -1930,38 +1931,7 @@ const AGENTS = [
 // IG — capped at 30 for its history allowance — and the intraday lab keep the most familiar names).
 // The list can be changed in Settings → Stocks watched; it is read once at start-up.
 // [symbol, name, sector, rough price (only seeds the fictional market)]
-const STOCK_CATALOG = [
-  ['NVDA','NVIDIA','Tech',140], ['AAPL','Apple','Tech',230], ['MSFT','Microsoft','Tech',420], ['TSLA','Tesla','Disc',250],
-  ['JPM','JPMorgan','Fin',220], ['XOM','Exxon','Energy',115], ['COST','Costco','Cons',890], ['AMD','AMD','Tech',150],
-  ['META','Meta','Comm',560], ['GOOG','Alphabet','Comm',175], ['BAC','Bank of America','Fin',42], ['WFC','Wells Fargo','Fin',65],
-  ['JNJ','J&J','Health',155], ['LLY','Eli Lilly','Health',800], ['UNH','UnitedHealth','Health',560], ['CVX','Chevron','Energy',155],
-  ['COP','ConocoPhillips','Energy',110], ['WMT','Walmart','Cons',80], ['PG','Procter & Gamble','Cons',165], ['CAT','Caterpillar','Indus',360],
-  ['HON','Honeywell','Indus',210], ['NEE','NextEra Energy','Util',75], ['SO','Southern Co','Util',88], ['LIN','Linde','Mat',450],
-  ['FCX','Freeport-McMoRan','Mat',45],
-  // 75 more
-  ['AMZN','Amazon','Disc',190], ['AVGO','Broadcom','Tech',170], ['ORCL','Oracle','Tech',170], ['CRM','Salesforce','Tech',280],
-  ['ADBE','Adobe','Tech',480], ['INTC','Intel','Tech',22], ['CSCO','Cisco','Tech',58], ['QCOM','Qualcomm','Tech',165],
-  ['TXN','Texas Instruments','Tech',200], ['IBM','IBM','Tech',220], ['NOW','ServiceNow','Tech',950], ['INTU','Intuit','Tech',640],
-  ['AMAT','Applied Materials','Tech',180], ['MU','Micron','Tech',100], ['ACN','Accenture','Tech',350],
-  ['NFLX','Netflix','Comm',750], ['DIS','Disney','Comm',100], ['CMCSA','Comcast','Comm',40], ['T','AT&T','Comm',22],
-  ['VZ','Verizon','Comm',42], ['TMUS','T-Mobile US','Comm',230],
-  ['HD','Home Depot','Disc',400], ['MCD',"McDonald's",'Disc',290], ['NKE','Nike','Disc',75], ['LOW',"Lowe's",'Disc',260],
-  ['SBUX','Starbucks','Disc',95], ['BKNG','Booking','Disc',4800], ['TJX','TJX','Disc',120], ['GM','General Motors','Disc',50],
-  ['KO','Coca-Cola','Cons',63], ['PEP','PepsiCo','Cons',160], ['PM','Philip Morris','Cons',125], ['MO','Altria','Cons',52], ['CL','Colgate-Palmolive','Cons',92],
-  ['C','Citigroup','Fin',65], ['GS','Goldman Sachs','Fin',520], ['MS','Morgan Stanley','Fin',120], ['BLK','BlackRock','Fin',950],
-  ['SCHW','Charles Schwab','Fin',70], ['AXP','American Express','Fin',270], ['V','Visa','Fin',290], ['MA','Mastercard','Fin',500],
-  ['USB','U.S. Bancorp','Fin',47], ['COF','Capital One','Fin',160],
-  ['PFE','Pfizer','Health',28], ['MRK','Merck','Health',100], ['ABBV','AbbVie','Health',180], ['TMO','Thermo Fisher','Health',560],
-  ['ABT','Abbott','Health',115], ['DHR','Danaher','Health',240], ['BMY','Bristol-Myers Squibb','Health',50], ['AMGN','Amgen','Health',300],
-  ['GILD','Gilead','Health',85], ['MDT','Medtronic','Health',85],
-  ['SLB','SLB','Energy',42], ['EOG','EOG Resources','Energy',125], ['OXY','Occidental','Energy',52],
-  ['GE','GE Aerospace','Indus',170], ['UPS','UPS','Indus',130], ['BA','Boeing','Indus',155], ['RTX','RTX','Indus',120],
-  ['LMT','Lockheed Martin','Indus',520], ['DE','Deere','Indus',400], ['UNP','Union Pacific','Indus',240], ['MMM','3M','Indus',125],
-  ['FDX','FedEx','Indus',280], ['EMR','Emerson','Indus',120],
-  ['NEM','Newmont','Mat',50], ['SHW','Sherwin-Williams','Mat',360],
-  ['DUK','Duke Energy','Util',112], ['AEP','American Electric Power','Util',98], ['EXC','Exelon','Util',38],
-  ['PLD','Prologis','RE',115], ['AMT','American Tower','RE',210], ['SPG','Simon Property','RE',170],
-];
+const STOCK_CATALOG = window.ShoalWatchlist.CATALOG;
 const CATALOG_BY = Object.fromEntries(STOCK_CATALOG.map(([sym, name, sector, price]) => [sym, { name, sector, price }]));
 const DEFAULT_WATCHLIST = STOCK_CATALOG.map(x => x[0]);
 const ORIGINAL_25 = DEFAULT_WATCHLIST.slice(0, 25);
@@ -5366,6 +5336,55 @@ window.ScreenMarket = ScreenMarket;
 <script type="text/babel" data-presets="react">
 // Settings screen — Alpaca connection + risk parameters
 
+// Settings → Server trading: the daily job that runs Rank & tilt on the server, without a browser
+const ServerTradingCard = ({ alpaca, st }) => {
+  const [preview, setPreview] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const runPreview = async () => {
+    setBusy(true); setPreview(null);
+    try {
+      const r = await fetch(`${BACKEND_URL}/api/server-trading/preview`, { headers: { Authorization: 'Bearer ' + alpaca.token }, signal: AbortSignal.timeout(120000) });
+      const d = await r.json();
+      setPreview(r.ok ? d : { error: d.error || `HTTP ${r.status}` });
+    } catch (err) { setPreview({ error: err.message }); }
+    setBusy(false);
+  };
+  const on = st && st.enabled && st.sameAccount;
+  return (
+    <div className="field">
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
+        <div className="field-label">Server trading <span className="muted">(runs without this browser)</span></div>
+        <div className="mono tiny" style={{color: on ? 'var(--up)' : 'var(--ink-3)'}}>{!alpaca?.connected ? 'connect Alpaca to see' : alpaca.brokerId === 'ig' ? 'Alpaca only' : !st ? 'checking…' : on ? 'ON for this account' : st.enabled ? 'ON for another account' : 'OFF'}</div>
+      </div>
+      <div className="mono tiny muted" style={{marginTop:6,lineHeight:1.6}}>
+        Once a day ({st?.schedule || 'weekdays ~13:00–14:00 New York'}), the server runs Rank &amp; tilt on its Alpaca account: ranks the watchlist by trend score as of last month's close, sells holdings that aren't picks, and buys picks it doesn't hold. It treats the account as its own. While it's on for the account you're connected to, this browser only watches.
+        {st && <> Server settings: top {st.topK} of {st.watchlistSize} stocks, {Math.round(st.investFraction * 100)}% invested, {st.env} account{st.env === 'live' && !st.liveAllowed ? ' (live trading blocked: SHOAL_SERVER_LIVE is not 1)' : ''}.</>}
+      </div>
+      {st && !st.enabled && (
+        <div className="mono tiny" style={{marginTop:8,color:'var(--ink-2)',lineHeight:1.6}}>
+          To turn it on, add these in Vercel → your project → Settings → Environment Variables (mark the keys <b>Sensitive</b>), then redeploy:<br/>
+          · <b>ALPACA_KEY_ID</b> and <b>ALPACA_SECRET</b>: your Alpaca <b>paper</b> keys{st.configured ? ' ✓' : ''}<br/>
+          · <b>CRON_SECRET</b>: any long random text{st.cronSecret ? ' ✓' : ''}<br/>
+          · optional: SHOAL_TOPK (default 12), SHOAL_INVEST_FRACTION (0.9), SHOAL_WATCHLIST (default the 100 stocks). Live money also needs ALPACA_ENV=live and SHOAL_SERVER_LIVE=1.<br/>
+          To turn it off, delete the ALPACA_SECRET variable and redeploy.
+        </div>
+      )}
+      {on && <button className="btn" style={{fontSize:10,padding:'4px 10px',marginTop:8}} disabled={busy} onClick={runPreview}>{busy ? 'CHECKING…' : "PREVIEW TODAY'S SERVER PLAN"}</button>}
+      {preview && (
+        <div className="mono tiny" style={{marginTop:8,color: preview.error ? 'var(--down)' : 'var(--ink-2)',lineHeight:1.6}}>
+          {preview.error ? preview.error : <>
+            Picks for {preview.month} (ranked on {preview.rankedAsOf}): {preview.picks.join(', ')}.<br/>
+            {preview.sells.length ? `Would sell: ${preview.sells.join(', ')}. ` : 'Nothing to sell. '}
+            {preview.buys.length ? `Would buy: ${preview.buys.map(b => `${b.sym} $${b.notional.toLocaleString()}`).join(', ')}. ` : 'Nothing to buy. '}
+            {preview.waiting.length ? `Waiting for cash: ${preview.waiting.join(', ')}.` : ''}
+            {!preview.marketOpen && ' (Market closed now: the job only trades while it is open.)'}
+          </>}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Settings → Stocks watched: edit the list the whole app uses (saved in this browser, applied on reload)
 const WatchlistEditor = ({ brokerId }) => {
   const current = TICKERS.map(t => t.sym);
@@ -5413,13 +5432,23 @@ const WatchlistEditor = ({ brokerId }) => {
   );
 };
 
-const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset, onResetWeights, onExportWeights, onImportWeights, backendOk, autopilotLog = [], frozen = null, onOpenOptimiser, importedUniverse = null, onImportCsv, onRemoveImport, autoCostBps = 5 }) => {
+const ScreenSettings = ({ serverTrading = null, mode, alpaca, setAlpaca, risk, setRisk, direction, setDirection, onReset, onResetWeights, onExportWeights, onImportWeights, backendOk, autopilotLog = [], frozen = null, onOpenOptimiser, importedUniverse = null, onImportCsv, onRemoveImport, autoCostBps = 5 }) => {
   const [showAdvanced, setShowAdvanced] = React.useState(false);
   const [importMsg, setImportMsg] = React.useState(null);
   const importFileRef = React.useRef(null);
   const [showConnect, setShowConnect] = React.useState(false);
   const [connecting, setConnecting] = React.useState(false);
   const [connectErr, setConnectErr] = React.useState('');
+  // Access code for this Shoal server (when its owner set SHOAL_ACCESS_CODE); kept in this browser
+  const [accessCode, setAccessCode] = React.useState(() => { try { return localStorage.getItem('shoal_access_code') || ''; } catch (_) { return ''; } });
+  const [accessNeeded, setAccessNeeded] = React.useState(false);
+  React.useEffect(() => { fetch(`${BACKEND_URL}/api/health`).then(r => r.json()).then(h => setAccessNeeded(!!h.accessCode)).catch(() => {}); }, []);
+  const accessHeaders = () => (accessCode.trim() ? { 'x-shoal-access': accessCode.trim() } : {});
+  const connectFailed = (data, fallback) => {
+    if (data && data.needAccessCode) { setAccessNeeded(true); return accessCode.trim() ? 'That access code is not right for this Shoal server.' : 'This Shoal server needs its access code: enter it above.'; }
+    return (data && data.error) || fallback;
+  };
+  const rememberAccess = () => { try { if (accessCode.trim()) localStorage.setItem('shoal_access_code', accessCode.trim()); } catch (_) {} };
   const importCsvRef = React.useRef(null);
   const blankForm = { broker: 'alpaca', env: 'paper', keyId: '', secret: '', apiKey: '', username: '', password: '', accountId: '', showSecret: false };
   const [form, setForm] = React.useState(blankForm);
@@ -5450,15 +5479,16 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
     try {
       const resp = await fetch(`${BACKEND_URL}/api/connect`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...accessHeaders() },
         body: JSON.stringify({ broker: 'alpaca', keyId: id, secret: sec, env: form.env }),
       });
       const data = await resp.json();
       if (!resp.ok) {
-        setConnectErr(data.error || 'Connection failed — check your key pair and try again.');
+        setConnectErr(connectFailed(data, 'Connection failed — check your key pair and try again.'));
         setConnecting(false);
         return;
       }
+      rememberAccess();
       const { token, account: acc } = data;
       const masked = id.slice(0, 4) + '····' + id.slice(-4);
       setAlpaca({
@@ -5490,15 +5520,16 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
     try {
       const resp = await fetch(`${BACKEND_URL}/api/connect`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...accessHeaders() },
         body: JSON.stringify({ broker: 'ig', env: form.env, apiKey, username, password: form.password, accountId: accountId || undefined, symbols: brokerSymbols({ brokerId: 'ig' }) }),
       });
       const data = await resp.json();
       if (!resp.ok) {
-        setConnectErr(data.error || 'Connection failed — check your IG API key and login.');
+        setConnectErr(connectFailed(data, 'Connection failed — check your IG API key and login.'));
         setConnecting(false);
         return;
       }
+      rememberAccess();
       const { token, account: acc, broker } = data;
       setAlpaca({
         connected: true,
@@ -5526,6 +5557,11 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
         <h1 className="page-title">Broker, risk, <em>and the rules of the game.</em></h1>
         <p className="page-sub">The settings that change results are <b>Style</b> and <b>Risk level</b>. Replay data chooses the history SIMULATED uses. Leave Autopilot off and Advanced at the defaults unless a lab or the Optimiser's held-out check says otherwise; the Guide explains each one.</p>
       </div>
+      {alpaca?.expired && !alpaca?.connected && (
+        <div className="card" style={{borderColor:'var(--warn)',padding:'10px 16px',marginBottom:16}}>
+          <div className="tiny" style={{color:'var(--ink-2)'}}><span className="mono" style={{color:'var(--warn)',letterSpacing:'0.12em'}}>SESSION EXPIRED · </span>For safety a broker session lasts 8 hours. Reconnect below to keep trading from this browser (the server's daily job, if on, is not affected).</div>
+        </div>
+      )}
 
       <div className="grid-2" style={{marginBottom:16}}>
         <div className="card">
@@ -5645,6 +5681,8 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
           </div>
 
           <WatchlistEditor brokerId={alpaca?.brokerId}/>
+
+          <ServerTradingCard alpaca={alpaca} st={serverTrading}/>
 
           <div className="field">
             <div className="field-label" style={{marginBottom:8}}>Replay data <span className="muted">(SIMULATED mode)</span></div>
@@ -6109,6 +6147,14 @@ const ScreenSettings = ({ mode, alpaca, setAlpaca, risk, setRisk, direction, set
                   {form.env === 'live' && (
                     <div className="tiny" style={{color:'var(--live)',padding:'10px 12px',background:'rgba(230,110,60,0.08)',border:'1px solid rgba(230,110,60,0.35)',borderRadius:3,marginTop:4,lineHeight:1.5}}>
                       <b style={{letterSpacing:'0.06em'}}>LIVE ACCOUNT:</b> Orders placed from this session will execute with real capital. {form.broker === 'ig' ? 'Double-check you are logging in to the right IG account.' : "Double-check you're pasting the correct key pair."}
+                    </div>
+                  )}
+
+                  {accessNeeded && (
+                    <div style={{marginTop:12}}>
+                      <div className="field-label" style={{marginBottom:6}}>Access code <span className="muted">(this Shoal server)</span></div>
+                      <input className="field-input mono" type="password" value={accessCode} onChange={e => setAccessCode(e.target.value)} placeholder="set by the server's owner" autoComplete="off" style={{width:'100%'}}/>
+                      <div className="mono tiny muted" style={{marginTop:4}}>Stops strangers who find this web address from using its server. Remembered in this browser.</div>
                     </div>
                   )}
 
@@ -7470,7 +7516,7 @@ const ScreenGuide = ({ onGo }) => {
             [<span className="pill virtual">◑ VIRTUAL</span>, 'Real orders to your Alpaca paper or IG demo account. No real money. Only trades while the US market is open.'],
             [<span className="pill live">◉ LIVE</span>, 'Real money through your live account. Daily loss limit and Autopilot caps apply. Use with care.'],
           ]}/>
-          <p style={{margin:'8px 0 0'}}>The bot runs in this browser tab: <b>keep the tab open</b> for VIRTUAL and LIVE to keep trading.</p>
+          <p style={{margin:'8px 0 0'}}>The bot runs in this browser tab: <b>keep the tab open</b> for VIRTUAL and LIVE to keep trading, or turn on <b>Server trading</b> (Settings) so the server runs Rank &amp; tilt once a day on your Alpaca paper account without a browser. While server trading is on for the account you're connected to, the browser only watches.</p>
         </Sec>
 
         <Sec n="4" title="Styles (Settings → Style)">
@@ -7541,6 +7587,7 @@ const ScreenGuide = ({ onGo }) => {
             <li><b>Day-trade rule</b>: accounts under $25,000 may make at most 3 same-day round trips in 5 business days.</li>
             <li><b>Data</b>: Alpaca's free feed covers part of US volume; IG allows ~10,000 historical price points a week (this browser keeps a copy so only new days are fetched).</li>
             <li><b>Costs</b>: every buy and sell pays spread and slippage; frequent trading needs a bigger edge to pay for it.</li>
+            <li><b>Security</b>: connecting a broker needs this server's <b>access code</b>; a broker session lasts 8 hours, then you reconnect; your secret is never stored in the browser or on disk, only inside an encrypted session token. To cut off access at once, regenerate your keys in Alpaca's dashboard.</li>
             <li>This is a research and paper-trading tool. Nothing here is financial advice.</li>
           </ul>
         </Sec>
@@ -7857,6 +7904,13 @@ const App = () => {
 
   // Stable ref so interval callbacks can read latest alpaca without re-subscribing
   const alpacaRef = React.useRef(alpaca);
+  // The broker session ran out (8-hour limit) or was revoked: drop it and say so
+  const expireSession = () => {
+    setAlpaca(a => (a.connected ? { ...a, connected: false, token: null, expired: true } : a));
+    const t0 = { id: Date.now(), type: 'close-loss', sym: '⚠', text: 'broker session expired (8 h limit): reconnect in Settings' };
+    setToasts(prev => [...prev.slice(-4), t0]);
+    setTimeout(() => setToasts(prev => prev.filter(x => x.id !== t0.id)), 10000);
+  };
   React.useEffect(() => { alpacaRef.current = alpaca; }, [alpaca]);
 
   // Stable ref so swarm closure can read latest Alpaca-authoritative market status
@@ -7919,6 +7973,7 @@ const App = () => {
             // IG's first load resolves ticker→epic and fetches history under tight rate limits (~2 min); later loads hit the backend's cache
             { headers: { 'Authorization': 'Bearer ' + alpaca.token }, signal: AbortSignal.timeout(alpaca.brokerId === 'ig' ? 180000 : 120000) }
           );
+          if (r.status === 401) { expireSession(); return; }
           if (!r.ok) { liveBarsNoteRef.current = `The broker's price history request failed (HTTP ${r.status}). Retrying every 10 minutes.`; return; }
           const d = await r.json();
           Object.assign(data.bars, d.bars || {});
@@ -7963,14 +8018,24 @@ const App = () => {
   }, []);
 
   // SSE bridge — when Alpaca is connected via the backend, replace simulated data with real fills.
-  // Token passed as ?token= because EventSource does not support custom headers.
+  // EventSource can't send headers, so the token is swapped for a one-minute ticket first; the token
+  // itself never goes in a URL. A 401 means the session expired (8 hours) or was revoked.
   const streamRef = React.useRef(null);
   React.useEffect(() => {
     if (!alpaca.connected || !alpaca.token) {
       if (streamRef.current) { streamRef.current.close(); streamRef.current = null; }
       return;
     }
-    const es = new EventSource(`${BACKEND_URL}/api/stream?token=${encodeURIComponent(alpaca.token)}`);
+    let es = null, stopped = false;
+    const start = async () => {
+    let ticket = null;
+    try {
+      const r = await fetch(`${BACKEND_URL}/api/stream-ticket`, { method: 'POST', headers: { Authorization: 'Bearer ' + alpaca.token } });
+      if (r.status === 401) { if (!stopped) expireSession(); return; }
+      ticket = (await r.json()).ticket;
+    } catch (_) { if (!stopped) setTimeout(() => setStreamRetry(n => n + 1), 5000); return; }
+    if (stopped || !ticket) return;
+    es = new EventSource(`${BACKEND_URL}/api/stream?ticket=${encodeURIComponent(ticket)}`);
     streamRef.current = es;
     es.onmessage = (e) => {
       try {
@@ -8080,8 +8145,24 @@ const App = () => {
       streamRef.current = null;
       setTimeout(() => setStreamRetry(n => n + 1), 5000);
     };
-    return () => { es.close(); streamRef.current = null; };
+    };
+    start();
+    return () => { stopped = true; if (es) es.close(); streamRef.current = null; };
   }, [alpaca.connected, alpaca.token, streamRetry]);
+
+  // Server trading: is the server's daily job trading this same account? Then this browser only watches.
+  const [serverTrading, setServerTrading] = React.useState(null);
+  const serverTradingRef = React.useRef(null);
+  React.useEffect(() => { serverTradingRef.current = serverTrading; }, [serverTrading]);
+  React.useEffect(() => {
+    if (!alpaca.connected || !alpaca.token || alpaca.brokerId === 'ig') { setServerTrading(null); return; }
+    let live = true;
+    const load = () => fetch(`${BACKEND_URL}/api/server-trading`, { headers: { Authorization: 'Bearer ' + alpaca.token } })
+      .then(r => (r.status === 401 ? (expireSession(), null) : r.ok ? r.json() : null)).then(d => { if (live) setServerTrading(d); }).catch(() => {});
+    load();
+    const id = setInterval(load, 15 * 60 * 1000);
+    return () => { live = false; clearInterval(id); };
+  }, [alpaca.connected, alpaca.token]);
 
   React.useEffect(() => { localStorage.setItem('shoal_agent_history_v3', JSON.stringify(agentHistory)); }, [agentHistory]);
   React.useEffect(() => { localStorage.setItem('shoal_weight_history_v3', JSON.stringify(weightHistory)); }, [weightHistory]);
@@ -8423,6 +8504,11 @@ const App = () => {
       if ((isLiveReal || isBrokerPaper) && mktNowGate && !mktNowGate.isOpen) {
         const nx = mktNowGate.nextOpen ? new Date(mktNowGate.nextOpen) : null;
         sayStatus({ warn: true, text: `US market closed. Orders are only placed while it is open (9:30–16:00 New York time)${nx ? `; next open ${nx.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })} your time` : ''}.` });
+        return;
+      }
+      const srv = serverTradingRef.current;
+      if (!replay && srv && srv.enabled && srv.sameAccount) {
+        sayStatus({ text: `Server trading is on for this ${srv.env} account: the server runs Rank & tilt once a day (${srv.schedule}), holding the top ${srv.topK} of ${srv.watchlistSize} stocks, so this browser only watches and places no orders. Close the tab whenever you like.` });
         return;
       }
       if (!replay && !isLiveReal && !isBrokerPaper) { sayStatus({ warn: true, text: mode === 'VIRTUAL' ? 'VIRTUAL needs a connected paper/demo account. Reconnect your broker in Settings.' : 'LIVE needs a connected live account. Reconnect your broker in Settings.' }); return; }
@@ -9017,7 +9103,7 @@ const App = () => {
     agentconfig: optimiser.frozen
       ? <div className="page"><FrozenNotice frozen={optimiser.frozen} onOpen={() => setRoute('optimiser')}/><div style={{pointerEvents:'none',opacity:0.5}}><ScreenAgentConfig agentParams={agentParams} setAgentParams={setAgentParams} enabledAgents={enabledAgents} setEnabledAgents={setEnabledAgents} agentWeights={agentWeights} agentHistory={agentHistory} agentParamPresets={agentParamPresets} setAgentParamPresets={setAgentParamPresets} universe={ctx.analysisUniverse} autopilot={!!risk.autopilot} evidence={agentEvidenceDisplay}/></div></div>
       : <ScreenAgentConfig agentParams={agentParams} setAgentParams={setAgentParams} enabledAgents={enabledAgents} setEnabledAgents={setEnabledAgents} agentWeights={agentWeights} agentHistory={agentHistory} agentParamPresets={agentParamPresets} setAgentParamPresets={setAgentParamPresets} universe={ctx.analysisUniverse} autopilot={!!risk.autopilot} evidence={agentEvidenceDisplay}/>,
-    settings:    <ScreenSettings mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} onResetWeights={()=>setShowWeightReset(true)} onExportWeights={exportWeights} onImportWeights={importWeights} backendOk={backendOk} autopilotLog={autopilotLog} frozen={optimiser.frozen} onOpenOptimiser={() => setRoute('optimiser')}
+    settings:    <ScreenSettings serverTrading={serverTrading} mode={mode} alpaca={alpaca} setAlpaca={setAlpaca} risk={risk} setRisk={setRisk} direction={direction} setDirection={setDirection} onReset={()=>setShowReset(true)} onResetWeights={()=>setShowWeightReset(true)} onExportWeights={exportWeights} onImportWeights={importWeights} backendOk={backendOk} autopilotLog={autopilotLog} frozen={optimiser.frozen} onOpenOptimiser={() => setRoute('optimiser')}
       importedUniverse={importedUniverse} onImportCsv={importCsv} onRemoveImport={removeImport} autoCostBps={costBpsFor({ costBps: 'auto' }, mode === 'SIMULATED' ? ctx.replayUniverse : null, alpaca?.brokerId)}/>,
   };
 

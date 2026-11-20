@@ -17,6 +17,23 @@ as `shoal_watchlist_v1`, applied on reload); "Default 100" and "Original 25" res
 30 (its weekly history allowance), the Intraday lab the first 40. History already cached in the browser is
 topped up; symbols new to the list get their full history.
 
+## Security and server trading
+
+- **Access code**: when `SHOAL_ACCESS_CODE` is set, `/api/connect` requires it (header `x-shoal-access`;
+  the app asks for it and remembers it in the browser).
+- **Sessions**: the broker secret travels only inside an AES-256-GCM token sealed with
+  `SHOAL_SESSION_SECRET`; tokens last 8 hours and are accepted only in the `Authorization` header. The live
+  stream uses a one-minute ticket from `POST /api/stream-ticket`, so the token never appears in a URL.
+- **Browser calls**: on Vercel only the app's own origin (plus `SHOAL_ALLOWED_ORIGINS`) may call the API;
+  per-IP rate limits (600/min, 10/min for connect); security headers on the API and the static app.
+- **Server trading** (`trader.js`, `vercel.json` cron `0 18 * * 1-5` UTC → `/api/cron/tilt`): once a day
+  while the market is open it runs Rank & tilt on the Alpaca account in `ALPACA_KEY_ID` / `ALPACA_SECRET`
+  (`ALPACA_ENV=paper`; live also needs `SHOAL_SERVER_LIVE=1`): picks = top `SHOAL_TOPK` (12) of
+  `SHOAL_WATCHLIST` (default 100) by trend score as of last month's close; sells non-picks; buys missing
+  picks with equity × `SHOAL_INVEST_FRACTION` (0.9) / K, from cash on hand. Requires `CRON_SECRET` (Vercel
+  sends it). `GET /api/cron/tilt?dry=1` (with the secret) or Settings → Server trading → Preview shows the
+  plan without trading. When it trades the account the browser is connected to, the browser places no orders.
+
 ## Running
 
 ```

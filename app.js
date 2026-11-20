@@ -1,8 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import { randomBytes, createHash, createCipheriv, createDecipheriv } from 'crypto';
+import { randomBytes, createHash, createCipheriv, createDecipheriv, timingSafeEqual } from 'crypto';
 import { alpaca } from './brokers/alpaca.js';
 import { ig } from './brokers/ig.js';
+import { serverConfig, runTilt } from './trader.js';
 
 // Surface unhandled rejections instead of letting them silently crash the process.
 process.on('unhandledRejection', (err) => {
@@ -12,8 +13,43 @@ process.on('unhandledRejection', (err) => {
 const BROKERS = { alpaca, ig };
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+const ON_VERCEL = !!process.env.VERCEL;
+
+// ── Security basics ──────────────────────────────────────────────────────────
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+// CORS: on Vercel only the app's own address (plus SHOAL_ALLOWED_ORIGINS) may call the API from a browser;
+// locally index.html may be opened from a file or another port, so any origin is allowed there.
+const EXTRA_ORIGINS = (process.env.SHOAL_ALLOWED_ORIGINS || '').split(',').map(x => x.trim()).filter(Boolean);
+app.use(cors((req, cb) => {
+  if (!ON_VERCEL && !EXTRA_ORIGINS.length) return cb(null, { origin: true });
+  const origin = req.header('Origin');
+  cb(null, { origin: !origin || origin === `https://${req.header('host')}` || EXTRA_ORIGINS.includes(origin) });
+}));
+app.use(express.json({ limit: '100kb' }));
+// Rate limits per IP per minute (per server instance)
+const hits = new Map();
+const rateLimit = (limit, bucket) => (req, res, next) => {
+  const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || '?';
+  const k = `${bucket}:${ip}`, now = Date.now();
+  let e = hits.get(k);
+  if (!e || now - e.t > 60_000) { e = { t: now, n: 0 }; hits.set(k, e); }
+  if (++e.n > limit) return res.status(429).json({ error: 'Too many requests; try again in a minute.' });
+  if (hits.size > 5000) for (const [kk, v] of hits) if (now - v.t > 60_000) hits.delete(kk);
+  next();
+};
+app.use('/api', rateLimit(600, 'api'));
+// Optional access code: when SHOAL_ACCESS_CODE is set, connecting a broker requires it (header
+// x-shoal-access), so a stranger who finds the URL can't use this server as a relay.
+const ACCESS_HASH = process.env.SHOAL_ACCESS_CODE ? createHash('sha256').update(process.env.SHOAL_ACCESS_CODE).digest() : null;
+const sameSecret = (a, b) => timingSafeEqual(createHash('sha256').update(String(a)).digest(), createHash('sha256').update(String(b)).digest());
+const accessOk = (req) => !ACCESS_HASH || timingSafeEqual(createHash('sha256').update(String(req.header('x-shoal-access') || '')).digest(), ACCESS_HASH);
 
 // In-memory session store: token → broker session (holds that broker's credentials).
 // Credentials are never written to disk; sessions survive only until the process restarts.
@@ -26,7 +62,7 @@ const sessions = new Map();
 const SESSION_KEY = process.env.SHOAL_SESSION_SECRET
   ? createHash('sha256').update(process.env.SHOAL_SESSION_SECRET).digest()
   : null;
-const SEALED_TTL_MS = 24 * 3600_000;
+const SEALED_TTL_MS = 8 * 3600_000; // a stolen token works for at most 8 hours
 // Sealed tokens can't be revoked everywhere; this covers the instance that handled the disconnect,
 // and the browser discards the token. They expire after SEALED_TTL_MS regardless.
 const revoked = new Set();
@@ -64,10 +100,11 @@ async function sessionFor(token) {
   return pending;
 }
 
-// Middleware: validate Bearer token from Authorization header or ?token= query param
+// Middleware: validate the Bearer token (Authorization header only; never in a URL, where it could end up
+// in logs or browser history)
 async function auth(req, res, next) {
   const raw = req.headers.authorization || '';
-  const token = raw.startsWith('Bearer ') ? raw.slice(7) : req.query.token;
+  const token = raw.startsWith('Bearer ') ? raw.slice(7) : null;
   const session = await sessionFor(token);
   if (!session) return res.status(401).json({ error: 'Not authenticated' });
   req.session = session;
@@ -88,13 +125,14 @@ const proxy = (fn) => async (req, res) => {
 };
 
 // ── Health check ────────────────────────────────────────────────────────────
-app.get('/api/health', (_req, res) => res.json({ ok: true, brokers: Object.keys(BROKERS) }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, brokers: Object.keys(BROKERS), accessCode: !!ACCESS_HASH }));
 
 // ── Connect: validate credentials with the broker, create session ───────────
 // Body: { broker: 'alpaca' | 'ig', env: 'paper' | 'live', ...credentials, symbols? }
 //   alpaca: keyId, secret
 //   ig:     apiKey, username, password, accountId? ('paper' maps to IG's demo environment)
-app.post('/api/connect', async (req, res) => {
+app.post('/api/connect', rateLimit(10, 'connect'), async (req, res) => {
+  if (!accessOk(req)) return res.status(403).json({ error: 'This Shoal server needs its access code to connect a broker.', needAccessCode: true });
   const { broker: brokerId = 'alpaca', symbols, ...creds } = req.body || {};
   const broker = BROKERS[brokerId];
   if (!broker) return res.status(400).json({ error: `Unknown broker "${brokerId}"` });
@@ -165,8 +203,31 @@ app.get('/api/bars', auth, proxy(req => {
 }));
 
 // ── SSE stream: pushes account + positions + orders + clock (+ prices for IG) ─
-// Token is read from ?token= because EventSource does not support custom headers.
-app.get('/api/stream', auth, (req, res) => {
+// EventSource can't send headers, so the browser first swaps its token for a one-minute ticket and puts
+// that in the URL; the session token itself never appears in a URL.
+const tickets = new Map();
+const TICKET_MS = 60_000;
+app.post('/api/stream-ticket', auth, (req, res) => {
+  const exp = Date.now() + TICKET_MS;
+  let ticket;
+  if (SESSION_KEY) ticket = seal({ kind: 'ticket', token: req.token, exp });
+  else { ticket = randomBytes(24).toString('hex'); tickets.set(ticket, { token: req.token, exp }); }
+  res.json({ ticket, expiresInMs: TICKET_MS });
+});
+function tokenFromTicket(t) {
+  if (!t || typeof t !== 'string') return null;
+  if (SESSION_KEY) { const p = unseal(t); return p && p.kind === 'ticket' ? p.token : null; }
+  const e = tickets.get(t);
+  if (e && e.exp <= Date.now()) tickets.delete(t);
+  return e && e.exp > Date.now() ? e.token : null;
+}
+app.get('/api/stream', async (req, res, next) => {
+  const token = tokenFromTicket(req.query.ticket);
+  const session = token && !revoked.has(token) ? await sessionFor(token) : null;
+  if (!session) return res.status(401).json({ error: 'Not authenticated' });
+  req.session = session; req.token = token;
+  next();
+}, (req, res) => {
   res.setHeader('Content-Type',  'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection',    'keep-alive');
@@ -186,6 +247,41 @@ app.get('/api/stream', auth, (req, res) => {
   push(); // immediate first update
   const interval = setInterval(push, session.streamIntervalMs);
   req.on('close', () => clearInterval(interval));
+});
+
+// ── Server trading: Rank & tilt once a day without a browser (Vercel cron → /api/cron/tilt) ──────────
+// Needs ALPACA_KEY_ID, ALPACA_SECRET (and ALPACA_ENV=paper|live) plus CRON_SECRET in the server's
+// environment. Live money also needs SHOAL_SERVER_LIVE=1. Vercel sends "Authorization: Bearer CRON_SECRET".
+const cronOk = (req) => !!process.env.CRON_SECRET && sameSecret(req.header('authorization') || '', `Bearer ${process.env.CRON_SECRET}`);
+const serverEnabled = (cfg) => !!(cfg.keyId && cfg.secret && process.env.CRON_SECRET) && (cfg.env !== 'live' || cfg.liveAllowed);
+const sameAccount = (req, cfg) => !!(req.session && req.session.keyId && cfg.keyId && req.session.keyId === cfg.keyId && req.session.env === cfg.env);
+app.get('/api/cron/tilt', async (req, res) => {
+  if (!cronOk(req)) return res.status(401).json({ error: 'Not authorised' });
+  const cfg = serverConfig();
+  if (!cfg.keyId || !cfg.secret) return res.json({ ok: true, configured: false, note: 'Set ALPACA_KEY_ID and ALPACA_SECRET to enable server trading.' });
+  if (cfg.env === 'live' && !cfg.liveAllowed) return res.json({ ok: false, error: 'ALPACA_ENV is live but SHOAL_SERVER_LIVE is not 1: not trading real money.' });
+  try {
+    const { session } = await alpaca.connect({ keyId: cfg.keyId, secret: cfg.secret, env: cfg.env });
+    const r = await runTilt(session, cfg, { dry: req.query.dry === '1' });
+    console.log('[cron/tilt]', JSON.stringify(r));
+    res.json(r);
+  } catch (err) {
+    console.error('[cron/tilt] failed:', err.message);
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+// What the browser needs to know (no secrets): is the server trading this same account?
+app.get('/api/server-trading', auth, (req, res) => {
+  const cfg = serverConfig();
+  res.json({ enabled: serverEnabled(cfg), configured: !!(cfg.keyId && cfg.secret), cronSecret: !!process.env.CRON_SECRET, env: cfg.env,
+    liveAllowed: cfg.liveAllowed, sameAccount: sameAccount(req, cfg), topK: cfg.topK, investFraction: cfg.investFraction, watchlistSize: cfg.watchlist.length, schedule: cfg.schedule });
+});
+// Dry run with the browser's own session (only for the account the server trades)
+app.get('/api/server-trading/preview', auth, async (req, res) => {
+  const cfg = serverConfig();
+  if (!sameAccount(req, cfg)) return res.status(403).json({ error: 'Preview is only available for the account the server trades.' });
+  try { res.json(await runTilt(req.session, cfg, { dry: true })); }
+  catch (err) { res.status(502).json({ error: err.message }); }
 });
 
 export { app, BROKERS, sessions };

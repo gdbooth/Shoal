@@ -135,7 +135,13 @@ test('exhausted history allowance is reported to the browser', async () => {
 
 test('stream pushes account, positions, clock and prices', async () => {
   const ctl = new AbortController();
-  const r = await fetch(`${base}/api/stream?token=${token}`, { signal: ctl.signal });
+  // the token itself is refused in the URL; a one-minute ticket is used instead
+  const bad = await fetch(`${base}/api/stream?token=${token}`);
+  assert.equal(bad.status, 401);
+  const { ticket } = (await api('/api/stream-ticket', { method: 'POST' })).body;
+  assert.ok(ticket && ticket !== token);
+  const r = await fetch(`${base}/api/stream?ticket=${encodeURIComponent(ticket)}`, { signal: ctl.signal });
+  assert.equal(r.status, 200);
   const reader = r.body.getReader();
   let buf = '';
   while (!buf.includes('\n\n')) buf += new TextDecoder().decode((await reader.read()).value);

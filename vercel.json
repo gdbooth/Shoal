@@ -2,8 +2,47 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "installCommand": "npm ci",
-  "buildCommand": "mkdir -p public && cp index.html signals.js intraday.js swing.js public/",
+  "buildCommand": "mkdir -p public && cp index.html watchlist.js signals.js intraday.js swing.js public/",
   "outputDirectory": "public",
-  "rewrites": [{ "source": "/api/(.*)", "destination": "/api/index" }],
-  "functions": { "api/index.js": { "maxDuration": 300 } }
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    }
+  ],
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 300,
+      "includeFiles": "{signals.js,watchlist.js}"
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/tilt",
+      "schedule": "0 18 * * 1-5"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(), geolocation=()"
+        }
+      ]
+    }
+  ]
 }
