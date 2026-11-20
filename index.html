@@ -1479,6 +1479,19 @@ window.addEventListener('unhandledrejection', function(e) {
 </script>
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script>
+  // When the app is served behind its login and the login runs out, any server call answers 401 with
+  // X-Shoal-Login: required — go to the login page instead of failing quietly.
+  (function () {
+    var f = window.fetch.bind(window);
+    window.fetch = function () {
+      return f.apply(null, arguments).then(function (r) {
+        if (r.status === 401 && r.headers.get('X-Shoal-Login') === 'required' && location.pathname !== '/login') location.href = '/login';
+        return r;
+      });
+    };
+  })();
+</script>
 <script src="watchlist.js"></script>
 <script src="signals.js"></script>
 <script src="intraday.js"></script>
@@ -5442,7 +5455,8 @@ const ScreenSettings = ({ serverTrading = null, mode, alpaca, setAlpaca, risk, s
   // Access code for this Shoal server (when its owner set SHOAL_ACCESS_CODE); kept in this browser
   const [accessCode, setAccessCode] = React.useState(() => { try { return localStorage.getItem('shoal_access_code') || ''; } catch (_) { return ''; } });
   const [accessNeeded, setAccessNeeded] = React.useState(false);
-  React.useEffect(() => { fetch(`${BACKEND_URL}/api/health`).then(r => r.json()).then(h => setAccessNeeded(!!h.accessCode)).catch(() => {}); }, []);
+  const [loginOn, setLoginOn] = React.useState(false);
+  React.useEffect(() => { fetch(`${BACKEND_URL}/api/health`).then(r => r.json()).then(h => { setAccessNeeded(!!h.accessCode); setLoginOn(!!h.login); }).catch(() => {}); }, []);
   const accessHeaders = () => (accessCode.trim() ? { 'x-shoal-access': accessCode.trim() } : {});
   const connectFailed = (data, fallback) => {
     if (data && data.needAccessCode) { setAccessNeeded(true); return accessCode.trim() ? 'That access code is not right for this Shoal server.' : 'This Shoal server needs its access code: enter it above.'; }
@@ -5554,7 +5568,13 @@ const ScreenSettings = ({ serverTrading = null, mode, alpaca, setAlpaca, risk, s
     <div className="page" data-screen-label="07 Settings">
       <div className="page-head">
         <div className="page-eyebrow">Settings</div>
-        <h1 className="page-title">Broker, risk, <em>and the rules of the game.</em></h1>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12}}>
+          <h1 className="page-title">Broker, risk, <em>and the rules of the game.</em></h1>
+          {loginOn && (
+            <button className="btn ghost" style={{fontSize:10,padding:'5px 10px',flexShrink:0}}
+              onClick={async () => { try { await fetch(`${BACKEND_URL}/api/logout`, { method: 'POST' }); } catch (_) {} location.href = '/login'; }}>LOG OUT</button>
+          )}
+        </div>
         <p className="page-sub">The settings that change results are <b>Style</b> and <b>Risk level</b>. Replay data chooses the history SIMULATED uses. Leave Autopilot off and Advanced at the defaults unless a lab or the Optimiser's held-out check says otherwise; the Guide explains each one.</p>
       </div>
       {alpaca?.expired && !alpaca?.connected && (
@@ -7587,7 +7607,7 @@ const ScreenGuide = ({ onGo }) => {
             <li><b>Day-trade rule</b>: accounts under $25,000 may make at most 3 same-day round trips in 5 business days.</li>
             <li><b>Data</b>: Alpaca's free feed covers part of US volume; IG allows ~10,000 historical price points a week (this browser keeps a copy so only new days are fetched).</li>
             <li><b>Costs</b>: every buy and sell pays spread and slippage; frequent trading needs a bigger edge to pay for it.</li>
-            <li><b>Security</b>: connecting a broker needs this server's <b>access code</b>; a broker session lasts 8 hours, then you reconnect; your secret is never stored in the browser or on disk, only inside an encrypted session token. To cut off access at once, regenerate your keys in Alpaca's dashboard.</li>
+            <li><b>Security</b>: the app sits behind a <b>login</b> (7 days, then log in again; Settings has Log out); connecting a broker needs this server's <b>access code</b> unless you're logged in; a broker session lasts 8 hours, then you reconnect; your secret is never stored in the browser or on disk, only inside an encrypted session token. To cut off access at once, regenerate your keys in Alpaca's dashboard.</li>
             <li>This is a research and paper-trading tool. Nothing here is financial advice.</li>
           </ul>
         </Sec>

@@ -19,7 +19,11 @@ topped up; symbols new to the list get their full history.
 
 ## Security and server trading
 
-- **Access code**: when `SHOAL_ACCESS_CODE` is set, `/api/connect` requires it (header `x-shoal-access`;
+- **Login**: when `SHOAL_LOGIN_PASSWORD` is set (username `SHOAL_LOGIN_USER`, default `admin`), the server
+  serves the app itself (index.html and its scripts, no longer static files on Vercel) only after logging in
+  at `/login`; every `/api` route except health, login and the cron job needs the login too. The cookie is
+  signed, HttpOnly, SameSite=Strict, Secure on HTTPS, lasts 7 days; changing the password logs everyone out.
+- **Access code**: when `SHOAL_ACCESS_CODE` is set (and you aren't logged in), `/api/connect` requires it (header `x-shoal-access`;
   the app asks for it and remembers it in the browser).
 - **Sessions**: the broker secret travels only inside an AES-256-GCM token sealed with
   `SHOAL_SESSION_SECRET`; tokens last 8 hours and are accepted only in the `Authorization` header. The live

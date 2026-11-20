@@ -2,18 +2,22 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "installCommand": "npm ci",
-  "buildCommand": "mkdir -p public && cp index.html watchlist.js signals.js intraday.js swing.js public/",
+  "buildCommand": "mkdir -p public && printf 'User-agent: *\\nDisallow: /\\n' > public/robots.txt",
   "outputDirectory": "public",
   "rewrites": [
     {
       "source": "/api/(.*)",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/(.*)",
       "destination": "/api/index"
     }
   ],
   "functions": {
     "api/index.js": {
       "maxDuration": 300,
-      "includeFiles": "{signals.js,watchlist.js}"
+      "includeFiles": "{index.html,watchlist.js,signals.js,intraday.js,swing.js}"
     }
   },
   "crons": [

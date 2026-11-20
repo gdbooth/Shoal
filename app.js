@@ -1,6 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import { randomBytes, createHash, createCipheriv, createDecipheriv, timingSafeEqual } from 'crypto';
+import { randomBytes, createHash, createHmac, createCipheriv, createDecipheriv, timingSafeEqual } from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { alpaca } from './brokers/alpaca.js';
 import { ig } from './brokers/ig.js';
 import { serverConfig, runTilt } from './trader.js';
@@ -33,6 +36,7 @@ app.use(cors((req, cb) => {
   cb(null, { origin: !origin || origin === `https://${req.header('host')}` || EXTRA_ORIGINS.includes(origin) });
 }));
 app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: false, limit: '10kb' }));
 // Rate limits per IP per minute (per server instance)
 const hits = new Map();
 const rateLimit = (limit, bucket) => (req, res, next) => {
@@ -49,7 +53,79 @@ app.use('/api', rateLimit(600, 'api'));
 // x-shoal-access), so a stranger who finds the URL can't use this server as a relay.
 const ACCESS_HASH = process.env.SHOAL_ACCESS_CODE ? createHash('sha256').update(process.env.SHOAL_ACCESS_CODE).digest() : null;
 const sameSecret = (a, b) => timingSafeEqual(createHash('sha256').update(String(a)).digest(), createHash('sha256').update(String(b)).digest());
-const accessOk = (req) => !ACCESS_HASH || timingSafeEqual(createHash('sha256').update(String(req.header('x-shoal-access') || '')).digest(), ACCESS_HASH);
+// ── Login: the whole app (pages and API) sits behind a username and password when SHOAL_LOGIN_PASSWORD
+// is set. A signed, HttpOnly, SameSite=Strict cookie lasts 7 days; changing the password logs everyone out.
+const LOGIN_USER = process.env.SHOAL_LOGIN_USER || 'admin';
+const LOGIN_PASS = process.env.SHOAL_LOGIN_PASSWORD || '';
+const LOGIN_ON = !!LOGIN_PASS;
+const LOGIN_TTL_MS = 7 * 24 * 3600_000;
+const LOGIN_KEY = createHash('sha256').update(`login:${process.env.SHOAL_SESSION_SECRET || ''}:${LOGIN_PASS}`).digest();
+const cookieOf = (req, name) => {
+  for (const part of String(req.headers.cookie || '').split(';')) { const i = part.indexOf('='); if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim()); }
+  return null;
+};
+const loginCookieValue = () => { const exp = String(Date.now() + LOGIN_TTL_MS); return `${exp}.${createHmac('sha256', LOGIN_KEY).update(exp).digest('base64url')}`; };
+function loggedIn(req) {
+  if (!LOGIN_ON) return true;
+  const v = cookieOf(req, 'shoal_auth');
+  if (!v) return false;
+  const [exp, mac] = v.split('.');
+  if (!exp || !mac || !(+exp > Date.now())) return false;
+  return sameSecret(mac, createHmac('sha256', LOGIN_KEY).update(exp).digest('base64url'));
+}
+const secureCookie = (req) => (ON_VERCEL || String(req.headers['x-forwarded-proto'] || '').startsWith('https') ? '; Secure' : '');
+// Logged in counts as having the access code too
+const accessOk = (req) => !ACCESS_HASH || (LOGIN_ON && loggedIn(req)) || timingSafeEqual(createHash('sha256').update(String(req.header('x-shoal-access') || '')).digest(), ACCESS_HASH);
+
+const OPEN_PATHS = new Set(['/login', '/api/login', '/api/health', '/api/cron/tilt', '/robots.txt', '/favicon.ico']);
+app.use((req, res, next) => {
+  if (!LOGIN_ON || OPEN_PATHS.has(req.path) || loggedIn(req)) return next();
+  if (req.path.startsWith('/api/')) { res.setHeader('X-Shoal-Login', 'required'); return res.status(401).json({ error: 'Log in first.', needLogin: true }); }
+  return res.redirect(302, '/login');
+});
+
+const loginPage = (failed) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shoal · log in</title>
+<meta name="robots" content="noindex"><style>
+:root{color-scheme:dark}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0d10;color:#e8e6e1;font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+form{width:min(340px,90vw);padding:28px;border:1px solid #2a2f36;border-radius:8px;background:#12161b}
+h1{margin:0 0 4px;font:600 20px Georgia,serif}p{margin:0 0 18px;color:#9aa0a6;font-size:13px}
+label{display:block;font:11px ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase;color:#9aa0a6;margin:12px 0 6px}
+input{box-sizing:border-box;width:100%;padding:10px 12px;border:1px solid #2a2f36;border-radius:4px;background:#0b0d10;color:#e8e6e1;font-size:14px}
+button{margin-top:18px;width:100%;padding:11px;border:0;border-radius:4px;background:#9be29b;color:#0b0d10;font:600 12px ui-monospace,monospace;letter-spacing:.12em;cursor:pointer}
+.err{margin-top:12px;color:#ef8a80;font-size:13px}</style></head><body>
+<form method="post" action="/api/login" autocomplete="on"><h1>Shoal</h1><p>Log in to continue.</p>
+<label for="u">Username</label><input id="u" name="username" autocomplete="username" required autofocus>
+<label for="p">Password</label><input id="p" name="password" type="password" autocomplete="current-password" required>
+<button type="submit">LOG IN</button>${failed ? '<div class="err">Wrong username or password.</div>' : ''}</form></body></html>`;
+app.get('/login', (req, res) => {
+  if (LOGIN_ON && loggedIn(req)) return res.redirect(302, '/');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(loginPage(req.query.e === '1'));
+});
+app.post('/api/login', rateLimit(10, 'login'), (req, res) => {
+  const { username = '', password = '' } = req.body || {};
+  const userOk = sameSecret(String(username).trim(), LOGIN_USER), passOk = sameSecret(String(password), LOGIN_PASS); // both always compared
+  const ok = LOGIN_ON && userOk && passOk;
+  const wantsJson = String(req.headers.accept || '').includes('application/json');
+  if (!ok) return wantsJson ? res.status(401).json({ error: 'Wrong username or password.' }) : res.redirect(303, '/login?e=1');
+  res.setHeader('Set-Cookie', `shoal_auth=${loginCookieValue()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${LOGIN_TTL_MS / 1000}${secureCookie(req)}`);
+  return wantsJson ? res.json({ ok: true }) : res.redirect(303, '/');
+});
+app.post('/api/logout', (req, res) => {
+  res.setHeader('Set-Cookie', `shoal_auth=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secureCookie(req)}`);
+  res.json({ ok: true });
+});
+
+// The app itself, served by this server (so it's behind the login): index.html and its scripts
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const APP_FILES = { '/': 'index.html', '/index.html': 'index.html', '/watchlist.js': 'watchlist.js', '/signals.js': 'signals.js', '/intraday.js': 'intraday.js', '/swing.js': 'swing.js' };
+app.get(Object.keys(APP_FILES), (req, res, next) => {
+  const f = path.join(HERE, APP_FILES[req.path]);
+  if (!fs.existsSync(f)) return next();
+  res.setHeader('Content-Type', f.endsWith('.html') ? 'text/html; charset=utf-8' : 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(f);
+});
 
 // In-memory session store: token → broker session (holds that broker's credentials).
 // Credentials are never written to disk; sessions survive only until the process restarts.
@@ -125,7 +201,7 @@ const proxy = (fn) => async (req, res) => {
 };
 
 // ── Health check ────────────────────────────────────────────────────────────
-app.get('/api/health', (_req, res) => res.json({ ok: true, brokers: Object.keys(BROKERS), accessCode: !!ACCESS_HASH }));
+app.get('/api/health', (req, res) => res.json({ ok: true, brokers: Object.keys(BROKERS), accessCode: !!ACCESS_HASH && !(LOGIN_ON && loggedIn(req)), login: LOGIN_ON }));
 
 // ── Connect: validate credentials with the broker, create session ───────────
 // Body: { broker: 'alpaca' | 'ig', env: 'paper' | 'live', ...credentials, symbols? }
