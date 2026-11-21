@@ -155,6 +155,13 @@ a { color: inherit; text-decoration: none; }
   transition: border-color 120ms;
 }
 .mode-pill:hover { border-color: var(--ink-4); }
+.mode-seg { display: flex; gap: 2px; margin-top: 8px; background: var(--bg-1); border-radius: 4px; padding: 2px; }
+.mode-seg-btn { flex: 1; background: none; border: none; border-radius: 3px; padding: 6px 0; font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; color: var(--ink-3); cursor: pointer; }
+.mode-seg-btn:hover { color: var(--ink); }
+.mode-seg-btn.on { background: var(--bg-3); color: var(--virtual); }
+.mode-seg-btn.live.on { color: var(--live); }
+.mode-seg-btn.dim { opacity: 0.5; }
+.mode-seg-btn:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
 
 .mode-pill-row { display: flex; align-items: center; justify-content: space-between; }
 .mode-pill-label {
@@ -9323,7 +9330,7 @@ const App = () => {
     if (!running) return;
     const recompute = () => {
       if (alpacaRef.current?.token && (mode === 'LIVE' || mode === 'VIRTUAL')) return;
-      const ts = tradesRef.current || [];
+      const ts = (tradesRef.current || []).filter(t => mode !== 'SIMULATED' || !!t.replay || (!t._real && t.mode === 'SIMULATED'));
       const lp = livePricesRef.current || {};
       let realized = 0, unrealized = 0;
       for (const t of ts) {
@@ -9419,8 +9426,19 @@ const App = () => {
     }
   };
 
+  // Flipping between SIMULATED and VIRTUAL keeps the broker connected (only LIVE asks for confirmation)
   const requestMode = (m) => {
     if (m === mode) return;
+    const paperReady = alpaca.connected && alpaca.token && alpaca.env !== 'live';
+    if (m === 'SIMULATED' || (m === 'VIRTUAL' && paperReady)) {
+      setMode(m);
+      const t = { id: Date.now(), type: 'open-long', sym: m === 'SIMULATED' ? 'SIM' : 'VIRT', text: m === 'SIMULATED'
+        ? (alpaca.connected ? `simulated fills on replayed history · ${brokerShort(alpaca)} stays connected` : 'simulated fills on replayed history')
+        : `paper orders to ${brokerShort(alpaca)} · simulated trades kept for when you switch back` };
+      setToasts(prev => [...prev.slice(-4), t]);
+      setTimeout(() => setToasts(prev => prev.filter(x => x.id !== t.id)), 5000);
+      return;
+    }
     setPendingMode(m);
   };
   const confirmMode = () => {
@@ -9537,14 +9555,20 @@ const App = () => {
           <div className="brand-sub">Adaptive · v0.4.2</div>
         </div>
 
-        <div className="mode-pill" onClick={()=>{ requestMode(mode==='SIMULATED'?'VIRTUAL':mode==='VIRTUAL'?'LIVE':'SIMULATED'); closeNavOnMobile(); }}>
+        <div className="mode-pill" style={{cursor:'default'}}>
           <div className="mode-pill-row">
-            <span className="mode-pill-label">Trading mode</span>
-            <span className="mono tiny muted">↻ cycle</span>
+            <span className="mode-pill-label">Bot mode</span>
+            <span className="mono tiny" style={{color: alpaca.connected ? 'var(--up)' : 'var(--ink-4)',whiteSpace:'nowrap'}} title={alpaca.connected ? `${brokerShort(alpaca)} ${alpaca.env === 'live' ? 'live' : 'paper'} account connected` : 'No broker connected'}>{alpaca.connected ? `● ${alpaca.env === 'live' ? 'live' : 'paper'}` : '○ no broker'}</span>
           </div>
-          <div style={{marginTop:6}}>
-            <span className="mode-dot"></span>
-            <span className="mode-pill-value">{mode==='LIVE'?'LIVE TRADING':mode==='VIRTUAL'?'VIRTUAL · BROKER':'SIMULATED · LOCAL'}</span>
+          <div className="mode-seg" role="radiogroup" aria-label="Browser bot mode">
+            {[['SIMULATED', 'SIM'], ['VIRTUAL', 'VIRTUAL'], ['LIVE', 'LIVE']].map(([m, label]) => {
+              const ready = m === 'SIMULATED' || (alpaca.connected && (m === 'LIVE' ? alpaca.env === 'live' : alpaca.env !== 'live'));
+              return (
+                <button key={m} role="radio" aria-checked={mode === m} className={'mode-seg-btn ' + (mode === m ? 'on ' : '') + (m === 'LIVE' ? 'live ' : '') + (ready ? '' : 'dim')}
+                  title={m === 'SIMULATED' ? 'Local fills on replayed history. The broker stays connected.' : m === 'VIRTUAL' ? (ready ? 'Paper orders to the connected broker' : 'Connect a paper/demo account in Settings first') : (ready ? 'Real money: asks for confirmation' : 'Needs a live broker account')}
+                  onClick={() => { requestMode(m); closeNavOnMobile(); }}>{label}</button>
+              );
+            })}
           </div>
         </div>
 
