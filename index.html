@@ -5366,7 +5366,7 @@ const ServerTradingCard = ({ alpaca, st }) => {
         <div className="mono tiny" style={{color: on ? 'var(--up)' : 'var(--ink-3)'}}>{!eng ? (err ? 'unavailable' : 'checking…') : on ? `ON · ${eng.env}` : 'OFF'}</div>
       </div>
       <div className="mono tiny muted" style={{marginTop:6,lineHeight:1.6}}>
-        Every trading day, using Alpaca's market clock: an <b>open review</b> {eng ? eng.openDelayMin : 15} minutes after the open (14:30 UK most of the year), <b>hourly checks</b> until the close (risk snapshot, {eng ? eng.dailyLossPct : 5}% daily loss guard, finishing unfinished orders) and an <b>end-of-day report</b> after the close (21:00 UK). A free GitHub Actions schedule wakes it every 15 minutes. Decisions: {eng && eng.strategy === 'tilt' ? <>Rank &amp; tilt (SHOAL_STRATEGY=tilt)</> : <>the <b>9-agent team</b>: a stock is bought when 4 of the 7 pickers back it with enough confidence and the risk guardian doesn't object, and sold when 4 turn against it or the risk guardian sees serious danger</>}; at most {eng ? eng.topK : 12} positions from {eng ? eng.watchlistSize : 100} stocks. It treats its Alpaca account as its own{sameAcct ? '; this browser only watches it' : ''}.
+        Every trading day, using Alpaca's market clock: an <b>open review</b> {eng ? eng.openDelayMin : 15} minutes after the open (14:30 UK most of the year), <b>hourly checks</b> until the close by the risk guardian (no new buys once the portfolio is down {eng ? eng.dailyLossPct : 5}% on the day or the market is down {eng ? eng.marketDropPct : 3}%; holdings down 8% on the day or 15% from entry flagged; stuck orders cancelled; unfinished buys completed, never doubled{eng && eng.stopPct > 0 ? `; catastrophe stop at ${eng.stopPct}% from entry` : '. It doesn\'t sell on intraday moves: in tests on real data that cut returns'}) and an <b>end-of-day report</b> after the close (21:00 UK). A free GitHub Actions schedule wakes it every 15 minutes. Decisions: {eng && eng.strategy === 'tilt' ? <>Rank &amp; tilt (SHOAL_STRATEGY=tilt)</> : <>the <b>9-agent team</b>: a stock is bought when 4 of the 7 pickers back it with enough confidence and the risk guardian doesn't object, and sold when 4 turn against it or the risk guardian sees serious danger</>}; at most {eng ? eng.topK : 12} positions from {eng ? eng.watchlistSize : 100} stocks. It treats its Alpaca account as its own{sameAcct ? '; this browser only watches it' : ''}.
       </div>
       {eng && (
         <div className="mono tiny" style={{marginTop:8,lineHeight:1.7,color:'var(--ink-2)'}}>
@@ -5379,7 +5379,7 @@ const ServerTradingCard = ({ alpaca, st }) => {
           1 · Vercel → project → Settings → Environment Variables (Sensitive): <b>ALPACA_KEY_ID</b> and <b>ALPACA_SECRET</b> (Alpaca <b>paper</b> keys){eng.configured ? ' ✓' : ''} · <b>CRON_SECRET</b>{eng.cronSecret ? ' ✓' : ''}<br/>
           2 · Vercel → Storage → a <b>Blob</b> store connected to this project (keeps the records){durable ? ' ✓' : ''}<br/>
           3 · GitHub → repository → Settings → Secrets → Actions: <b>SHOAL_ENGINE_URL</b> (this site's address) and <b>SHOAL_ENGINE_SECRET</b> (same as CRON_SECRET)<br/>
-          4 · Redeploy. Optional: SHOAL_TOPK, SHOAL_INVEST_FRACTION, SHOAL_WATCHLIST, SHOAL_DAILY_LOSS_PCT. Live money also needs ALPACA_ENV=live and SHOAL_SERVER_LIVE=1. To stop it, delete ALPACA_SECRET and redeploy.
+          4 · Redeploy. Optional: SHOAL_TOPK, SHOAL_INVEST_FRACTION, SHOAL_WATCHLIST, SHOAL_DAILY_LOSS_PCT, SHOAL_MARKET_DROP_PCT, SHOAL_STOP_PCT (off by default). Live money also needs ALPACA_ENV=live and SHOAL_SERVER_LIVE=1. To stop it, delete ALPACA_SECRET and redeploy.
         </div>
       )}
       {on && !durable && <div className="mono tiny" style={{marginTop:6,color:'var(--warn)'}}>Connect a Vercel Blob store: without it the records live in temporary server files and can disappear between runs.</div>}
@@ -5394,12 +5394,12 @@ const ServerTradingCard = ({ alpaca, st }) => {
       )}
       {eng && eng.reports.length > 0 && (
         <table className="tbl" style={{marginTop:10}}>
-          <thead><tr><th>Day</th><th style={{textAlign:'right'}}>Equity</th><th style={{textAlign:'right'}}>Day</th><th style={{textAlign:'right'}}>SPY</th><th style={{textAlign:'right'}}>Orders</th><th style={{textAlign:'right'}}>Held</th></tr></thead>
+          <thead><tr><th>Day</th><th style={{textAlign:'right'}}>Equity</th><th style={{textAlign:'right'}}>Day</th><th style={{textAlign:'right'}}>SPY</th><th style={{textAlign:'right'}}>Orders</th><th style={{textAlign:'right'}}>Filled</th><th style={{textAlign:'right'}}>Held</th></tr></thead>
           <tbody>{eng.reports.slice(0, 10).map(r => (
             <tr key={r.date}><td className="mono">{r.date}</td><td className="mono" style={{textAlign:'right'}}>{r.equityClose != null ? `$${Math.round(r.equityClose).toLocaleString()}` : '—'}</td>
               <td className="mono" style={{textAlign:'right',color: (r.dayReturnPct ?? 0) >= 0 ? 'var(--up)' : 'var(--down)'}}>{r.dayReturnPct != null ? `${r.dayReturnPct >= 0 ? '+' : ''}${r.dayReturnPct}%` : '—'}</td>
               <td className="mono" style={{textAlign:'right'}}>{r.spyPct != null ? `${r.spyPct >= 0 ? '+' : ''}${r.spyPct}%` : '—'}</td>
-              <td className="mono" style={{textAlign:'right'}}>{r.trades}</td><td className="mono" style={{textAlign:'right'}}>{r.positions}</td></tr>))}</tbody>
+              <td className="mono" style={{textAlign:'right'}}>{r.trades}</td><td className="mono" style={{textAlign:'right',color: r.rejected ? 'var(--warn)' : undefined}}>{r.fills != null ? `${r.fills}${r.rejected ? ` · ${r.rejected} rejected` : ''}` : '—'}</td><td className="mono" style={{textAlign:'right'}}>{r.positions}</td></tr>))}</tbody>
         </table>
       )}
       {eng && eng.configured && eng.strategy !== 'tilt' && <AgentScorecard configured={eng.configured}/>}

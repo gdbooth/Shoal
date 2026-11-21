@@ -843,8 +843,8 @@
     const capital = o.capital ?? 100000, cost = costOf(o), frac = o.investFraction ?? 0.9;
     const maxPos = Math.max(1, Math.min(o.maxPos ?? 12, U.syms.length));
     const signalsAt = o.signalsAt || ((sym, i) => agentSignals(U, sym, i, o.params));
-    let cash = capital, orders = null, traded = 0, invSum = 0, buys = 0, sells = 0, riskSells = 0;
-    const pos = {}, trades = [], curve = [], bench = [], days = [];
+    let cash = capital, orders = null, traded = 0, invSum = 0, buys = 0, sells = 0, riskSells = 0, intradayExits = 0;
+    const pos = {}, trades = [], curve = [], bench = [], days = [], cool = {}, ix = o.intradayExit || {};
     for (let g = start; g <= end; g++) {
       if (orders) {
         for (const s of orders.sell) {
@@ -865,9 +865,24 @@
           const val = Math.min(cash, per);
           if (val < per * 0.5) break;
           const px = F.o[i] * (1 + cost);
+          if (cool[s] != null && g - cool[s] < (ix.coolDays ?? 5)) continue;
           pos[s] = { qty: val / px, entry: px, entryG: g }; cash -= val; traded += val; buys++;
         }
         orders = null;
+      }
+      // intraday exits (the hourly guardian), judged on the day's range: a crash of `sigma` daily
+      // standard deviations below yesterday's close, or a fall of stopPct from the entry price
+      if (ix.sigma || ix.stopPct) for (const s of Object.keys(pos)) {
+        const F = U.F[s], i = g - U.off[s], p = pos[s];
+        if (i < 61) continue;
+        let trig = -Infinity, why = '';
+        if (ix.sigma) { let m = 0, v = 0; for (let k = i - 60; k < i; k++) m += F.c[k] / F.c[k - 1] - 1; m /= 60; for (let k = i - 60; k < i; k++) v += (F.c[k] / F.c[k - 1] - 1 - m) ** 2; const t = F.c[i - 1] * (1 - ix.sigma * Math.sqrt(v / 59)); if (t > trig) { trig = t; why = 'intraday crash'; } }
+        if (ix.stopPct) { const t = p.entry * (1 - ix.stopPct); if (t > trig) { trig = t; why = 'stop'; } }
+        if (F.l[i] > trig) continue;
+        const px = Math.min(F.o[i], trig) * (1 - cost);
+        cash += p.qty * px; traded += p.qty * px; sells++; intradayExits++;
+        trades.push({ sym: s, entry: p.entry, exit: px, qty: p.qty, pnl: (px - p.entry) * p.qty, pnlPct: px / p.entry - 1, entryG: p.entryG, exitG: g, reason: why });
+        delete pos[s]; cool[s] = g;
       }
       let eq = cash;
       for (const s of Object.keys(pos)) eq += pos[s].qty * U.F[s].c[g - U.off[s]];
@@ -909,7 +924,7 @@
       totalReturn: curve[curve.length - 1] / capital - 1, benchReturn: bench[bench.length - 1] / capital - 1,
       sharpe: sd > 0 ? (mu / sd) * Math.sqrt(252) : 0, benchSharpe: bsd > 0 ? (bmu / bsd) * Math.sqrt(252) : 0,
       maxDD: dd(curve), benchMaxDD: dd(bench), invested: invSum / (curve.length || 1),
-      buys, sells, riskSells, turnover: traded / avgEq / years,
+      buys, sells, riskSells, intradayExits, turnover: traded / avgEq / years,
       winRate: closed.length ? closed.filter(t => t.pnl > 0).length / closed.length : 0,
       avgHoldDays: closed.length ? closed.reduce((s, t) => s + (t.exitG - t.entryG), 0) / closed.length : 0,
     };

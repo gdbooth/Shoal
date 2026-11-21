@@ -2,8 +2,10 @@
 // /api/engine/tick every ~15 minutes on weekdays. Each tick asks Alpaca's market clock what is due:
 //
 //   open    once a day, 15+ minutes after the open: review holdings and the watchlist, place the day's orders
-//   hourly  once per clock hour while the market is open (from an hour after the open): account and risk
-//           snapshot, daily-loss guard, and finishing any orders the open couldn't complete
+//   hourly  once per clock hour while the market is open (from an hour after the open): the risk guardian
+//           (no new buys while the portfolio is past its daily loss limit or the market is falling hard;
+//           holdings in trouble flagged; optional catastrophe stop), stuck orders cancelled, and the
+//           strategy re-run to finish what the open couldn't (it never doubles an order still working)
 //   close   once a day after the session ends (full or half day): end-of-day report, then the agent
 //           scorecard: every call whose horizon has passed is scored and the picker weights move a damped step
 //
@@ -11,7 +13,7 @@
 // SHOAL_STRATEGY=tilt. Everything is recorded in
 // the store: state.json (what ran, recent events and reports — one read for the dashboard) and
 // days/YYYY-MM-DD.json (that day's full log). A tick with nothing due reads state and writes nothing.
-import { strategyFor, learnFromBroker, learnedWeights, scorecardSummary } from './trader.js';
+import { strategyFor, learnFromBroker, learnedWeights, scorecardSummary, guardCheck, cancelStale, orderReport, spyDay } from './trader.js';
 
 export const ENGINE = { openDelayMin: 15, hourlyFromMin: 60, lockMs: 4 * 60_000, keepEvents: 60, keepReports: 90 };
 
@@ -39,7 +41,7 @@ export function duePhases(state, { isOpen, now }) {
 async function snapshot(session) {
   const [acct, pos] = await Promise.all([session.account(), session.positions()]);
   const positions = Array.isArray(pos.body) ? pos.body.map(p => ({ sym: p.symbol, qty: num(p.qty), value: round2(num(p.market_value)), upnlPct: round2(num(p.unrealized_plpc) * 100) })) : [];
-  return { equity: round2(num(acct.body?.equity)), cash: round2(num(acct.body?.cash)), positions };
+  return { equity: round2(num(acct.body?.equity)), cash: round2(num(acct.body?.cash)), positions, raw: Array.isArray(pos.body) ? pos.body : [] };
 }
 
 export async function engineTick({ session, store, cfg, strategy, learn = learnFromBroker, now = new Date(), dry = false }) {
@@ -66,18 +68,29 @@ export async function engineTick({ session, store, cfg, strategy, learn = learnF
       if (phase === 'open') {
         const snap = await snapshot(session);
         day.openEquity = snap.equity;
-        const r = await strategy(session, cfg, { now, weights });
+        const r = await strategy(session, cfg, { now, weights, phase: 'open' });
         record('open', { summary: summarise(r), result: r, equity: snap.equity, positions: snap.positions.length });
         state.lastOpenDate = ny.date;
       }
       if (phase === 'hourly') {
         const snap = await snapshot(session);
         const start = day.openEquity ?? snap.equity;
-        const dayRet = start > 0 ? snap.equity / start - 1 : 0;
-        const lossHit = dayRet <= -(cfg.dailyLossPct ?? 5) / 100;
-        // finish anything the open couldn't (e.g. buys waiting for sells to settle), unless the daily loss limit is hit
-        const r = lossHit ? { ok: true, skipped: `daily loss limit (${(dayRet * 100).toFixed(1)}%)` } : await strategy(session, cfg, { now, weights });
-        record('hourly', { summary: lossHit ? r.skipped : summarise(r), result: r, equity: snap.equity, dayReturnPct: round2(dayRet * 100), positions: snap.positions.length });
+        const guard = guardCheck({ positions: snap.raw, equity: snap.equity, openEquity: start, spyDayPct: await spyDay(session), cfg });
+        const stale = await cancelStale(session, { now, staleMin: cfg.staleMin ?? 30 });
+        const stopOrders = [];
+        for (const sym of guard.stops) {
+          const s = await session.closePosition(sym);
+          stopOrders.push({ sym, side: 'sell', status: s.status, ok: s.status === 200, why: `catastrophe stop (${cfg.stopPct}% from entry)` });
+        }
+        // finish anything the open couldn't (e.g. buys waiting for sells to settle); no new buys while the guardian blocks them
+        const r = guard.blockBuys && cfg.strategy === 'tilt' ? { ok: true, skipped: guard.blockBuys } : await strategy(session, cfg, { now, weights, blockBuys: guard.blockBuys, phase: 'hourly' });
+        if (stopOrders.length) r.orders = [...stopOrders, ...(r.orders || [])];
+        const parts = [summarise(r)];
+        if (guard.blockBuys && !r.skipped) parts.push(`no new buys: ${guard.blockBuys}`);
+        if (guard.flags.length) parts.push(`watch: ${guard.flags.join(', ')}`);
+        if (stopOrders.length) parts.push(`stopped out: ${stopOrders.map(o => o.sym).join(', ')}`);
+        if (stale.cancelled.length) parts.push(`cancelled stuck orders: ${stale.cancelled.map(o => `${o.side} ${o.sym}`).join(', ')}`);
+        record('hourly', { summary: parts.join(' · '), result: r, guard, cancelled: stale.cancelled, equity: snap.equity, dayReturnPct: guard.dayReturnPct, positions: snap.positions.length });
         state.lastHourlyKey = `${ny.date}T${String(ny.hour).padStart(2, '0')}`;
       }
       if (phase === 'close') {
@@ -90,11 +103,15 @@ export async function engineTick({ session, store, cfg, strategy, learn = learnF
           const last = s[s.length - 1], prev = s[s.length - 2];
           if (last && prev && String(last.t).slice(0, 10) === ny.date) spyPct = round2((last.c / prev.c - 1) * 100);
         } catch { /* benchmark is optional */ }
+        let orders = null;
+        try { orders = await orderReport(session, { since: (day.events[0] && day.events[0].at) || new Date(now - 8 * 3600e3).toISOString() }); } catch { /* optional */ }
         const report = { date: ny.date, equityOpen: start, equityClose: snap.equity, dayReturnPct: start > 0 ? round2((snap.equity / start - 1) * 100) : null, spyPct,
-          positions: snap.positions, trades: day.events.reduce((n, e) => n + ((e.result && e.result.orders) || []).length, 0) };
+          positions: snap.positions, trades: day.events.reduce((n, e) => n + ((e.result && e.result.orders) || []).length, 0),
+          fills: orders ? orders.filled.length : null, rejected: orders ? orders.rejected.length : null, orders };
         day.report = report;
-        record('close', { summary: `day ${report.dayReturnPct ?? '—'}% vs SPY ${report.spyPct ?? '—'}% · ${report.trades} orders · ${snap.positions.length} positions`, equity: snap.equity });
-        state.reports = [{ ...report, positions: report.positions.length }, ...(state.reports || []).filter(r => r.date !== ny.date)].slice(0, ENGINE.keepReports);
+        const ord = orders ? ` (${orders.filled.length} filled${orders.rejected.length ? `, ${orders.rejected.length} rejected: ${orders.rejected.map(o => o.sym).join(', ')}` : ''}${orders.cancelled.length ? `, ${orders.cancelled.length} cancelled` : ''}${orders.working.length ? `, ${orders.working.length} still working` : ''})` : '';
+        record('close', { summary: `day ${report.dayReturnPct ?? '—'}% vs SPY ${report.spyPct ?? '—'}% · ${report.trades} orders${ord} · ${snap.positions.length} positions`, equity: snap.equity });
+        state.reports = [{ ...report, positions: report.positions.length, orders: undefined }, ...(state.reports || []).filter(r => r.date !== ny.date)].slice(0, ENGINE.keepReports);
         state.lastCloseDate = ny.date;
         // score the agents' calls and move their weights (never fails the close)
         try {

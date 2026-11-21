@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import vm from 'vm';
-import { teamPlan, runTeamLive, serverConfig, strategyFor, runTilt, learnFromBroker, learnedWeights, scorecardSummary } from '../trader.js';
+import { teamPlan, runTeamLive, serverConfig, strategyFor, runTilt, learnFromBroker, learnedWeights, scorecardSummary, guardCheck, clientId } from '../trader.js';
 
 const box = {};
 for (const f of ['watchlist.js', 'signals.js']) vm.runInNewContext(fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8'), box);
@@ -95,4 +95,41 @@ test('learning from broker history: builds the scorecard, saves the weights the 
   // too little history is reported, not guessed
   const short = await learnFromBroker({ bars: async () => ({ status: 200, body: { bars: alpacaBars(200) } }) }, { watchlist: SYMS }, { get: async () => null, put: async () => {} }, { now: NOW });
   assert.equal(short.ok, false);
+});
+
+test('orders: never a second order for a stock with one still working; pending buys count as spent; buys can be blocked', async () => {
+  const bars = alpacaBars(420, 11), placed = []; // a fictional day on which the team wants to buy
+  const mk = (open) => ({
+    req: async () => ({ status: 200, body: { is_open: true } }),
+    account: async () => ({ status: 200, body: { equity: '100000', cash: '100000', buying_power: '100000' } }),
+    positions: async () => ({ status: 200, body: [] }),
+    orders: async () => ({ status: 200, body: open }),
+    bars: async () => ({ status: 200, body: { bars } }),
+    placeOrder: async (o) => { placed.push(o); return { status: 200, body: { id: 'x' } }; },
+    closePosition: async () => ({ status: 200, body: {} }),
+  });
+  const cfg = { watchlist: SYMS, topK: 4, investFraction: 0.9 };
+  const free = await runTeamLive(mk([]), cfg, { dry: true, now: NOW });
+  assert.ok(free.buys.length >= 2);
+  const first = free.buys[0].sym;
+  const r = await runTeamLive(mk([{ symbol: first, side: 'buy', notional: '95000' }]), cfg, { now: NOW, phase: 'hourly' });
+  assert.ok(!r.buys.some(b => b.sym === first));
+  assert.ok(r.buys.reduce((a, b) => a + b.notional, 0) <= 5000 + 1); // 100k cash − 95k already pending
+  assert.deepEqual(r.pending, [`buy ${first}`]);
+  for (const o of placed) assert.match(o.client_order_id, /^shoal-20261120-10-hourly-buy-/);
+  placed.length = 0;
+  const b = await runTeamLive(mk([]), cfg, { now: NOW, blockBuys: 'market down -4.0% today' });
+  assert.equal(b.buys.length, 0); assert.equal(placed.length, 0);
+  assert.equal(b.blockBuys, 'market down -4.0% today');
+});
+
+test('guardian rules: daily loss beats market drop; flags; stop only when configured', () => {
+  const pos = [{ symbol: 'A', change_today: '-0.10', unrealized_plpc: '-0.2' }, { symbol: 'B', change_today: '0.01', unrealized_plpc: '0.05' }];
+  const g = guardCheck({ positions: pos, equity: 94000, openEquity: 100000, spyDayPct: -4, cfg: { dailyLossPct: 5 } });
+  assert.match(g.blockBuys, /daily loss/);
+  assert.deepEqual(g.flags, ['A -10.0% today', 'A -20.0% from entry']);
+  assert.deepEqual(g.stops, []);
+  assert.deepEqual(guardCheck({ positions: pos, equity: 1, openEquity: 1, cfg: { stopPct: 15 } }).stops, ['A']);
+  assert.equal(guardCheck({ positions: [], equity: 100, openEquity: 100, spyDayPct: -1 }).blockBuys, null);
+  assert.equal(clientId(NOW, 'open', 'buy', 'AAPL'), 'shoal-20261120-10-open-buy-AAPL');
 });

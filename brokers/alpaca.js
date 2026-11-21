@@ -97,6 +97,12 @@ class AlpacaSession {
     return { status: 200, body: { bars: out, timeframe } };
   }
 
+  // Latest trade and today's / yesterday's daily bars per symbol (market-wide checks, e.g. SPY's day so far)
+  stockSnapshots(symbols) {
+    const qs = new URLSearchParams({ symbols: symbols.join(','), feed: 'iex' });
+    return this.req(`/v2/stocks/snapshots?${qs}`, { base: DATA_BASE });
+  }
+
   async snapshot() {
     const [account, positions, orders, clock] = await Promise.all([
       this.req('/v2/account'),

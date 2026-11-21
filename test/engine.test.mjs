@@ -85,14 +85,63 @@ test('a trading day: open once, hourly once per hour, end-of-day report once', a
   assert.equal(day.report.equityClose, 99000);
 });
 
-test('daily loss limit: hourly checks stop trading for the day', async () => {
-  const store = freshStore(), s = fakeSession(), strat = strategy(s);
-  const tick = (t) => engineTick({ session: s, store, cfg: { dailyLossPct: 5 }, strategy: strat, now: ny(t) });
+test('daily loss limit: hourly checks make no new buys for the rest of the day', async () => {
+  const store = freshStore(), s = fakeSession(), seen = [];
+  const strat = async (_s, _c, o) => { seen.push(o); return { ok: true, picks: [], sells: [], buys: [], waiting: [], orders: [] }; };
+  const tick = (t) => engineTick({ session: s, store, cfg: { dailyLossPct: 5 }, strategy: strat, learn: null, now: ny(t) });
   await tick('09:46');
+  assert.equal(seen[0].phase, 'open');
+  assert.equal(seen[0].blockBuys, undefined);
   s.st.equity = 94000;
   const h = await tick('10:31');
-  assert.match(h.events[0].summary, /daily loss limit/);
-  assert.equal(s.st.strategyCalls, 1);
+  assert.match(h.events[0].summary, /no new buys: daily loss limit \(-6\.0%\)/);
+  assert.equal(seen[1].phase, 'hourly');
+  assert.match(seen[1].blockBuys, /daily loss limit/);
+});
+
+test('hourly guardian: market falling hard blocks buys; troubled holdings flagged; stuck orders cancelled; catastrophe stop optional', async () => {
+  const store = freshStore(), s = fakeSession(), seen = [], cancelled = [], closed = [];
+  s.positions = async () => ({ status: 200, body: [
+    { symbol: 'AAPL', qty: '10', market_value: '2300', unrealized_plpc: '0.01', change_today: '-0.002' },
+    { symbol: 'XOM', qty: '5', market_value: '400', unrealized_plpc: '-0.26', change_today: '-0.09' }] });
+  s.stockSnapshots = async () => ({ status: 200, body: { SPY: { latestTrade: { p: 576 }, prevDailyBar: { c: 600 } } } }); // −4%
+  s.orders = async (q) => ({ status: 200, body: q.status === 'open' ? [{ id: 'o1', symbol: 'MSFT', side: 'buy', submitted_at: ny('09:46').toISOString() }] : [] });
+  s.cancelOrder = async (id) => { cancelled.push(id); return { status: 200, body: {} }; };
+  s.closePosition = async (sym) => { closed.push(sym); return { status: 200, body: {} }; };
+  const strat = async (_s, _c, o) => { seen.push(o); return { ok: true, picks: [], sells: [], buys: [], waiting: [], orders: [] }; };
+  await engineTick({ session: s, store, cfg: { dailyLossPct: 5, stopPct: 25 }, strategy: strat, learn: null, now: ny('09:46') });
+  const h = await engineTick({ session: s, store, cfg: { dailyLossPct: 5, stopPct: 25 }, strategy: strat, learn: null, now: ny('10:31') });
+  assert.match(seen[1].blockBuys, /market down -4\.0% today/);
+  const sum = h.events[0].summary;
+  assert.match(sum, /watch: XOM -9\.0% today, XOM -26\.0% from entry/);
+  assert.match(sum, /stopped out: XOM/);
+  assert.match(sum, /cancelled stuck orders: buy MSFT/);
+  assert.deepEqual(cancelled, ['o1']);
+  assert.deepEqual(closed, ['XOM']);
+  // without SHOAL_STOP_PCT nothing is sold on intraday moves
+  closed.length = 0;
+  await engineTick({ session: s, store, cfg: { dailyLossPct: 5 }, strategy: strat, learn: null, now: ny('11:31') });
+  assert.deepEqual(closed, []);
+});
+
+test('end-of-day report lists fills, rejections and orders still working', async () => {
+  const store = freshStore(), s = fakeSession();
+  s.orders = async (q) => ({ status: 200, body: q.status === 'open' ? [] : [
+    { symbol: 'NVDA', side: 'buy', status: 'filled', filled_qty: '2', filled_avg_price: '150.5', client_order_id: 'shoal-20261201-09-open-buy-NVDA' },
+    { symbol: 'AMD', side: 'buy', status: 'rejected', client_order_id: 'shoal-20261201-09-open-buy-AMD' },
+    { symbol: 'XOM', side: 'sell', status: 'filled', filled_qty: '5', filled_avg_price: '80' },
+    { symbol: 'ZZZ', side: 'buy', status: 'filled', filled_qty: '1', filled_avg_price: '1', client_order_id: 'manual-1' }] });
+  const strat = async () => ({ ok: true, picks: [], sells: [], buys: [], waiting: [], orders: [] });
+  await engineTick({ session: s, store, cfg: {}, strategy: strat, learn: null, now: ny('09:46') });
+  s.st.open = false;
+  const c = await engineTick({ session: s, store, cfg: {}, strategy: strat, learn: null, now: ny('16:05') });
+  assert.match(c.events[0].summary, /\(2 filled, 1 rejected: AMD\)/);
+  const day = await store.get('days/2026-12-01.json');
+  assert.deepEqual(day.report.orders.filled.map(f => f.sym), ['NVDA', 'XOM']);
+  assert.equal(day.report.orders.filled[0].value, 301);
+  const st = await store.get('state.json');
+  assert.equal(st.reports[0].fills, 2);
+  assert.equal(st.reports[0].orders, undefined);
 });
 
 test('dry run reports what is due without doing it; a held lock skips the tick', async () => {

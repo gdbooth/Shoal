@@ -42,7 +42,7 @@ The 16 original agents are retired (not kept as advisory).
 1. **Server engine, durable storage and a free external scheduler** (done).
 2. **The 9 agents, each tested in the Swing lab, plus the majority-and-confidence rule** (done).
 3. **The daily cycle's learning: scoring every call, end-of-day scorecard and damped weight updates** (done).
-4. Hourly risk guardian and order handling.
+4. **Hourly risk guardian and order handling** (done).
 5. Simpler screens (Today / Agents / Performance / Lab / Settings) and notifications.
 6. A month of paper trading, then a decision on live money.
 
@@ -133,3 +133,35 @@ turbulence (t 6.3–6.4). The most useful finding: the team's **BUY calls traile
 after costs (21-day: −0.7% with 44% beating it on 2014–2018; −1.4% with 32% on 2017–2026). The
 majority rule picks stocks the pickers agree on, and that agreement hasn't paid. The live scorecard will
 show whether this holds on current data; step 4 and the paper month should be judged against it.
+
+## Step 4: what's in place
+
+- **Order handling** (`trader.js`):
+  - Before placing anything, the engine reads the orders still working. It never sends a second order
+    for a stock that already has one, and counts pending buys as cash already spent.
+  - Every buy carries a client order id unique to the day, hour and stock, so a retried tick can't
+    place the same buy twice.
+  - Each hourly check cancels orders stuck for more than 30 minutes (`SHOAL_STALE_MIN`); the next
+    check re-decides.
+  - The end-of-day report lists what filled (quantity, price, value), what was rejected or cancelled,
+    and what is still working. The daily table shows fills and rejections.
+- **The hourly risk guardian** (`guardCheck`):
+  - No new buys once the portfolio is down `SHOAL_DAILY_LOSS_PCT` (5%) on the day, or SPY is down
+    `SHOAL_MARKET_DROP_PCT` (3%) on the day. Sells the team decides still go through.
+  - Holdings down 8% on the day or 15% from entry are flagged in the hourly event.
+  - An optional catastrophe stop (`SHOAL_STOP_PCT`, off by default) sells a holding that far below
+    its entry.
+
+### Why the guardian doesn't sell on intraday moves (tested on real data, 5 bp per side)
+
+The day's low stood in for what an hourly check would have seen:
+
+| Exit rule | 24 stocks, 2014–2018 | 12 stocks + ETFs, 2017–2026 |
+|---|---|---|
+| None (shipped) | +67%, Sharpe 1.25 | +62%, 0.53 |
+| Crash 3σ / 4σ / 5σ below yesterday's close | +19% / +38% / +41% | +46% / +63% / +73% |
+| Stop 10% / 15% / 20% from entry | +45% / +63% / +65% | +52% / +65% / +61% |
+
+Crash exits cut returns badly on one history and were mixed on the other; stops were neutral at
+best. Sharp intraday falls were usually recovered. That's why the guardian protects by not buying into
+a falling market rather than by selling, and the stop stays off unless you set one.

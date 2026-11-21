@@ -42,6 +42,9 @@ export function serverConfig(env = process.env) {
     watchlist: (list.length >= 5 ? list : W.DEFAULT).slice(0, 150),
     dailyLossPct: Math.max(1, Math.min(50, parseFloat(env.SHOAL_DAILY_LOSS_PCT) || 5)),
     strategy: env.SHOAL_STRATEGY === 'tilt' ? 'tilt' : 'team',
+    stopPct: Math.max(0, Math.min(50, parseFloat(env.SHOAL_STOP_PCT) || 0)),
+    marketDropPct: Math.max(0.5, Math.min(20, parseFloat(env.SHOAL_MARKET_DROP_PCT) || 3)),
+    staleMin: Math.max(5, Math.min(240, parseInt(env.SHOAL_STALE_MIN, 10) || 30)),
     schedule: 'every trading day: open review 15 min after the open, hourly checks, end-of-day report',
   };
 }
@@ -154,24 +157,29 @@ export function teamPlan(barsBySym, { held = [], watchlist, topK, now = new Date
     sellWhy: Object.fromEntries(sells.map(s => [s, watch.has(s) ? by[s]?.why : 'not on the watchlist'])) };
 }
 
-export async function runTeamLive(session, cfg, { dry = false, now = new Date(), weights = null } = {}) {
+export async function runTeamLive(session, cfg, { dry = false, now = new Date(), weights = null, blockBuys = null, phase = 'open' } = {}) {
   const clock = await session.req('/v2/clock');
   const isOpen = !!clock.body?.is_open;
   if (!isOpen && !dry) return { ok: true, skipped: 'market closed', nextOpen: clock.body?.next_open || null };
-  const [acct, pos] = await Promise.all([session.account(), session.positions()]);
+  const [acct, pos, open] = await Promise.all([session.account(), session.positions(), openOrders(session)]);
   if (acct.status !== 200 || pos.status !== 200) return { ok: false, error: 'could not read the account' };
   const held = (Array.isArray(pos.body) ? pos.body : []).map(p => p.symbol);
   const syms = [...new Set([...cfg.watchlist, ...held])];
+  // orders still working (not filled yet): never send a second order for the same stock, and count
+  // pending buys as cash already spent
+  const pendingBuy = new Set(open.filter(o => o.side === 'buy').map(o => o.symbol));
+  const pendingSell = new Set(open.filter(o => o.side === 'sell').map(o => o.symbol));
+  const pendingCash = open.filter(o => o.side === 'buy').reduce((a, o) => a + (num(o.notional) || num(o.qty) * num(o.limit_price) || 0), 0);
   const bars = await session.bars(syms, BARS_DAYS); // ~410 trading days: momentum needs 273
   if (bars.status !== 200) return { ok: false, error: `bars: HTTP ${bars.status}` };
   const plan = teamPlan(bars.body.bars || {}, { held, watchlist: cfg.watchlist, topK: cfg.topK, now, weights });
   if (!plan.decisions.length) return { ok: false, error: 'not enough price history for the agents' };
   const equity = num(acct.body.equity), cash = Math.min(num(acct.body.cash), num(acct.body.buying_power));
   const per = (equity * cfg.investFraction * plan.scale) / cfg.topK;
-  const buys = [];
-  let left = Number.isFinite(cash) ? cash : 0;
-  for (const sym of plan.wanted) {
-    if (plan.sells.length && left < per * 0.95) break; // sells still settling: wait for a full share
+  const buys = [], sells = plan.sells.filter(s => !pendingSell.has(s));
+  let left = Math.max(0, (Number.isFinite(cash) ? cash : 0) - pendingCash);
+  for (const sym of blockBuys ? [] : plan.wanted.filter(s => !pendingBuy.has(s))) {
+    if (sells.length && left < per * 0.95) break; // sells still settling: wait for a full share
     const notional = Math.floor(Math.min(per, left) * 100) / 100;
     if (notional < 1 || notional < per * 0.5) break;
     buys.push({ sym, notional });
@@ -179,19 +187,90 @@ export async function runTeamLive(session, cfg, { dry = false, now = new Date(),
   }
   const count = (a) => plan.decisions.filter(d => d.action === a).length;
   const result = { ok: true, dry, strategy: 'team', weights: weights || null, marketOpen: isOpen, rankedAsOf: plan.asOf, K: cfg.topK, mkt: plan.mkt, scale: plan.scale,
-    picks: [...plan.keep, ...buys.map(b => b.sym)], held, sells: plan.sells, buys, waiting: plan.wanted.filter(s => !buys.some(b => b.sym === s)),
+    picks: [...plan.keep, ...buys.map(b => b.sym)], held, sells, buys, waiting: plan.wanted.filter(s => !buys.some(b => b.sym === s) && !pendingBuy.has(s)),
+    pending: open.map(o => `${o.side} ${o.symbol}`), blockBuys: blockBuys || null,
     sellWhy: plan.sellWhy, tally: { BUY: count('BUY'), SELL: count('SELL'), HOLD: count('HOLD'), WAIT: count('WAIT') },
     decisions: plan.decisions, equity, cash, perPosition: Math.round(per * 100) / 100, orders: [] };
   if (dry || !isOpen) return result;
-  for (const sym of plan.sells) {
+  for (const sym of sells) {
     const r = await session.closePosition(sym);
-    result.orders.push({ sym, side: 'sell', status: r.status, ok: r.status === 200, message: r.body?.message, why: plan.sellWhy[sym] });
+    result.orders.push({ sym, side: 'sell', status: r.status, ok: r.status === 200, id: r.body?.id, message: r.body?.message, why: plan.sellWhy[sym] });
   }
   for (const b of buys) {
-    const r = await session.placeOrder({ symbol: b.sym, notional: b.notional.toFixed(2), side: 'buy', type: 'market', time_in_force: 'day' });
-    result.orders.push({ sym: b.sym, side: 'buy', notional: b.notional, status: r.status, ok: r.status === 200, message: r.body?.message });
+    // a client order id unique to this day, hour and stock: a retried tick can't place the same buy twice
+    const r = await session.placeOrder({ symbol: b.sym, notional: b.notional.toFixed(2), side: 'buy', type: 'market', time_in_force: 'day', client_order_id: clientId(now, phase, 'buy', b.sym) });
+    result.orders.push({ sym: b.sym, side: 'buy', notional: b.notional, status: r.status, ok: r.status === 200, id: r.body?.id, message: r.body?.message });
   }
   return result;
+}
+
+// ── Orders and the hourly guardian (step 4) ─────────────────────────────────────────────────────────
+const nyHour = (d) => new Intl.DateTimeFormat('en-GB', { timeZone: 'America/New_York', hour: '2-digit', hourCycle: 'h23' }).format(d);
+export const clientId = (now, phase, side, sym) => `shoal-${nyDate(now).replace(/-/g, '')}-${nyHour(now)}-${phase}-${side}-${sym}`.slice(0, 128);
+
+export async function openOrders(session) {
+  if (!session.orders) return [];
+  try { const r = await session.orders({ status: 'open' }); return r.status === 200 && Array.isArray(r.body) ? r.body : []; } catch { return []; }
+}
+
+// Cancel orders that have been working too long (a market order that hasn't filled in `staleMin` minutes
+// is stuck: halted stock, rejected route). The strategy re-decides on the next check.
+export async function cancelStale(session, { now = new Date(), staleMin = 30 } = {}) {
+  const open = await openOrders(session), cancelled = [];
+  for (const o of open) {
+    const age = (now - new Date(o.submitted_at || o.created_at || now)) / 60000;
+    if (age < staleMin || !session.cancelOrder) continue;
+    const r = await session.cancelOrder(o.id);
+    cancelled.push({ sym: o.symbol, side: o.side, ageMin: Math.round(age), ok: r.status === 200 });
+  }
+  return { open: open.length - cancelled.length, cancelled };
+}
+
+// Every order since the day's open review, by outcome: what filled (and at what price), what was
+// rejected or cancelled and why, what is still working
+export async function orderReport(session, { since } = {}) {
+  if (!session.orders) return null;
+  const r = await session.orders({ status: 'all', after: since, direction: 'asc', limit: '200' });
+  if (r.status !== 200 || !Array.isArray(r.body)) return null;
+  const mine = r.body.filter(o => String(o.client_order_id || '').startsWith('shoal-') || o.side === 'sell');
+  const by = (st) => mine.filter(o => st.includes(o.status));
+  const fill = (o) => ({ sym: o.symbol, side: o.side, qty: num(o.filled_qty), price: num(o.filled_avg_price), value: Math.round(num(o.filled_qty) * num(o.filled_avg_price) * 100) / 100 });
+  return {
+    filled: by(['filled', 'partially_filled']).map(fill),
+    rejected: by(['rejected']).map(o => ({ sym: o.symbol, side: o.side })),
+    cancelled: by(['canceled', 'expired']).map(o => ({ sym: o.symbol, side: o.side })),
+    working: by(['new', 'accepted', 'pending_new', 'held']).map(o => ({ sym: o.symbol, side: o.side })),
+  };
+}
+
+// The hourly guardian. Tested on real 2013–2026 data, selling on intraday moves (crash exits of 3–5
+// daily standard deviations, stops of 10–15%) cut the team's returns: falls were usually bought back
+// by the market. So the guardian doesn't sell on intraday moves. It blocks new buys while the market
+// or the portfolio is falling hard, flags holdings in trouble, and sells only on an optional
+// catastrophe stop (SHOAL_STOP_PCT, off by default).
+export function guardCheck({ positions = [], equity, openEquity, spyDayPct = null, cfg = {} }) {
+  const dayRet = openEquity > 0 && equity > 0 ? equity / openEquity - 1 : 0;
+  const flags = [], stops = [];
+  for (const p of positions) {
+    const today = num(p.change_today), fromEntry = num(p.unrealized_plpc);
+    if (today <= -(cfg.flagDayPct ?? 8) / 100) flags.push(`${p.symbol} ${(today * 100).toFixed(1)}% today`);
+    if (fromEntry <= -(cfg.flagEntryPct ?? 15) / 100) flags.push(`${p.symbol} ${(fromEntry * 100).toFixed(1)}% from entry`);
+    if (cfg.stopPct > 0 && fromEntry <= -cfg.stopPct / 100) stops.push(p.symbol);
+  }
+  let blockBuys = null;
+  if (dayRet <= -(cfg.dailyLossPct ?? 5) / 100) blockBuys = `daily loss limit (${(dayRet * 100).toFixed(1)}%)`;
+  else if (spyDayPct != null && spyDayPct <= -(cfg.marketDropPct ?? 3)) blockBuys = `market down ${spyDayPct.toFixed(1)}% today`;
+  return { dayReturnPct: Math.round(dayRet * 10000) / 100, spyDayPct, flags, stops, blockBuys };
+}
+
+export async function spyDay(session) {
+  if (!session.stockSnapshots) return null;
+  try {
+    const r = await session.stockSnapshots(['SPY']);
+    const s = r.status === 200 ? (r.body?.SPY || r.body?.snapshots?.SPY) : null;
+    const last = num(s?.latestTrade?.p) || num(s?.dailyBar?.c), prev = num(s?.prevDailyBar?.c);
+    return last > 0 && prev > 0 ? Math.round((last / prev - 1) * 10000) / 100 : null;
+  } catch { return null; }
 }
 
 export const STRATEGIES = { team: runTeamLive, tilt: runTilt };
