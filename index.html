@@ -5349,40 +5349,77 @@ window.ScreenMarket = ScreenMarket;
 <script type="text/babel" data-presets="react">
 // Settings screen — Alpaca connection + risk parameters
 
-// Settings → Server trading: the daily job that runs Rank & tilt on the server, without a browser
+// Settings → Server engine: trades on the server all day without a browser (open review, hourly checks,
+// end-of-day report), driven by the free GitHub Actions scheduler. Shows what ran and the daily reports.
 const ServerTradingCard = ({ alpaca, st }) => {
+  const [eng, setEng] = React.useState(null);
+  const [err, setErr] = React.useState(null);
   const [preview, setPreview] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
+  React.useEffect(() => {
+    let live = true;
+    const load = () => fetch(`${BACKEND_URL}/api/engine/status`).then(r => r.json()).then(d => { if (live) { setEng(d); setErr(d.error || null); } }).catch(e => live && setErr(e.message));
+    load();
+    const id = setInterval(load, 60_000);
+    return () => { live = false; clearInterval(id); };
+  }, []);
   const runPreview = async () => {
     setBusy(true); setPreview(null);
     try {
       const r = await fetch(`${BACKEND_URL}/api/server-trading/preview`, { headers: { Authorization: 'Bearer ' + alpaca.token }, signal: AbortSignal.timeout(120000) });
       const d = await r.json();
       setPreview(r.ok ? d : { error: d.error || `HTTP ${r.status}` });
-    } catch (err) { setPreview({ error: err.message }); }
+    } catch (e) { setPreview({ error: e.message }); }
     setBusy(false);
   };
-  const on = st && st.enabled && st.sameAccount;
+  const on = eng && eng.enabled;
+  const durable = eng && /^(blob|local files)$/.test(eng.storage);
+  const when = (iso) => (iso ? new Date(iso).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
+  const sameAcct = st && st.sameAccount;
   return (
     <div className="field">
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
-        <div className="field-label">Server trading <span className="muted">(runs without this browser)</span></div>
-        <div className="mono tiny" style={{color: on ? 'var(--up)' : 'var(--ink-3)'}}>{!alpaca?.connected ? 'connect Alpaca to see' : alpaca.brokerId === 'ig' ? 'Alpaca only' : !st ? 'checking…' : on ? 'ON for this account' : st.enabled ? 'ON for another account' : 'OFF'}</div>
+        <div className="field-label">Server engine <span className="muted">(trades without this browser)</span></div>
+        <div className="mono tiny" style={{color: on ? 'var(--up)' : 'var(--ink-3)'}}>{!eng ? (err ? 'unavailable' : 'checking…') : on ? `ON · ${eng.env}` : 'OFF'}</div>
       </div>
       <div className="mono tiny muted" style={{marginTop:6,lineHeight:1.6}}>
-        Once a day ({st?.schedule || 'weekdays ~13:00–14:00 New York'}), the server runs Rank &amp; tilt on its Alpaca account: ranks the watchlist by trend score as of last month's close, sells holdings that aren't picks, and buys picks it doesn't hold. It treats the account as its own. While it's on for the account you're connected to, this browser only watches.
-        {st && <> Server settings: top {st.topK} of {st.watchlistSize} stocks, {Math.round(st.investFraction * 100)}% invested, {st.env} account{st.env === 'live' && !st.liveAllowed ? ' (live trading blocked: SHOAL_SERVER_LIVE is not 1)' : ''}.</>}
+        Every trading day, using Alpaca's market clock: an <b>open review</b> {eng ? eng.openDelayMin : 15} minutes after the open (14:30 UK most of the year), <b>hourly checks</b> until the close (risk snapshot, {eng ? eng.dailyLossPct : 5}% daily loss guard, finishing unfinished orders) and an <b>end-of-day report</b> after the close (21:00 UK). A free GitHub Actions schedule wakes it every 15 minutes. Decisions: Rank &amp; tilt for now (top {eng ? eng.topK : 12} of {eng ? eng.watchlistSize : 100} stocks) until the 9-agent ensemble replaces it. It treats its Alpaca account as its own{sameAcct ? '; this browser only watches it' : ''}.
       </div>
-      {st && !st.enabled && (
-        <div className="mono tiny" style={{marginTop:8,color:'var(--ink-2)',lineHeight:1.6}}>
-          To turn it on, add these in Vercel → your project → Settings → Environment Variables (mark the keys <b>Sensitive</b>), then redeploy:<br/>
-          · <b>ALPACA_KEY_ID</b> and <b>ALPACA_SECRET</b>: your Alpaca <b>paper</b> keys{st.configured ? ' ✓' : ''}<br/>
-          · <b>CRON_SECRET</b>: any long random text{st.cronSecret ? ' ✓' : ''}<br/>
-          · optional: SHOAL_TOPK (default 12), SHOAL_INVEST_FRACTION (0.9), SHOAL_WATCHLIST (default the 100 stocks). Live money also needs ALPACA_ENV=live and SHOAL_SERVER_LIVE=1.<br/>
-          To turn it off, delete the ALPACA_SECRET variable and redeploy.
+      {eng && (
+        <div className="mono tiny" style={{marginTop:8,lineHeight:1.7,color:'var(--ink-2)'}}>
+          Records: <span style={{color: durable ? 'var(--ink-2)' : 'var(--warn)'}}>{eng.storage}</span> · last wake-up {when(eng.lastTick)} · last open review {eng.lastOpenDate || '—'} · last hourly {eng.lastHourlyKey ? eng.lastHourlyKey.replace('T', ' ') + ':00 NY' : '—'} · last report {eng.lastCloseDate || '—'}
         </div>
       )}
-      {on && <button className="btn" style={{fontSize:10,padding:'4px 10px',marginTop:8}} disabled={busy} onClick={runPreview}>{busy ? 'CHECKING…' : "PREVIEW TODAY'S SERVER PLAN"}</button>}
+      {eng && !on && (
+        <div className="mono tiny" style={{marginTop:8,color:'var(--ink-2)',lineHeight:1.6}}>
+          To switch it on:<br/>
+          1 · Vercel → project → Settings → Environment Variables (Sensitive): <b>ALPACA_KEY_ID</b> and <b>ALPACA_SECRET</b> (Alpaca <b>paper</b> keys){eng.configured ? ' ✓' : ''} · <b>CRON_SECRET</b>{eng.cronSecret ? ' ✓' : ''}<br/>
+          2 · Vercel → Storage → a <b>Blob</b> store connected to this project (keeps the records){durable ? ' ✓' : ''}<br/>
+          3 · GitHub → repository → Settings → Secrets → Actions: <b>SHOAL_ENGINE_URL</b> (this site's address) and <b>SHOAL_ENGINE_SECRET</b> (same as CRON_SECRET)<br/>
+          4 · Redeploy. Optional: SHOAL_TOPK, SHOAL_INVEST_FRACTION, SHOAL_WATCHLIST, SHOAL_DAILY_LOSS_PCT. Live money also needs ALPACA_ENV=live and SHOAL_SERVER_LIVE=1. To stop it, delete ALPACA_SECRET and redeploy.
+        </div>
+      )}
+      {on && !durable && <div className="mono tiny" style={{marginTop:6,color:'var(--warn)'}}>Connect a Vercel Blob store: without it the records live in temporary server files and can disappear between runs.</div>}
+      {eng && eng.recent.length > 0 && (
+        <div style={{marginTop:10}}>
+          <div className="mono tiny muted" style={{letterSpacing:'0.1em',marginBottom:4}}>RECENT RUNS</div>
+          {eng.recent.slice(0, 8).map((e, k) => (
+            <div key={k} className="mono tiny" style={{display:'grid',gridTemplateColumns:'110px 60px 1fr',gap:8,color: e.phase === 'error' ? 'var(--down)' : 'var(--ink-2)',lineHeight:1.6}}>
+              <span className="muted">{when(e.at)}</span><span>{e.phase}</span><span>{e.summary}</span>
+            </div>))}
+        </div>
+      )}
+      {eng && eng.reports.length > 0 && (
+        <table className="tbl" style={{marginTop:10}}>
+          <thead><tr><th>Day</th><th style={{textAlign:'right'}}>Equity</th><th style={{textAlign:'right'}}>Day</th><th style={{textAlign:'right'}}>SPY</th><th style={{textAlign:'right'}}>Orders</th><th style={{textAlign:'right'}}>Held</th></tr></thead>
+          <tbody>{eng.reports.slice(0, 10).map(r => (
+            <tr key={r.date}><td className="mono">{r.date}</td><td className="mono" style={{textAlign:'right'}}>{r.equityClose != null ? `$${Math.round(r.equityClose).toLocaleString()}` : '—'}</td>
+              <td className="mono" style={{textAlign:'right',color: (r.dayReturnPct ?? 0) >= 0 ? 'var(--up)' : 'var(--down)'}}>{r.dayReturnPct != null ? `${r.dayReturnPct >= 0 ? '+' : ''}${r.dayReturnPct}%` : '—'}</td>
+              <td className="mono" style={{textAlign:'right'}}>{r.spyPct != null ? `${r.spyPct >= 0 ? '+' : ''}${r.spyPct}%` : '—'}</td>
+              <td className="mono" style={{textAlign:'right'}}>{r.trades}</td><td className="mono" style={{textAlign:'right'}}>{r.positions}</td></tr>))}</tbody>
+        </table>
+      )}
+      {on && sameAcct && <button className="btn" style={{fontSize:10,padding:'4px 10px',marginTop:8}} disabled={busy} onClick={runPreview}>{busy ? 'CHECKING…' : "PREVIEW THE ENGINE'S PLAN"}</button>}
       {preview && (
         <div className="mono tiny" style={{marginTop:8,color: preview.error ? 'var(--down)' : 'var(--ink-2)',lineHeight:1.6}}>
           {preview.error ? preview.error : <>
@@ -5390,10 +5427,11 @@ const ServerTradingCard = ({ alpaca, st }) => {
             {preview.sells.length ? `Would sell: ${preview.sells.join(', ')}. ` : 'Nothing to sell. '}
             {preview.buys.length ? `Would buy: ${preview.buys.map(b => `${b.sym} $${b.notional.toLocaleString()}`).join(', ')}. ` : 'Nothing to buy. '}
             {preview.waiting.length ? `Waiting for cash: ${preview.waiting.join(', ')}.` : ''}
-            {!preview.marketOpen && ' (Market closed now: the job only trades while it is open.)'}
+            {!preview.marketOpen && ' (Market closed now: the engine only trades while it is open.)'}
           </>}
         </div>
       )}
+      {err && !eng && <div className="mono tiny" style={{marginTop:6,color:'var(--down)'}}>Engine status unavailable: {err}</div>}
     </div>
   );
 };
@@ -8528,7 +8566,7 @@ const App = () => {
       }
       const srv = serverTradingRef.current;
       if (!replay && srv && srv.enabled && srv.sameAccount) {
-        sayStatus({ text: `Server trading is on for this ${srv.env} account: the server runs Rank & tilt once a day (${srv.schedule}), holding the top ${srv.topK} of ${srv.watchlistSize} stocks, so this browser only watches and places no orders. Close the tab whenever you like.` });
+        sayStatus({ text: `The server engine trades this ${srv.env} account (${srv.schedule}; top ${srv.topK} of ${srv.watchlistSize} stocks), so this browser only watches and places no orders. Close the tab whenever you like; Settings → Server engine shows its runs and daily reports.` });
         return;
       }
       if (!replay && !isLiveReal && !isBrokerPaper) { sayStatus({ warn: true, text: mode === 'VIRTUAL' ? 'VIRTUAL needs a connected paper/demo account. Reconnect your broker in Settings.' : 'LIVE needs a connected live account. Reconnect your broker in Settings.' }); return; }

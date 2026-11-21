@@ -20,12 +20,6 @@
       "includeFiles": "{index.html,watchlist.js,signals.js,intraday.js,swing.js}"
     }
   },
-  "crons": [
-    {
-      "path": "/api/cron/tilt",
-      "schedule": "0 18 * * 1-5"
-    }
-  ],
   "headers": [
     {
       "source": "/(.*)",

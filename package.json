@@ -10,6 +10,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@vercel/blob": "^2.9.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "lightstreamer-client-node": "9.2.2",

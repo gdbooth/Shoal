@@ -7,6 +7,8 @@ import { fileURLToPath } from 'url';
 import { alpaca } from './brokers/alpaca.js';
 import { ig } from './brokers/ig.js';
 import { serverConfig, runTilt } from './trader.js';
+import { engineTick, ENGINE } from './engine.js';
+import { createStore, storeKind } from './store.js';
 
 // Surface unhandled rejections instead of letting them silently crash the process.
 process.on('unhandledRejection', (err) => {
@@ -77,7 +79,7 @@ const secureCookie = (req) => (ON_VERCEL || String(req.headers['x-forwarded-prot
 // Logged in counts as having the access code too
 const accessOk = (req) => !ACCESS_HASH || (LOGIN_ON && loggedIn(req)) || timingSafeEqual(createHash('sha256').update(String(req.header('x-shoal-access') || '')).digest(), ACCESS_HASH);
 
-const OPEN_PATHS = new Set(['/login', '/api/login', '/api/health', '/api/cron/tilt', '/robots.txt', '/favicon.ico']);
+const OPEN_PATHS = new Set(['/login', '/api/login', '/api/health', '/api/cron/tilt', '/api/engine/tick', '/robots.txt', '/favicon.ico']);
 app.use((req, res, next) => {
   if (!LOGIN_ON || OPEN_PATHS.has(req.path) || loggedIn(req)) return next();
   if (req.path.startsWith('/api/')) { res.setHeader('X-Shoal-Login', 'required'); return res.status(401).json({ error: 'Log in first.', needLogin: true }); }
@@ -346,11 +348,49 @@ app.get('/api/cron/tilt', async (req, res) => {
     res.status(502).json({ ok: false, error: err.message });
   }
 });
+// ── Server engine: an external scheduler (GitHub Actions, every ~15 min on weekdays) calls the tick with
+// "Authorization: Bearer <CRON_SECRET>". The engine decides from Alpaca's clock what is due (open / hourly /
+// close) and records everything in the store. ?dry=1 reports what is due without doing it.
+const store = createStore();
+async function tickHandler(req, res) {
+  if (!cronOk(req)) return res.status(401).json({ error: 'Not authorised' });
+  const cfg = serverConfig();
+  if (!cfg.keyId || !cfg.secret) return res.json({ ok: true, configured: false, note: 'Set ALPACA_KEY_ID and ALPACA_SECRET to enable the server engine.' });
+  if (cfg.env === 'live' && !cfg.liveAllowed) return res.json({ ok: false, error: 'ALPACA_ENV is live but SHOAL_SERVER_LIVE is not 1: not trading real money.' });
+  try {
+    const { session } = await alpaca.connect({ keyId: cfg.keyId, secret: cfg.secret, env: cfg.env });
+    const r = await engineTick({ session, store, cfg, dry: req.query.dry === '1' });
+    if (r.ran?.length || r.error) console.log('[engine]', JSON.stringify(r));
+    res.status(r.ok ? 200 : 502).json(r);
+  } catch (err) {
+    console.error('[engine] tick failed:', err.message);
+    res.status(502).json({ ok: false, error: err.message });
+  }
+}
+app.get('/api/engine/tick', tickHandler);
+app.post('/api/engine/tick', tickHandler);
+// Dashboard view of the engine (behind the login): what ran, recent events, daily reports. One store read.
+app.get('/api/engine/status', async (_req, res) => {
+  const cfg = serverConfig();
+  try {
+    const state = (await store.get('state.json')) || {};
+    res.json({ enabled: serverEnabled(cfg), configured: !!(cfg.keyId && cfg.secret), cronSecret: !!process.env.CRON_SECRET, env: cfg.env, storage: storeKind(),
+      topK: cfg.topK, investFraction: cfg.investFraction, watchlistSize: cfg.watchlist.length, dailyLossPct: cfg.dailyLossPct, openDelayMin: ENGINE.openDelayMin,
+      lastTick: state.lastTick || null, lastOpenDate: state.lastOpenDate || null, lastHourlyKey: state.lastHourlyKey || null, lastCloseDate: state.lastCloseDate || null,
+      recent: state.recent || [], reports: state.reports || [] });
+  } catch (err) { res.status(502).json({ error: err.message }); }
+});
+app.get('/api/engine/day', async (req, res) => {
+  const d = String(req.query.date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return res.status(400).json({ error: 'date=YYYY-MM-DD required' });
+  try { res.json((await store.get(`days/${d}.json`)) || { date: d, events: [] }); } catch (err) { res.status(502).json({ error: err.message }); }
+});
+
 // What the browser needs to know (no secrets): is the server trading this same account?
 app.get('/api/server-trading', auth, (req, res) => {
   const cfg = serverConfig();
   res.json({ enabled: serverEnabled(cfg), configured: !!(cfg.keyId && cfg.secret), cronSecret: !!process.env.CRON_SECRET, env: cfg.env,
-    liveAllowed: cfg.liveAllowed, sameAccount: sameAccount(req, cfg), topK: cfg.topK, investFraction: cfg.investFraction, watchlistSize: cfg.watchlist.length, schedule: cfg.schedule });
+    liveAllowed: cfg.liveAllowed, sameAccount: sameAccount(req, cfg), topK: cfg.topK, investFraction: cfg.investFraction, watchlistSize: cfg.watchlist.length, schedule: cfg.schedule, storage: storeKind() });
 });
 // Dry run with the browser's own session (only for the account the server trades)
 app.get('/api/server-trading/preview', auth, async (req, res) => {

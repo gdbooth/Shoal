@@ -1,8 +1,9 @@
-node_modules/
-.env
 *.local
-/.vs
 .cache/
-ig-epics.json
-public/
+.data/
+.env
 .vercel/
+/.vs
+ig-epics.json
+node_modules/
+public/

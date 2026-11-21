@@ -17,6 +17,13 @@ as `shoal_watchlist_v1`, applied on reload); "Default 100" and "Original 25" res
 30 (its weekly history allowance), the Intraday lab the first 40. History already cached in the browser is
 topped up; symbols new to the list get their full history.
 
+## Direction
+
+Shoal is being rebuilt as a server-side engine run by a team of 9 evidence-based agents: see
+[DIRECTION.md](DIRECTION.md) for the plan and progress. The server engine (`engine.js`, `store.js`,
+`.github/workflows/engine.yml`) runs the trading day by the market clock (open review, hourly checks,
+end-of-day report) and keeps its records in a private Vercel Blob store.
+
 ## Security and server trading
 
 - **Login**: when `SHOAL_LOGIN_PASSWORD` is set (username `SHOAL_LOGIN_USER`, default `admin`), the server
@@ -30,8 +37,7 @@ topped up; symbols new to the list get their full history.
   stream uses a one-minute ticket from `POST /api/stream-ticket`, so the token never appears in a URL.
 - **Browser calls**: on Vercel only the app's own origin (plus `SHOAL_ALLOWED_ORIGINS`) may call the API;
   per-IP rate limits (600/min, 10/min for connect); security headers on the API and the static app.
-- **Server trading** (`trader.js`, `vercel.json` cron `0 18 * * 1-5` UTC → `/api/cron/tilt`): once a day
-  while the market is open it runs Rank & tilt on the Alpaca account in `ALPACA_KEY_ID` / `ALPACA_SECRET`
+- **Server trading** (`trader.js`; now run by the engine at the open and on hourly checks, see DIRECTION.md): it runs Rank & tilt on the Alpaca account in `ALPACA_KEY_ID` / `ALPACA_SECRET`
   (`ALPACA_ENV=paper`; live also needs `SHOAL_SERVER_LIVE=1`): picks = top `SHOAL_TOPK` (12) of
   `SHOAL_WATCHLIST` (default 100) by trend score as of last month's close; sells non-picks; buys missing
   picks with equity × `SHOAL_INVEST_FRACTION` (0.9) / K, from cash on hand. Requires `CRON_SECRET` (Vercel

@@ -1,6 +1,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 // A fake Alpaca paper account that is mostly invested in a stock outside the watchlist, plus daily bars
 // where stock Sk trends up faster the larger k is.
@@ -32,7 +35,7 @@ before(async () => {
   Object.assign(process.env, {
     ALPACA_PAPER_URL: url, ALPACA_DATA_URL: url, PORT: '0', VERCEL: '1', SHOAL_SESSION_SECRET: 'test-secret',
     SHOAL_ACCESS_CODE: 'open-sesame', CRON_SECRET: 'cron-secret-xyz', ALPACA_KEY_ID: 'PKSERVER1234567890', ALPACA_SECRET: 's', ALPACA_ENV: 'paper',
-    SHOAL_WATCHLIST: SYMS.join(','), SHOAL_TOPK: '3',
+    SHOAL_WATCHLIST: SYMS.join(','), SHOAL_TOPK: '3', SHOAL_DATA_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'shoal-srv-')),
   });
   ({ server } = await import('../server.js'));
   if (!server.listening) await new Promise(r => server.once('listening', r));
@@ -118,4 +121,18 @@ test('preview uses the browser\'s own session for the same account', async () =>
   assert.equal(r.status, 200);
   assert.equal(r.body.dry, true);
   assert.deepEqual(r.body.picks, ['S6', 'S5', 'S4']);
+});
+
+test('engine tick: needs the scheduler secret; runs by the market clock and reports', async () => {
+  assert.equal((await call('/api/engine/tick', { method: 'POST' })).status, 401);
+  assert.equal((await call('/api/engine/tick', { method: 'POST', headers: { Authorization: 'Bearer nope' } })).status, 401);
+  const dry = await call('/api/engine/tick?dry=1', { method: 'POST', headers: { Authorization: 'Bearer cron-secret-xyz' } });
+  assert.equal(dry.status, 200, JSON.stringify(dry.body));
+  assert.equal(dry.body.ok, true);
+  assert.ok(Array.isArray(dry.body.due));
+  const st = await call('/api/engine/status');
+  assert.equal(st.status, 200);
+  assert.equal(st.body.enabled, true);
+  assert.equal(st.body.storage, 'temporary files (not durable: connect a Blob store)');
+  assert.ok(!JSON.stringify(st.body).includes('cron-secret') && !JSON.stringify(st.body).includes('PKSERVER'));
 });

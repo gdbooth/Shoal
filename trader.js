@@ -39,7 +39,8 @@ export function serverConfig(env = process.env) {
     topK: Math.max(1, Math.min(50, parseInt(env.SHOAL_TOPK, 10) || 12)),
     investFraction: Math.max(0.1, Math.min(1, parseFloat(env.SHOAL_INVEST_FRACTION) || 0.9)),
     watchlist: (list.length >= 5 ? list : W.DEFAULT).slice(0, 150),
-    schedule: 'weekdays ~13:00–14:00 New York (18:00 UTC)',
+    dailyLossPct: Math.max(1, Math.min(50, parseFloat(env.SHOAL_DAILY_LOSS_PCT) || 5)),
+    schedule: 'every trading day: open review 15 min after the open, hourly checks, end-of-day report',
   };
 }
 
