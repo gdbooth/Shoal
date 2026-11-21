@@ -44,7 +44,7 @@ The 16 original agents are retired (not kept as advisory).
 3. **The daily cycle's learning: scoring every call, end-of-day scorecard and damped weight updates** (done).
 4. **Hourly risk guardian and order handling** (done).
 5. **Simpler screens (Today / Agents / Performance / Lab / Settings) and notifications** (done).
-6. A month of paper trading, then a decision on live money.
+6. **A month of paper trading, then a decision on live money** (built in: the go-live check runs daily and notifies).
 
 ## Step 1: what's in place
 
@@ -186,3 +186,24 @@ a falling market rather than by selling, and the stop stays off unless you set o
     and engine errors; `SHOAL_NOTIFY_LEVEL=all` adds every order;
   - a failed notification never fails a tick; the URL is never shown in the app;
   - Settings → Server engine → **Send test** checks the channel.
+
+## Step 6: built into the tool
+
+The paper month and the live decision now run themselves; nothing needs reviewing by hand.
+
+- **The go-live check** (`readiness.js`) re-runs after every end-of-day report over the last 21
+  trading days. All of these must pass:
+  - return beats the S&P 500;
+  - Sharpe (return per unit of risk) beats the S&P 500;
+  - worst fall no more than 2 points worse than the S&P 500's;
+  - the engine ran every trading day (up to 2 gaps allowed, for holidays);
+  - no repeated engine errors;
+  - under 10% of orders rejected.
+- **Where it shows:** Performance shows each check with its numbers, plus a progress bar while the
+  month fills up; Today shows the status. The excess-return t-statistic is shown, because a month is
+  short and a pass can be luck.
+- **Notifications** fire when the check starts passing (with the steps to go live) and if it stops
+  passing. The daily report notification includes the check's summary.
+- **Going live is never automatic.** You put live keys in Vercel and set `ALPACA_ENV=live` and
+  `SHOAL_SERVER_LIVE=1`. `SHOAL_LIVE_CAPITAL` caps the money the engine invests while trading live, so
+  it can start small whatever the account holds.

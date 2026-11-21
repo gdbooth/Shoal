@@ -50,6 +50,10 @@ end-of-day report) and keeps its records in a private Vercel Blob store.
   `SHOAL_MARKET_DROP_PCT` (3%); troubled holdings flagged; optional catastrophe stop `SHOAL_STOP_PCT` (off);
   orders still working are never doubled, stuck ones cancelled after `SHOAL_STALE_MIN` (30) minutes; fills and
   rejections in the end-of-day report.
+- **Go-live check** (step 6, `readiness.js`): after each close, the last 21 trading days are checked against the bar for
+  live money (return and Sharpe beat SPY, drawdown, reliability); shown on Performance, notified when it starts or stops
+  passing. Going live stays manual (live keys, `ALPACA_ENV=live`, `SHOAL_SERVER_LIVE=1`); `SHOAL_LIVE_CAPITAL` caps the
+  money invested while live.
 - **Notifications** (step 5, `notify.js`): set `SHOAL_NOTIFY_URL` to an ntfy topic URL (`https://ntfy.sh/<long secret topic>`),
   a Slack or Discord webhook, or any https webhook. End-of-day report, risk alerts and errors; `SHOAL_NOTIFY_LEVEL=all`
   adds every order. `POST /api/engine/notify-test` (behind the login) sends a test.

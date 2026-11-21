@@ -7781,6 +7781,9 @@ const ScreenToday = ({ onGo }) => {
           <div className="kpi"><div className="kpi-label">Positions</div><div className="kpi-value mono">{r ? r.held.length - r.sells.length + r.buys.length : rep ? rep.positions : '—'}</div><div className="kpi-delta muted">of at most {eng.topK}</div></div>
           <div className="kpi"><div className="kpi-label">Last run</div><div className="kpi-value mono" style={{fontSize:16}}>{eng.recent[0] ? new Date(eng.recent[0].at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}</div><div className="kpi-delta muted">{eng.recent[0] ? eng.recent[0].phase : 'no runs yet'}</div></div>
         </div>
+        {eng.readiness && eng.readiness.status !== 'collecting' && (
+          <div className="mono tiny" style={{marginBottom:12,color: eng.readiness.status === 'ready' ? 'var(--up)' : 'var(--ink-2)'}}>Go-live check: {eng.readiness.status} · <a href="#" onClick={e => { e.preventDefault(); onGo('performance'); }} style={{color:'var(--info)'}}>details on Performance</a></div>
+        )}
         {guard && (guard.blockBuys || guard.flags.length > 0) && (
           <div className="card" style={{borderColor:'var(--warn)',marginBottom:12}}>
             <div className="mono tiny" style={{color:'var(--ink-2)',lineHeight:1.7}}>
@@ -7917,8 +7920,9 @@ const ScreenPerformanceHub = () => {
           <div className="kpi"><div className="kpi-label">Shoal</div><div className="kpi-value mono">{pctTxt(tot('dayReturnPct'), 2)}</div><div className="kpi-delta muted">over {days} trading day{days === 1 ? '' : 's'}</div></div>
           <div className="kpi"><div className="kpi-label">S&amp;P 500</div><div className="kpi-value mono">{pctTxt(tot('spyPct'), 2)}</div><div className="kpi-delta muted">same days</div></div>
           <div className="kpi"><div className="kpi-label">Days ahead</div><div className="kpi-value mono">{days ? `${beat}/${days}` : '—'}</div><div className="kpi-delta muted">beat the S&amp;P 500</div></div>
-          <div className="kpi"><div className="kpi-label">Paper month</div><div className="kpi-value mono">{Math.min(days, 21)}/21</div><div className="kpi-delta muted">trading days towards the live decision</div></div>
+          <div className="kpi"><div className="kpi-label">Go-live check</div><div className="kpi-value mono" style={{fontSize:18,color: eng.readiness && eng.readiness.status === 'ready' ? 'var(--up)' : eng.readiness && eng.readiness.status === 'not ready' ? 'var(--warn)' : 'var(--ink)'}}>{!eng.readiness ? '—' : eng.readiness.status === 'collecting' ? `${eng.readiness.days}/${eng.readiness.needed} days` : eng.readiness.status.toUpperCase()}</div><div className="kpi-delta muted">{eng.readiness && eng.readiness.status === 'collecting' ? 'of paper trading so far' : 'last 21 trading days'}</div></div>
         </div>
+        <GoLivePanel eng={eng}/>
         <div className="card" style={{marginBottom:12}}>
           <div className="card-head"><div className="card-title">Growth of 100</div><div className="card-meta">hover for values</div></div>
           <PerfChart rows={reports}/>
@@ -7935,6 +7939,35 @@ const ScreenPerformanceHub = () => {
           )}
         </div>
       </>)}
+    </div>
+  );
+};
+
+// Step 6 built in: the go-live check, re-run after every end-of-day report (readiness.js)
+const GoLivePanel = ({ eng }) => {
+  const R = eng && eng.readiness;
+  if (!R) return null;
+  const col = R.status === 'ready' ? 'var(--up)' : R.status === 'not ready' ? 'var(--warn)' : R.status === 'live' ? 'var(--live)' : 'var(--line-2)';
+  return (
+    <div className="card" style={{marginBottom:12,borderColor:col}}>
+      <div className="card-head"><div className="card-title">Go-live check</div><div className="card-meta">{R.from ? `${R.from} → ${R.to}` : R.status}</div></div>
+      <div className="mono tiny" style={{color:'var(--ink-2)',lineHeight:1.7}}>{R.summary}</div>
+      {R.status === 'collecting' && (
+        <div style={{marginTop:8,height:6,background:'var(--bg-3)',borderRadius:3,overflow:'hidden'}} role="progressbar" aria-valuenow={R.days} aria-valuemax={R.needed}>
+          <div style={{width:`${(R.days / R.needed) * 100}%`,height:'100%',background:'var(--teal)'}}/>
+        </div>
+      )}
+      {R.checks && R.checks.length > 0 && (
+        <table className="tbl" style={{marginTop:8}}><tbody>{R.checks.map(c => (
+          <tr key={c.id}><td style={{width:28,color: c.pass ? 'var(--up)' : 'var(--down)'}} aria-label={c.pass ? 'pass' : 'fail'}>{c.pass ? '✓' : '✗'}</td><td>{c.label}</td><td className="mono tiny" style={{textAlign:'right',color:'var(--ink-2)'}}>{c.detail}</td></tr>))}</tbody></table>
+      )}
+      {R.excessT != null && <div className="mono tiny muted" style={{marginTop:6}}>Daily excess return t-statistic {R.excessT} (2+ would mean unlikely to be luck; one month rarely gets there).</div>}
+      {R.status === 'ready' && (
+        <div className="mono tiny" style={{marginTop:10,color:'var(--ink-2)',lineHeight:1.7}}>
+          <b>To go live</b> (nothing switches on by itself):<ol style={{margin:'4px 0 0 18px',padding:0}}>{(eng.howToGoLive || []).map((x, i) => <li key={i}>{x}</li>)}</ol>
+        </div>
+      )}
+      <div className="mono tiny muted" style={{marginTop:8}}>Checked after every end-of-day report{eng.notify && eng.notify !== 'off' ? '; you are notified when it starts or stops passing' : '; turn on notifications in Settings to be told when it passes'}.</div>
     </div>
   );
 };

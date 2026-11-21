@@ -8,6 +8,7 @@ import { alpaca } from './brokers/alpaca.js';
 import { ig } from './brokers/ig.js';
 import { serverConfig, strategyFor, learnFromBroker, learnedWeights } from './trader.js';
 import { notify } from './notify.js';
+import { goLiveCheck, HOW_TO_GO_LIVE } from './readiness.js';
 import { engineTick, ENGINE } from './engine.js';
 import { createStore, storeKind } from './store.js';
 
@@ -376,7 +377,8 @@ app.get('/api/engine/status', async (_req, res) => {
   try {
     const state = (await store.get('state.json')) || {};
     res.json({ enabled: serverEnabled(cfg), configured: !!(cfg.keyId && cfg.secret), cronSecret: !!process.env.CRON_SECRET, env: cfg.env, storage: storeKind(), strategy: cfg.strategy,
-      topK: cfg.topK, investFraction: cfg.investFraction, watchlistSize: cfg.watchlist.length, dailyLossPct: cfg.dailyLossPct, marketDropPct: cfg.marketDropPct, stopPct: cfg.stopPct, openDelayMin: ENGINE.openDelayMin, notify: cfg.notify.kind, notifyLevel: cfg.notify.level,
+      topK: cfg.topK, investFraction: cfg.investFraction, watchlistSize: cfg.watchlist.length, dailyLossPct: cfg.dailyLossPct, marketDropPct: cfg.marketDropPct, stopPct: cfg.stopPct, openDelayMin: ENGINE.openDelayMin, notify: cfg.notify.kind, notifyLevel: cfg.notify.level, liveCapital: cfg.liveCapital,
+      readiness: goLiveCheck(state.reports || [], { recent: state.recent || [], env: cfg.env }), howToGoLive: HOW_TO_GO_LIVE,
       lastTick: state.lastTick || null, lastOpenDate: state.lastOpenDate || null, lastHourlyKey: state.lastHourlyKey || null, lastCloseDate: state.lastCloseDate || null,
       recent: state.recent || [], reports: state.reports || [] });
   } catch (err) { res.status(502).json({ error: err.message }); }

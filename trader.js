@@ -43,6 +43,7 @@ export function serverConfig(env = process.env) {
     watchlist: (list.length >= 5 ? list : W.DEFAULT).slice(0, 150),
     dailyLossPct: Math.max(1, Math.min(50, parseFloat(env.SHOAL_DAILY_LOSS_PCT) || 5)),
     strategy: env.SHOAL_STRATEGY === 'tilt' ? 'tilt' : 'team',
+    liveCapital: Math.max(0, parseFloat(env.SHOAL_LIVE_CAPITAL) || 0),
     notify: notifyConfig(env),
     stopPct: Math.max(0, Math.min(50, parseFloat(env.SHOAL_STOP_PCT) || 0)),
     marketDropPct: Math.max(0.5, Math.min(20, parseFloat(env.SHOAL_MARKET_DROP_PCT) || 3)),
@@ -87,7 +88,7 @@ export async function runTilt(session, cfg, { dry = false, now = new Date() } = 
   const sells = [...held.keys()].filter(s => !pick.has(s));
   const missing = plan.picks.filter(s => !held.has(s));
   const equity = num(acct.body.equity), cash = Math.min(num(acct.body.cash), num(acct.body.buying_power));
-  const per = (equity * cfg.investFraction) / plan.K;
+  const per = (sizingEquity(equity, cfg) * cfg.investFraction) / plan.K;
   const buys = [];
   let left = Number.isFinite(cash) ? cash : 0;
   for (const sym of missing) {
@@ -124,6 +125,8 @@ export async function runTilt(session, cfg, { dry = false, now = new Date() } = 
 //      (halved while the market trend is negative), spending only cash it already has.
 // Every decision (votes per agent, score, confidence) is returned so step 3 can score each call later.
 const BARS_DAYS = 600, LEARN_DAYS = 820;
+// Live money can start small: SHOAL_LIVE_CAPITAL caps the equity the engine sizes positions from
+export const sizingEquity = (equity, cfg) => (cfg.env === 'live' && cfg.liveCapital > 0 ? Math.min(equity, cfg.liveCapital) : equity);
 const nyDate = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 
 export function teamPlan(barsBySym, { held = [], watchlist, topK, now = new Date(), params, decision, weights } = {}) {
@@ -177,7 +180,7 @@ export async function runTeamLive(session, cfg, { dry = false, now = new Date(),
   const plan = teamPlan(bars.body.bars || {}, { held, watchlist: cfg.watchlist, topK: cfg.topK, now, weights });
   if (!plan.decisions.length) return { ok: false, error: 'not enough price history for the agents' };
   const equity = num(acct.body.equity), cash = Math.min(num(acct.body.cash), num(acct.body.buying_power));
-  const per = (equity * cfg.investFraction * plan.scale) / cfg.topK;
+  const per = (sizingEquity(equity, cfg) * cfg.investFraction * plan.scale) / cfg.topK;
   const buys = [], sells = plan.sells.filter(s => !pendingSell.has(s));
   let left = Math.max(0, (Number.isFinite(cash) ? cash : 0) - pendingCash);
   for (const sym of blockBuys ? [] : plan.wanted.filter(s => !pendingBuy.has(s))) {

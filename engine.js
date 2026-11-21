@@ -14,6 +14,7 @@
 // the store: state.json (what ran, recent events and reports — one read for the dashboard) and
 // days/YYYY-MM-DD.json (that day's full log). A tick with nothing due reads state and writes nothing.
 import { notify } from './notify.js';
+import { goLiveCheck, HOW_TO_GO_LIVE } from './readiness.js';
 import { strategyFor, learnFromBroker, learnedWeights, scorecardSummary, guardCheck, cancelStale, orderReport, spyDay } from './trader.js';
 
 export const ENGINE = { openDelayMin: 15, hourlyFromMin: 60, lockMs: 4 * 60_000, keepEvents: 60, keepReports: 90 };
@@ -130,6 +131,15 @@ export async function engineTick({ session, store, cfg, strategy, learn = learnF
         note(closeNote);
         state.reports = [{ ...report, positions: report.positions.length, orders: undefined }, ...(state.reports || []).filter(r => r.date !== ny.date)].slice(0, ENGINE.keepReports);
         state.lastCloseDate = ny.date;
+        // the go-live check (step 6): notify when it starts or stops passing
+        const ready = goLiveCheck(state.reports, { recent: state.recent || [], env: cfg.env });
+        const prevReady = state.readiness && state.readiness.status;
+        state.readiness = { status: ready.status, summary: ready.summary, date: ny.date };
+        closeNote.text += `\nGo-live check: ${ready.summary}`;
+        if (ready.status !== prevReady && (ready.status === 'ready' || prevReady === 'ready')) {
+          note({ title: ready.status === 'ready' ? 'Shoal: go-live check passed' : 'Shoal: go-live check no longer passes', priority: 'high', tags: ['rocket'],
+            text: ready.summary + (ready.status === 'ready' ? `\nTo go live:\n${HOW_TO_GO_LIVE.map((x, i) => `${i + 1}. ${x}`).join('\n')}` : '') });
+        }
         // score the agents' calls and move their weights (never fails the close)
         try {
           const l = learn ? await learn(session, cfg, store, { now }) : null;
