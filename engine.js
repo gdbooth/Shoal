@@ -13,6 +13,7 @@
 // SHOAL_STRATEGY=tilt. Everything is recorded in
 // the store: state.json (what ran, recent events and reports — one read for the dashboard) and
 // days/YYYY-MM-DD.json (that day's full log). A tick with nothing due reads state and writes nothing.
+import { notify } from './notify.js';
 import { strategyFor, learnFromBroker, learnedWeights, scorecardSummary, guardCheck, cancelStale, orderReport, spyDay } from './trader.js';
 
 export const ENGINE = { openDelayMin: 15, hourlyFromMin: 60, lockMs: 4 * 60_000, keepEvents: 60, keepReports: 90 };
@@ -44,7 +45,8 @@ async function snapshot(session) {
   return { equity: round2(num(acct.body?.equity)), cash: round2(num(acct.body?.cash)), positions, raw: Array.isArray(pos.body) ? pos.body : [] };
 }
 
-export async function engineTick({ session, store, cfg, strategy, learn = learnFromBroker, now = new Date(), dry = false }) {
+export async function engineTick({ session, store, cfg, strategy, learn = learnFromBroker, send, now = new Date(), dry = false }) {
+  send = send || ((m) => notify(cfg.notify, m));
   strategy = strategy || strategyFor(cfg);
   const clock = await session.req('/v2/clock');
   if (clock.status !== 200) return { ok: false, error: `clock: HTTP ${clock.status}` };
@@ -62,6 +64,11 @@ export async function engineTick({ session, store, cfg, strategy, learn = learnF
   const day = (await store.get(dayKey)) || { date: ny.date, events: [] };
   const events = [];
   const record = (phase, data) => { const e = { phase, at: now.toISOString(), ...data }; events.push(e); day.events.push(e); return e; };
+  // notifications: collected during the tick, sent after it is saved; `key` sends an alert once per day
+  const notes = [], level = cfg.notify?.level || 'daily';
+  day.notified = day.notified || [];
+  const note = (m, key) => { if (key) { if (day.notified.includes(key)) return; day.notified.push(key); } notes.push(m); };
+  const orderText = (r) => (r?.orders || []).map(o => `${o.side} ${o.sym}${o.notional ? ` $${Math.round(o.notional).toLocaleString()}` : ''}${o.ok ? '' : ' (failed)'}`).join(', ');
   const weights = due.some(p => p !== 'close') ? await learnedWeights(store) : null;
   try {
     for (const phase of due) {
@@ -70,6 +77,8 @@ export async function engineTick({ session, store, cfg, strategy, learn = learnF
         day.openEquity = snap.equity;
         const r = await strategy(session, cfg, { now, weights, phase: 'open' });
         record('open', { summary: summarise(r), result: r, equity: snap.equity, positions: snap.positions.length });
+        if (level === 'all' && r?.orders?.length) note({ title: 'Shoal: open review', text: `${summarise(r)}\nOrders: ${orderText(r)}`, priority: 'low', tags: ['chart_with_upwards_trend'] });
+        if (r && r.ok === false) note({ title: 'Shoal: open review failed', text: r.error || 'unknown error', priority: 'high', tags: ['warning'] }, `open-error`);
         state.lastOpenDate = ny.date;
       }
       if (phase === 'hourly') {
@@ -91,6 +100,10 @@ export async function engineTick({ session, store, cfg, strategy, learn = learnF
         if (stopOrders.length) parts.push(`stopped out: ${stopOrders.map(o => o.sym).join(', ')}`);
         if (stale.cancelled.length) parts.push(`cancelled stuck orders: ${stale.cancelled.map(o => `${o.side} ${o.sym}`).join(', ')}`);
         record('hourly', { summary: parts.join(' · '), result: r, guard, cancelled: stale.cancelled, equity: snap.equity, dayReturnPct: guard.dayReturnPct, positions: snap.positions.length });
+        if (guard.blockBuys) note({ title: 'Shoal: no new buys', text: `Risk guardian: ${guard.blockBuys}. Portfolio ${guard.dayReturnPct}% today.`, priority: 'high', tags: ['shield'] }, `block-${guard.blockBuys.split(' ')[0]}`);
+        for (const f of guard.flags) note({ title: 'Shoal: holding to watch', text: f, priority: 'default', tags: ['eyes'] }, `flag-${f.split(' ')[0]}-${/today/.test(f) ? 'day' : 'entry'}`);
+        if (stopOrders.length) note({ title: 'Shoal: catastrophe stop', text: `Sold ${stopOrders.map(o => o.sym).join(', ')} (${cfg.stopPct}% below entry).`, priority: 'high', tags: ['rotating_light'] });
+        if (level === 'all' && r?.orders?.length) note({ title: 'Shoal: hourly check', text: `Orders: ${orderText(r)}`, priority: 'low' });
         state.lastHourlyKey = `${ny.date}T${String(ny.hour).padStart(2, '0')}`;
       }
       if (phase === 'close') {
@@ -110,7 +123,11 @@ export async function engineTick({ session, store, cfg, strategy, learn = learnF
           fills: orders ? orders.filled.length : null, rejected: orders ? orders.rejected.length : null, orders };
         day.report = report;
         const ord = orders ? ` (${orders.filled.length} filled${orders.rejected.length ? `, ${orders.rejected.length} rejected: ${orders.rejected.map(o => o.sym).join(', ')}` : ''}${orders.cancelled.length ? `, ${orders.cancelled.length} cancelled` : ''}${orders.working.length ? `, ${orders.working.length} still working` : ''})` : '';
-        record('close', { summary: `day ${report.dayReturnPct ?? '—'}% vs SPY ${report.spyPct ?? '—'}% · ${report.trades} orders${ord} · ${snap.positions.length} positions`, equity: snap.equity });
+        const closeSummary = `day ${report.dayReturnPct ?? '—'}% vs SPY ${report.spyPct ?? '—'}% · ${report.trades} orders${ord} · ${snap.positions.length} positions`;
+        record('close', { summary: closeSummary, equity: snap.equity });
+        const closeNote = { title: `Shoal ${ny.date}: ${report.dayReturnPct != null ? `${report.dayReturnPct >= 0 ? '+' : ''}${report.dayReturnPct}%` : 'day report'}`,
+          text: `Equity $${Math.round(snap.equity || 0).toLocaleString()} · ${closeSummary}`, priority: 'default', tags: ['bar_chart'] };
+        note(closeNote);
         state.reports = [{ ...report, positions: report.positions.length, orders: undefined }, ...(state.reports || []).filter(r => r.date !== ny.date)].slice(0, ENGINE.keepReports);
         state.lastCloseDate = ny.date;
         // score the agents' calls and move their weights (never fails the close)
@@ -118,12 +135,14 @@ export async function engineTick({ session, store, cfg, strategy, learn = learnF
           const l = learn ? await learn(session, cfg, store, { now }) : null;
           if (l) record('learn', { summary: l.ok ? scorecardSummary(l.scorecard) : `scorecard: ${l.error}` });
           if (l?.ok) day.scorecard = l.scorecard;
+          if (l) closeNote.text += `\n${l.ok ? scorecardSummary(l.scorecard) : `scorecard: ${l.error}`}`;
         } catch (err) { record('learn', { summary: `scorecard failed: ${err.message}` }); }
       }
     }
   } catch (err) {
     record('error', { summary: err.message });
     base.ok = false; base.error = err.message;
+    note({ title: 'Shoal: engine error', text: `${due.join(', ')}: ${err.message}`, priority: 'high', tags: ['warning'] }, `error-${err.message.slice(0, 40)}`);
   } finally {
     state.recent = [...events.map(e => ({ phase: e.phase, at: e.at, summary: e.summary })).reverse(), ...(state.recent || [])].slice(0, ENGINE.keepEvents);
     state.lastTick = now.toISOString();
@@ -131,7 +150,9 @@ export async function engineTick({ session, store, cfg, strategy, learn = learnF
     await store.put(dayKey, day);
     await store.put('state.json', state);
   }
-  return { ...base, ran: events.map(e => e.phase), events: events.map(e => ({ phase: e.phase, summary: e.summary })) };
+  let notified = 0;
+  for (const m of notes) { try { if ((await send(m))?.sent) notified++; } catch { /* never fails a tick */ } }
+  return { ...base, ran: events.map(e => e.phase), events: events.map(e => ({ phase: e.phase, summary: e.summary })), notified };
 }
 
 function summarise(r) {

@@ -5,7 +5,7 @@ It provides real-time market data, advanced charting tools, and a user-friendly 
 
 ## Using the app
 
-Start with **Guide · start here** at the top of the app's menu: the recommended workflow (keep Rank & tilt
+The menu has five main screens (Today, Agents, Performance, Lab, Settings); start with **Guide · start here** at the top of it: the recommended workflow (keep Rank & tilt
 and the Balanced risk level, check it against buy & hold in SIMULATED, paper trade in VIRTUAL, judge it over
 months), what the testing has shown so far, every mode, style, screen and setting, how to read the labs
 (GO / BORDERLINE / NO-GO, IC, t, bp, Sharpe), and the limits. The menu is split into **Workspace** (everyday
@@ -50,6 +50,9 @@ end-of-day report) and keeps its records in a private Vercel Blob store.
   `SHOAL_MARKET_DROP_PCT` (3%); troubled holdings flagged; optional catastrophe stop `SHOAL_STOP_PCT` (off);
   orders still working are never doubled, stuck ones cancelled after `SHOAL_STALE_MIN` (30) minutes; fills and
   rejections in the end-of-day report.
+- **Notifications** (step 5, `notify.js`): set `SHOAL_NOTIFY_URL` to an ntfy topic URL (`https://ntfy.sh/<long secret topic>`),
+  a Slack or Discord webhook, or any https webhook. End-of-day report, risk alerts and errors; `SHOAL_NOTIFY_LEVEL=all`
+  adds every order. `POST /api/engine/notify-test` (behind the login) sends a test.
 - **Agent scorecard** (step 3): after each close the engine scores every agent call whose 5- or 21-day horizon
   has passed and moves the pickers' weights a damped, evidence-gated step (`learning.json`). `GET /api/engine/learning`
   and `POST /api/engine/learn` (behind the login; reads prices, never trades) back Settings → Server engine → Agent scorecard.

@@ -377,6 +377,15 @@ a { color: inherit; text-decoration: none; }
   line-height: 1.5;
 }
 
+/* ------- hub tabs (step 5) ------- */
+.hub-tabs { display: flex; gap: 2px; flex-wrap: wrap; padding: 14px 32px 0; border-bottom: 1px solid var(--line); }
+.hub-tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--ink-3); font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; padding: 8px 12px; cursor: pointer; }
+.hub-tab:hover { color: var(--ink); }
+.hub-tab.active { color: var(--ink); border-bottom-color: var(--teal); }
+.hub-tab:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+.lab-card:hover { border-color: var(--line-2); }
+@media (max-width: 768px) { .hub-tabs { padding: 10px 16px 0; overflow-x: auto; flex-wrap: nowrap; } .hub-tab { white-space: nowrap; } }
+
 /* ------- cards ------- */
 .card {
   background: var(--bg-1);
@@ -5334,6 +5343,30 @@ const AgentScorecard = ({ configured }) => {
   );
 };
 
+// Notifications (step 5): end-of-day report, risk alerts and errors to your phone or a chat channel
+const NotifySetup = ({ eng }) => {
+  const [msg, setMsg] = React.useState(null);
+  const test = async () => {
+    setMsg('Sending…');
+    try { const r = await fetch(`${BACKEND_URL}/api/engine/notify-test`, { method: 'POST' }); const d = await r.json(); setMsg(d.sent ? 'Sent: check your phone or channel.' : (d.error || `HTTP ${r.status}`)); }
+    catch (e) { setMsg(e.message); }
+  };
+  const on = eng.notify && eng.notify !== 'off';
+  return (
+    <div style={{marginTop:10}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
+        <div className="mono tiny muted" style={{letterSpacing:'0.1em'}}>NOTIFICATIONS · {on ? `ON (${eng.notify}, ${eng.notifyLevel === 'all' ? 'every order' : 'daily + alerts'})` : 'OFF'}</div>
+        {on && <button className="btn" style={{fontSize:10,padding:'3px 8px'}} onClick={test}>SEND TEST</button>}
+      </div>
+      <div className="mono tiny" style={{marginTop:4,color:'var(--ink-2)',lineHeight:1.6}}>
+        {on ? 'You get the end-of-day report (with the scorecard), risk-guardian alerts (once a day each) and engine errors. ' : ''}
+        To {on ? 'change' : 'switch on'}: install the free <b>ntfy</b> app, subscribe to a long, unguessable topic name, then set <b>SHOAL_NOTIFY_URL</b> = https://ntfy.sh/&lt;that topic&gt; in Vercel (Sensitive) and redeploy. A Slack or Discord webhook URL works too. <b>SHOAL_NOTIFY_LEVEL</b>=all adds every order. Anyone who knows an ntfy topic can read it: keep the name secret.
+      </div>
+      {msg && <div className="mono tiny" style={{marginTop:4,color:'var(--ink-2)'}}>{msg}</div>}
+    </div>
+  );
+};
+
 const ServerTradingCard = ({ alpaca, st }) => {
   const [eng, setEng] = React.useState(null);
   const [err, setErr] = React.useState(null);
@@ -5362,7 +5395,7 @@ const ServerTradingCard = ({ alpaca, st }) => {
   return (
     <div className="field">
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
-        <div className="field-label">Server engine <span className="muted">(trades without this browser)</span></div>
+        <div className="field-label">Server engine <span className="muted">(trades without this browser · its scorecard is under Agents, its results under Performance)</span></div>
         <div className="mono tiny" style={{color: on ? 'var(--up)' : 'var(--ink-3)'}}>{!eng ? (err ? 'unavailable' : 'checking…') : on ? `ON · ${eng.env}` : 'OFF'}</div>
       </div>
       <div className="mono tiny muted" style={{marginTop:6,lineHeight:1.6}}>
@@ -5402,7 +5435,7 @@ const ServerTradingCard = ({ alpaca, st }) => {
               <td className="mono" style={{textAlign:'right'}}>{r.trades}</td><td className="mono" style={{textAlign:'right',color: r.rejected ? 'var(--warn)' : undefined}}>{r.fills != null ? `${r.fills}${r.rejected ? ` · ${r.rejected} rejected` : ''}` : '—'}</td><td className="mono" style={{textAlign:'right'}}>{r.positions}</td></tr>))}</tbody>
         </table>
       )}
-      {eng && eng.configured && eng.strategy !== 'tilt' && <AgentScorecard configured={eng.configured}/>}
+      {eng && <NotifySetup eng={eng}/>}
       {on && sameAcct && <button className="btn" style={{fontSize:10,padding:'4px 10px',marginTop:8}} disabled={busy} onClick={runPreview}>{busy ? 'CHECKING…' : "PREVIEW THE ENGINE'S PLAN"}</button>}
       {preview && (
         <div className="mono tiny" style={{marginTop:8,color: preview.error ? 'var(--down)' : 'var(--ink-2)',lineHeight:1.6}}>
@@ -5600,8 +5633,9 @@ const ScreenSettings = ({ serverTrading = null, mode, alpaca, setAlpaca, risk, s
               onClick={async () => { try { await fetch(`${BACKEND_URL}/api/logout`, { method: 'POST' }); } catch (_) {} location.href = '/login'; }}>LOG OUT</button>
           )}
         </div>
-        <p className="page-sub">The settings that change results are <b>Style</b> and <b>Risk level</b>. Replay data chooses the history SIMULATED uses. Leave Autopilot off and Advanced at the defaults unless a lab or the Optimiser's held-out check says otherwise; the Guide explains each one.</p>
+        <p className="page-sub">First the <b>server engine</b> (what trades your paper account every day, and notifications). Below it: the stocks watched, the broker connection for this browser, and the <b>browser bot</b>'s options (Style, Risk level, Replay data, Autopilot), which only affect the browser bot and the labs.</p>
       </div>
+      <div className="card" style={{marginBottom:16}}><ServerTradingCard alpaca={alpaca} st={serverTrading}/></div>
       {alpaca?.expired && !alpaca?.connected && (
         <div className="card" style={{borderColor:'var(--warn)',padding:'10px 16px',marginBottom:16}}>
           <div className="tiny" style={{color:'var(--ink-2)'}}><span className="mono" style={{color:'var(--warn)',letterSpacing:'0.12em'}}>SESSION EXPIRED · </span>For safety a broker session lasts 8 hours. Reconnect below to keep trading from this browser (the server's daily job, if on, is not affected).</div>
@@ -5726,8 +5760,6 @@ const ScreenSettings = ({ serverTrading = null, mode, alpaca, setAlpaca, risk, s
           </div>
 
           <WatchlistEditor brokerId={alpaca?.brokerId}/>
-
-          <ServerTradingCard alpaca={alpaca} st={serverTrading}/>
 
           <div className="field">
             <div className="field-label" style={{marginBottom:8}}>Replay data <span className="muted">(SIMULATED mode)</span></div>
@@ -7535,12 +7567,12 @@ const ScreenGuide = ({ onGo }) => {
       <div style={{display:'flex',flexDirection:'column',gap:12}}>
         <Sec n="1" title="Start here: the recommended way to use Shoal">
           <ol style={{margin:'0 0 0 18px',padding:0}}>
-            <li><b>Connect Alpaca paper trading</b> in <Go to="settings">Settings</Go> (free; IG works too but allows little price history per week).</li>
-            <li><b>Keep the defaults</b>: style <b>Rank &amp; tilt</b>, risk level <b>Balanced</b>, Autopilot off. They're the settings with the most evidence behind them.</li>
-            <li><b>Check it on history first</b>: mode SIMULATED, Replay data <b>Broker</b> (or an imported 10-year CSV), speed 100×. Watch <b>Shoal vs buy &amp; hold</b> on the <Go to="dashboard">Dashboard</Go>. The <Go to="backtest">Backtest</Go> gives the same answer in seconds.</li>
-            <li><b>Paper trade</b>: switch the mode to VIRTUAL. At the next US market open (14:30–21:00 UK time) it buys its top stocks, then re-ranks once a month. If nothing happens, read the <b>BOT STATUS</b> line on the dashboard.</li>
-            <li><b>Judge it over months, against buy &amp; hold</b>, not day by day. Consider LIVE only after paper results hold up, and start small.</li>
-            <li><b>Test ideas in the labs before changing anything live</b>: <Go to="swing">Swing lab</Go>, <Go to="intraday">Intraday lab</Go>, <Go to="optimiser">Optimiser</Go>. Each says GO or NO-GO on days the idea wasn't fitted to.</li>
+            <li><b>Let the server engine trade your Alpaca paper account.</b> <Go to="settings">Settings → Server engine</Go> lists what it needs (paper keys, a Blob store, the GitHub schedule). Once it's on, it runs every trading day without this browser.</li>
+            <li><b>Turn on notifications</b> (Settings → Server engine → Notifications) to get the end-of-day report and risk alerts on your phone.</li>
+            <li><b>Check <Go to="today">Today</Go></b> after 14:45 UK on a trading day: the team's votes, the risk guardian and what ran.</li>
+            <li><b>Read the <Go to="agents">Agents</Go> scorecard</b> weekly: which agents' calls have been right, how their weights moved, any retire candidates.</li>
+            <li><b>Judge it on <Go to="performance">Performance</Go> over a month, against the S&amp;P 500</b>, not day by day. Live money only after a month of paper results that beat it after costs.</li>
+            <li><b>Test ideas in the <Go to="lab">Lab</Go></b> before changing anything: Swing lab, Backtest, Optimiser. The original browser bot (SIMULATED / VIRTUAL / LIVE while this tab is open) is there too.</li>
           </ol>
         </Sec>
 
@@ -7584,8 +7616,16 @@ const ScreenGuide = ({ onGo }) => {
         </Sec>
 
         <Sec n="6" title="Every screen, and when to use it">
-          <T head={['Screen', 'What it is for']} rows={[
-            [<Go to="dashboard">Dashboard</Go>, 'Equity, BOT STATUS (why it is or isn\'t trading), Shoal vs buy & hold, open positions. Check this first.'],
+          <p style={{margin:'0 0 6px'}}>The menu has five main screens; each groups its detailed screens behind tabs at the top. <b>All screens</b> in the menu lists everything.</p>
+          <T head={['Main screen', 'What it is for']} rows={[
+            [<Go to="today">Today</Go>, 'The server engine on your paper account: equity, today vs the S&P 500, the team\'s latest votes per stock, risk-guardian alerts, today\'s runs and what happens next. Check this first.'],
+            [<Go to="agents">Agents</Go>, 'The scorecard: every agent\'s calls scored after 5 and 21 days, weights and their trend, retire candidates. Tabs: agent config and the browser bot\'s agent views.'],
+            [<Go to="performance">Performance</Go>, 'Shoal vs the S&P 500 from the daily reports, days ahead, progress towards the paper month. Tabs: the browser bot\'s trades and P/L.'],
+            [<Go to="lab">Lab</Go>, 'Backtest, optimiser, swing and intraday labs, and the original browser bot. None of it changes what the server trades.'],
+            [<Go to="settings">Settings</Go>, 'Server engine status and notifications, broker connection, stocks watched, browser bot options.'],
+          ]}/>
+          <T head={['Detailed screen', 'What it is for']} rows={[
+            [<Go to="dashboard">Browser bot (Dashboard)</Go>, 'The in-browser bot: equity, BOT STATUS (why it is or isn\'t trading), Shoal vs buy & hold, open positions.'],
             [<Go to="activity">Live activity</Go>, 'Each trade as it happens, with the reason.'],
             [<Go to="history">Trade history</Go>, 'Every order and outcome for the current mode; export to CSV.'],
             [<Go to="trade">Trade detail</Go>, 'One trade: the reason, the agents\' views at the time, the result.'],
@@ -7642,7 +7682,293 @@ const ScreenGuide = ({ onGo }) => {
   );
 };
 
-// First 7 = everyday use ("Workspace"); the rest = testing and detail ("Test & tune")
+// ── Step 5: five main screens (Today / Agents / Performance / Lab / Settings) ────────────────────────
+// Each hub groups the detailed screens behind tabs; nothing was removed.
+const HUBS = [
+  { id: 'today', label: 'Today', icon: 'dash', tabs: [['today', 'Today']] },
+  { id: 'agents', label: 'Agents', icon: 'brain', tabs: [['agents', 'Scorecard'], ['agentconfig', 'Agent config'], ['agentperf', 'Browser record'], ['learning', 'Browser weights']] },
+  { id: 'performance', label: 'Performance', icon: 'trend', tabs: [['performance', 'Server engine'], ['history', 'Browser trades'], ['pnltrend', 'Browser P/L'], ['trade', 'Trade detail']] },
+  { id: 'lab', label: 'Lab', icon: 'perf', tabs: [['lab', 'Overview'], ['backtest', 'Backtest'], ['optimiser', 'Optimiser'], ['swing', 'Swing lab'], ['intraday', 'Intraday lab'], ['dashboard', 'Browser bot'], ['activity', 'Live activity'], ['market', 'Market map'], ['sectors', 'Universe']] },
+  { id: 'settings', label: 'Settings', icon: 'gear', tabs: [['settings', 'Settings']] },
+];
+const hubOf = (route) => (route === 'guide' ? null : HUBS.find(h => h.tabs.some(([id]) => id === route)) || null);
+
+const HubTabs = ({ route, setRoute }) => {
+  const hub = hubOf(route);
+  if (!hub || hub.tabs.length < 2) return null;
+  return (
+    <div className="hub-tabs" role="tablist">
+      {hub.tabs.map(([id, label]) => (
+        <button key={id} role="tab" aria-selected={route === id} className={'hub-tab ' + (route === id ? 'active' : '')} onClick={() => setRoute(id)}>{label}</button>
+      ))}
+    </div>
+  );
+};
+
+// Shared fetch of the engine's status, refreshed every minute
+const useEngine = () => {
+  const [eng, setEng] = React.useState(null);
+  const [err, setErr] = React.useState(null);
+  React.useEffect(() => {
+    let live = true;
+    const load = () => fetch(`${BACKEND_URL}/api/engine/status`).then(r => r.json()).then(d => { if (live) { setEng(d); setErr(d.error || null); } }).catch(e => live && setErr(e.message));
+    load();
+    const id = setInterval(load, 60_000);
+    return () => { live = false; clearInterval(id); };
+  }, []);
+  return { eng, err };
+};
+const useJson = (url, deps = []) => {
+  const [d, setD] = React.useState(null);
+  React.useEffect(() => { let live = true; if (url) fetch(url).then(r => r.json()).then(x => live && setD(x)).catch(() => live && setD({ error: true })); return () => { live = false; }; }, deps);
+  return d;
+};
+
+// What the engine does next, from New York time (the engine itself follows Alpaca's clock, which also
+// knows holidays and half days)
+const engineNext = (now = new Date()) => {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(now).map(x => [x.type, x.value]));
+  const wd = p.weekday, m = (+p.hour % 24) * 60 + +p.minute, weekday = !['Sat', 'Sun'].includes(wd);
+  const local = (nyMin) => { const d = new Date(now.getTime() + (nyMin - m) * 60000); return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
+  if (!weekday || m >= 16 * 60 + 45) return 'Next: open review on the next trading day, 15 minutes after the open (9:45 New York).';
+  if (m < 9 * 60 + 45) return `Next: open review at ${local(9 * 60 + 45)} your time (9:45 New York).`;
+  if (m < 16 * 60) { const h = Math.max(10 * 60 + 30, (Math.floor(m / 60) + 1) * 60); return h < 16 * 60 ? `Next: hourly check around ${local(h)} your time; end-of-day report after the 16:00 close.` : `Next: end-of-day report after the close (${local(16 * 60)} your time).`; }
+  return `Next: end-of-day report shortly (the close was at ${local(16 * 60)} your time).`;
+};
+
+const pctTxt = (x, d = 1) => (x == null || !Number.isFinite(+x) ? '—' : `${x >= 0 ? '+' : ''}${(+x).toFixed(d)}%`);
+const moneyTxt = (x) => (x == null || !Number.isFinite(+x) ? '—' : `$${Math.round(x).toLocaleString()}`);
+
+// One agent's vote as a small signed bar (−1 sell … +1 buy)
+const VoteBars = ({ votes }) => (
+  <span style={{display:'inline-flex',gap:2,alignItems:'center',verticalAlign:'middle'}} aria-label="agent votes">
+    {SS.PICKERS.map(id => { const v = votes ? votes[id] || 0 : 0, a = AGENTS.find(x => x.id === id);
+      return <span key={id} title={`${a ? a.name : id}: ${v > 0 ? 'buy' : v < 0 ? 'sell' : 'no view'}${v ? ` (${Math.abs(v).toFixed(2)})` : ''}`}
+        style={{width:6,height:14,borderRadius:2,background: v > 0 ? 'var(--up)' : v < 0 ? 'var(--down)' : 'var(--line-2)',opacity: v ? 0.35 + 0.65 * Math.min(1, Math.abs(v)) : 1}}/>; })}
+  </span>
+);
+
+const ScreenToday = ({ onGo }) => {
+  const { eng, err } = useEngine();
+  const date = eng && (eng.lastOpenDate || null);
+  const day = useJson(date ? `${BACKEND_URL}/api/engine/day?date=${date}` : null, [date, eng && eng.lastTick]);
+  const events = (day && day.events) || [];
+  const lastDecision = [...events].reverse().find(e => e.result && e.result.decisions);
+  const lastHourly = [...events].reverse().find(e => e.phase === 'hourly');
+  const r = lastDecision && lastDecision.result;
+  const rep = eng && eng.reports && eng.reports[0];
+  const equity = (events.length ? [...events].reverse().find(e => e.equity != null) : null)?.equity ?? (rep ? rep.equityClose : null);
+  const guard = lastHourly && lastHourly.guard;
+  const buys = r ? r.decisions.filter(d => d.action === 'BUY').sort((a, b) => b.score - a.score).slice(0, 8) : [];
+  const held = r ? r.decisions.filter(d => d.action === 'HOLD' || d.action === 'SELL').sort((a, b) => a.score - b.score) : [];
+  return (
+    <div className="page" data-screen-label="Today">
+      <div className="page-head">
+        <div className="page-eyebrow">Today · server engine</div>
+        <h1 className="page-title">What the <em>team</em> is doing.</h1>
+        <p className="page-sub">The server engine trades your Alpaca paper account every trading day without this browser: open review, hourly risk checks, end-of-day report and agent scorecard. {engineNext()}</p>
+      </div>
+      {!eng && <div className="card mono tiny" style={{color: err ? 'var(--down)' : 'var(--ink-3)'}}>{err ? `Engine status unavailable: ${err}` : 'Loading…'}</div>}
+      {eng && !eng.enabled && (
+        <div className="card" style={{borderColor:'var(--warn)'}}>
+          <div className="mono tiny" style={{color:'var(--ink-2)',lineHeight:1.7}}>The server engine is <b>off</b>. Switch it on in <a href="#" onClick={e => { e.preventDefault(); onGo('settings'); }} style={{color:'var(--info)'}}>Settings → Server engine</a> (Alpaca paper keys, a Blob store and the GitHub schedule). The browser bot and the labs are under <a href="#" onClick={e => { e.preventDefault(); onGo('lab'); }} style={{color:'var(--info)'}}>Lab</a>.</div>
+        </div>
+      )}
+      {eng && (<>
+        <div className="kpi-grid" style={{marginBottom:12}}>
+          <div className="kpi"><div className="kpi-label">Equity</div><div className="kpi-value mono">{moneyTxt(equity)}</div><div className="kpi-delta muted">{eng.env} · {eng.strategy === 'tilt' ? 'Rank & tilt' : '9-agent team'}</div></div>
+          <div className="kpi"><div className="kpi-label">Today</div><div className="kpi-value mono" style={{color: guard && guard.dayReturnPct < 0 ? 'var(--down)' : 'var(--ink)'}}>{guard ? pctTxt(guard.dayReturnPct, 2) : rep && rep.date === date ? pctTxt(rep.dayReturnPct, 2) : '—'}</div><div className="kpi-delta muted">S&amp;P 500 {guard && guard.spyDayPct != null ? pctTxt(guard.spyDayPct, 2) : rep && rep.date === date ? pctTxt(rep.spyPct, 2) : '—'}</div></div>
+          <div className="kpi"><div className="kpi-label">Positions</div><div className="kpi-value mono">{r ? r.held.length - r.sells.length + r.buys.length : rep ? rep.positions : '—'}</div><div className="kpi-delta muted">of at most {eng.topK}</div></div>
+          <div className="kpi"><div className="kpi-label">Last run</div><div className="kpi-value mono" style={{fontSize:16}}>{eng.recent[0] ? new Date(eng.recent[0].at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}</div><div className="kpi-delta muted">{eng.recent[0] ? eng.recent[0].phase : 'no runs yet'}</div></div>
+        </div>
+        {guard && (guard.blockBuys || guard.flags.length > 0) && (
+          <div className="card" style={{borderColor:'var(--warn)',marginBottom:12}}>
+            <div className="mono tiny" style={{color:'var(--ink-2)',lineHeight:1.7}}>
+              <b style={{color:'var(--warn)'}}>⚠ Risk guardian</b>{guard.blockBuys ? ` · no new buys: ${guard.blockBuys}` : ''}{guard.flags.length ? ` · watching: ${guard.flags.join(', ')}` : ''}
+            </div>
+          </div>
+        )}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:12}}>
+          <div className="card">
+            <div className="card-head"><div className="card-title">The team's latest votes</div><div className="card-meta">{r ? `on ${r.rankedAsOf} closes` : ''}</div></div>
+            {!r && <div className="mono tiny muted">No decisions yet today. They appear after the open review.</div>}
+            {r && (<>
+              <div className="mono tiny muted" style={{marginBottom:8}}>{r.tally.BUY} buy · {r.tally.SELL} sell · {r.tally.HOLD} hold · {r.tally.WAIT} wait · market trend {r.mkt > 0 ? '+' : ''}{r.mkt}{r.scale < 1 ? ' (half-size buys)' : ''}. Bars: the 7 pickers' votes, green buy, red sell, grey no view.</div>
+              <table className="tbl">
+                <thead><tr><th>Stock</th><th>Call</th><th>Votes</th><th style={{textAlign:'right'}}>Confidence</th></tr></thead>
+                <tbody>{[...held, ...buys].map(d => (
+                  <tr key={d.sym}><td className="mono">{d.sym}</td>
+                    <td className="mono tiny" style={{color: d.action === 'BUY' ? 'var(--up)' : d.action === 'SELL' ? 'var(--down)' : 'var(--ink-2)'}}>{d.action === 'HOLD' ? 'HOLD (held)' : d.action}</td>
+                    <td><VoteBars votes={d.votes}/></td>
+                    <td className="mono" style={{textAlign:'right'}}>{(d.confidence * 100).toFixed(0)}%</td></tr>))}</tbody>
+              </table>
+            </>)}
+          </div>
+          <div className="card">
+            <div className="card-head"><div className="card-title">Today's runs</div><div className="card-meta">{date || ''}</div></div>
+            {events.length === 0 && <div className="mono tiny muted">Nothing has run today yet.</div>}
+            {[...events].reverse().slice(0, 12).map((e, k) => (
+              <div key={k} className="mono tiny" style={{display:'grid',gridTemplateColumns:'56px 56px 1fr',gap:8,lineHeight:1.6,color: e.phase === 'error' ? 'var(--down)' : 'var(--ink-2)'}}>
+                <span className="muted">{new Date(e.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><span>{e.phase}</span><span>{e.summary}</span>
+              </div>))}
+            <div className="mono tiny muted" style={{marginTop:10}}>Notifications: {eng.notify && eng.notify !== 'off' ? `on (${eng.notify}, ${eng.notifyLevel})` : <>off · set them up in <a href="#" onClick={e => { e.preventDefault(); onGo('settings'); }} style={{color:'var(--info)'}}>Settings</a></>}</div>
+          </div>
+        </div>
+      </>)}
+    </div>
+  );
+};
+
+// Tiny single-series trend line (small multiples: one per agent, one colour, no legend needed)
+const WeightTrend = ({ values, w = 90, h = 22 }) => {
+  const v = (values || []).filter(Number.isFinite);
+  if (v.length < 2) return <span className="muted mono tiny">—</span>;
+  const lo = Math.min(...v, 1), hi = Math.max(...v, 1), sx = (i) => 2 + (i / (v.length - 1)) * (w - 4), sy = (x) => h - 3 - ((x - lo) / (hi - lo || 1)) * (h - 6);
+  return (
+    <svg width={w} height={h} role="img" aria-label={`weight from ${v[0].toFixed(2)} to ${v[v.length - 1].toFixed(2)}`}>
+      <line x1="2" x2={w - 2} y1={sy(1)} y2={sy(1)} stroke="var(--line-2)" strokeWidth="1" strokeDasharray="2 3"/>
+      <polyline points={v.map((x, i) => `${sx(i)},${sy(x)}`).join(' ')} fill="none" stroke="var(--teal)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
+      <circle cx={sx(v.length - 1)} cy={sy(v[v.length - 1])} r="2.5" fill="var(--teal)"/>
+    </svg>
+  );
+};
+
+const ScreenAgentsHub = ({ onGo }) => {
+  const { eng } = useEngine();
+  const L = useJson(`${BACKEND_URL}/api/engine/learning`, []);
+  const hist = (L && L.history) || [];
+  return (
+    <div className="page" data-screen-label="Agents">
+      <div className="page-head">
+        <div className="page-eyebrow">Agents · scorecard</div>
+        <h1 className="page-title">Nine agents, <em>scored</em> on every call.</h1>
+        <p className="page-sub">7 stock pickers vote BUY or SELL on every watched stock; Market Trend sets the size; the Risk Guardian can exit and veto. Every vote is scored after 5 and 21 days and the pickers' weights follow their record.</p>
+      </div>
+      <div className="card" style={{marginBottom:12}}>
+        {eng ? (eng.configured ? <AgentScorecard configured={eng.configured}/> : <div className="mono tiny" style={{color:'var(--ink-2)'}}>The scorecard needs the server engine's Alpaca keys: see <a href="#" onClick={e => { e.preventDefault(); onGo('settings'); }} style={{color:'var(--info)'}}>Settings → Server engine</a>.</div>) : <div className="mono tiny muted">Loading…</div>}
+      </div>
+      <div className="card">
+        <div className="card-head"><div className="card-title">Weight history</div><div className="card-meta">{hist.length ? `${hist.length} daily updates · dashed line = 1` : ''}</div></div>
+        {hist.length < 2 ? <div className="mono tiny muted">The trend appears after a few end-of-day updates.</div> : (
+          <table className="tbl"><thead><tr><th>Picker</th><th>Trend</th><th style={{textAlign:'right'}}>First</th><th style={{textAlign:'right'}}>Now</th></tr></thead>
+            <tbody>{SS.PICKERS.map(id => { const v = hist.map(x => x.weights[id]); return (
+              <tr key={id}><td>{(AGENTS.find(a => a.id === id) || {}).name}</td><td><WeightTrend values={v}/></td>
+                <td className="mono" style={{textAlign:'right'}}>{v[0].toFixed(2)}</td><td className="mono" style={{textAlign:'right'}}>{v[v.length - 1].toFixed(2)}</td></tr>); })}</tbody></table>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Shoal vs the S&P 500, both indexed to 100 at the first report (one axis, two series)
+const PerfChart = ({ rows }) => {
+  const [hover, setHover] = React.useState(null);
+  const box = React.useRef(null);
+  const [W, setW] = React.useState(640);
+  React.useEffect(() => { if (!box.current || !window.ResizeObserver) return; const ro = new ResizeObserver(([e]) => setW(Math.max(280, Math.round(e.contentRect.width)))); ro.observe(box.current); return () => ro.disconnect(); }, [rows.length >= 2]);
+  const H = 220, P = { l: 44, r: 52, t: 12, b: 24 };
+  const pts = React.useMemo(() => { let a = 100, b = 100; return rows.map(r => { a *= 1 + (r.dayReturnPct || 0) / 100; b *= 1 + (r.spyPct || 0) / 100; return { date: r.date, shoal: a, spy: b }; }); }, [rows]);
+  if (pts.length < 2) return <div className="mono tiny muted">The chart appears after two end-of-day reports.</div>;
+  const all = [100, ...pts.flatMap(p => [p.shoal, p.spy])], lo = Math.min(...all), hi = Math.max(...all), pad = (hi - lo) * 0.1 || 1;
+  const x = (i) => P.l + (i / (pts.length - 1)) * (W - P.l - P.r), y = (v) => P.t + (1 - (v - lo + pad) / (hi - lo + 2 * pad)) * (H - P.t - P.b);
+  const line = (k) => pts.map((p, i) => `${x(i)},${y(p[k])}`).join(' ');
+  const ticks = [100, ...[lo, hi].filter(v => Math.abs(v - 100) > (hi - lo) * 0.15)];
+  const onMove = (e) => { const b = e.currentTarget.getBoundingClientRect(), fx = ((e.clientX - b.left) / b.width) * W; setHover(Math.max(0, Math.min(pts.length - 1, Math.round(((fx - P.l) / (W - P.l - P.r)) * (pts.length - 1))))); };
+  const h = hover != null ? pts[hover] : null;
+  return (
+    <div style={{position:'relative'}} ref={box}>
+      <div className="mono tiny" style={{display:'flex',gap:16,marginBottom:6,color:'var(--ink-2)'}}>
+        <span><span style={{display:'inline-block',width:14,height:2,background:'var(--teal)',verticalAlign:'middle',marginRight:6}}/>Shoal</span>
+        <span><span style={{display:'inline-block',width:14,height:2,background:'var(--ink-3)',verticalAlign:'middle',marginRight:6}}/>S&amp;P 500 (SPY)</span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} role="img" aria-label="Shoal versus the S&P 500, indexed to 100" onMouseMove={onMove} onMouseLeave={() => setHover(null)} style={{display:'block'}}>
+        {ticks.map(v => <g key={v}><line x1={P.l} x2={W - P.r} y1={y(v)} y2={y(v)} stroke="var(--line)" strokeWidth="1"/><text x={P.l - 6} y={y(v) + 3} textAnchor="end" fontSize="10" fill="var(--ink-3)" fontFamily="var(--mono)">{v.toFixed(1)}</text></g>)}
+        <text x={P.l} y={H - 6} fontSize="10" fill="var(--ink-3)" fontFamily="var(--mono)">{pts[0].date}</text>
+        <text x={W - P.r} y={H - 6} textAnchor="end" fontSize="10" fill="var(--ink-3)" fontFamily="var(--mono)">{pts[pts.length - 1].date}</text>
+        <polyline points={line('spy')} fill="none" stroke="var(--ink-3)" strokeWidth="2" strokeLinejoin="round"/>
+        <polyline points={line('shoal')} fill="none" stroke="var(--teal)" strokeWidth="2" strokeLinejoin="round"/>
+        <text x={W - P.r + 6} y={y(pts[pts.length - 1].shoal) + 3} fontSize="10" fill="var(--ink-2)" fontFamily="var(--mono)">Shoal</text>
+        <text x={W - P.r + 6} y={y(pts[pts.length - 1].spy) + 3} fontSize="10" fill="var(--ink-2)" fontFamily="var(--mono)">SPY</text>
+        {h && <g><line x1={x(hover)} x2={x(hover)} y1={P.t} y2={H - P.b} stroke="var(--ink-4)" strokeWidth="1"/>
+          <circle cx={x(hover)} cy={y(h.shoal)} r="4" fill="var(--teal)" stroke="var(--bg-1)" strokeWidth="2"/><circle cx={x(hover)} cy={y(h.spy)} r="4" fill="var(--ink-3)" stroke="var(--bg-1)" strokeWidth="2"/></g>}
+        <rect x={P.l} y={P.t} width={W - P.l - P.r} height={H - P.t - P.b} fill="transparent"/>
+      </svg>
+      {h && <div className="mono tiny" style={{position:'absolute',top:24,left: Math.min(W - 130, x(hover) + 10),background:'var(--bg-2)',border:'1px solid var(--line-2)',borderRadius:4,padding:'6px 8px',pointerEvents:'none',color:'var(--ink)'}}>
+        {h.date}<br/>Shoal {h.shoal.toFixed(2)}<br/>SPY {h.spy.toFixed(2)}</div>}
+    </div>
+  );
+};
+
+const ScreenPerformanceHub = () => {
+  const { eng, err } = useEngine();
+  const reports = eng ? [...(eng.reports || [])].reverse() : [];
+  const tot = (k) => (reports.length ? (reports.reduce((a, r) => a * (1 + (r[k] || 0) / 100), 1) - 1) * 100 : null);
+  const days = reports.length, beat = reports.filter(r => r.dayReturnPct != null && r.spyPct != null && r.dayReturnPct > r.spyPct).length;
+  return (
+    <div className="page" data-screen-label="Performance">
+      <div className="page-head">
+        <div className="page-eyebrow">Performance · server engine</div>
+        <h1 className="page-title">Shoal against <em>buy &amp; hold.</em></h1>
+        <p className="page-sub">From the engine's end-of-day reports on the paper account. The bar for live money: a month of paper results that beat the S&amp;P 500 after costs, on a risk-adjusted basis.</p>
+      </div>
+      {!eng && <div className="card mono tiny" style={{color: err ? 'var(--down)' : 'var(--ink-3)'}}>{err ? `Engine status unavailable: ${err}` : 'Loading…'}</div>}
+      {eng && (<>
+        <div className="kpi-grid" style={{marginBottom:12}}>
+          <div className="kpi"><div className="kpi-label">Shoal</div><div className="kpi-value mono">{pctTxt(tot('dayReturnPct'), 2)}</div><div className="kpi-delta muted">over {days} trading day{days === 1 ? '' : 's'}</div></div>
+          <div className="kpi"><div className="kpi-label">S&amp;P 500</div><div className="kpi-value mono">{pctTxt(tot('spyPct'), 2)}</div><div className="kpi-delta muted">same days</div></div>
+          <div className="kpi"><div className="kpi-label">Days ahead</div><div className="kpi-value mono">{days ? `${beat}/${days}` : '—'}</div><div className="kpi-delta muted">beat the S&amp;P 500</div></div>
+          <div className="kpi"><div className="kpi-label">Paper month</div><div className="kpi-value mono">{Math.min(days, 21)}/21</div><div className="kpi-delta muted">trading days towards the live decision</div></div>
+        </div>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-head"><div className="card-title">Growth of 100</div><div className="card-meta">hover for values</div></div>
+          <PerfChart rows={reports}/>
+        </div>
+        <div className="card">
+          <div className="card-head"><div className="card-title">Daily reports</div><div className="card-meta">newest first</div></div>
+          {reports.length === 0 ? <div className="mono tiny muted">No end-of-day reports yet.</div> : (
+            <table className="tbl"><thead><tr><th>Day</th><th style={{textAlign:'right'}}>Equity</th><th style={{textAlign:'right'}}>Shoal</th><th style={{textAlign:'right'}}>SPY</th><th style={{textAlign:'right'}}>Orders</th><th style={{textAlign:'right'}}>Filled</th><th style={{textAlign:'right'}}>Held</th></tr></thead>
+              <tbody>{[...reports].reverse().map(r => (
+                <tr key={r.date}><td className="mono">{r.date}</td><td className="mono" style={{textAlign:'right'}}>{moneyTxt(r.equityClose)}</td>
+                  <td className="mono" style={{textAlign:'right',color:(r.dayReturnPct ?? 0) >= 0 ? 'var(--up)' : 'var(--down)'}}>{pctTxt(r.dayReturnPct, 2)}</td>
+                  <td className="mono" style={{textAlign:'right'}}>{pctTxt(r.spyPct, 2)}</td><td className="mono" style={{textAlign:'right'}}>{r.trades}</td>
+                  <td className="mono" style={{textAlign:'right'}}>{r.fills != null ? `${r.fills}${r.rejected ? ` · ${r.rejected} rejected` : ''}` : '—'}</td><td className="mono" style={{textAlign:'right'}}>{r.positions}</td></tr>))}</tbody></table>
+          )}
+        </div>
+      </>)}
+    </div>
+  );
+};
+
+const ScreenLabHub = ({ onGo }) => {
+  const tools = [
+    ['backtest', 'Backtest', 'A browser style on the history in use, against buy & hold.'],
+    ['optimiser', 'Optimiser', 'Best settings for the last N days, then checked on days they weren\'t chosen on.'],
+    ['swing', 'Swing lab', 'Does each agent, and the team, call the next 2 days to a month? GO / NO-GO.'],
+    ['intraday', 'Intraday lab', 'Do intraday signals beat costs over 15–60 minutes? (Alpaca only.)'],
+    ['dashboard', 'Browser bot', 'The original in-browser bot: SIMULATED, VIRTUAL or LIVE, while this tab is open.'],
+    ['activity', 'Live activity', 'The browser bot\'s trades as they happen.'],
+    ['market', 'Market map', 'Today\'s moves and agent agreement per stock.'],
+    ['sectors', 'Universe', 'The watched stocks by sector (edit in Settings → Stocks watched).'],
+  ];
+  return (
+    <div className="page" data-screen-label="Lab">
+      <div className="page-head">
+        <div className="page-eyebrow">Lab · test and tune</div>
+        <h1 className="page-title">Test ideas on <em>past data</em> first.</h1>
+        <p className="page-sub">Everything here runs in this browser on the history in use (broker, your CSV or fictional). None of it changes what the server engine trades.</p>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:12}}>
+        {tools.map(([id, t, d]) => (
+          <div key={id} className="card lab-card" role="button" tabIndex={0} onClick={() => onGo(id)} onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && onGo(id)} style={{cursor:'pointer'}}>
+            <div className="card-title" style={{marginBottom:6}}>{t}</div>
+            <div className="mono tiny muted" style={{lineHeight:1.6}}>{d}</div>
+          </div>))}
+      </div>
+    </div>
+  );
+};
+
+// Every screen, for the "All screens" list in the sidebar
 const NAV = [
   { id: 'guide', label: 'Guide · start here', icon: 'dash' },
   { id: 'dashboard', label: 'Dashboard', icon: 'dash' },
@@ -7676,7 +8002,7 @@ const App = () => {
     }
     return savedMode;
   });
-  const [route, setRoute] = React.useState(() => localStorage.getItem('shoal_route') || 'dashboard');
+  const [route, setRoute] = React.useState(() => localStorage.getItem('shoal_route') || 'today');
   const [showOnboarding, setShowOnboarding] = React.useState(() => !localStorage.getItem('shoal_onboarded'));
   const [running, setRunning] = React.useState(true);
   const [tick, setTick] = React.useState(0);
@@ -7726,7 +8052,7 @@ const App = () => {
   const [toasts, setToasts] = React.useState([]);
   const [themeMode, setThemeMode] = React.useState(() => localStorage.getItem('shoal_theme') || 'dark');
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
-  const [navGroups, setNavGroups] = React.useState({ workspace: true, system: true });
+  const [navGroups, setNavGroups] = React.useState({ workspace: true, system: false });
 
   // Agent learning state
   const [agentWeights, setAgentWeights] = React.useState(() => defaultWeightsFor(risk.style));
@@ -9133,6 +9459,10 @@ const App = () => {
     importedUniverse, costBps: costBpsFor(risk, mode === 'SIMULATED' ? replayUniverseFor(risk.replaySource, liveUniverse, importedUniverse) : null, alpaca?.brokerId) };
   const screens = {
     guide:       <ScreenGuide onGo={(r) => { setRoute(r); window.scrollTo && window.scrollTo(0, 0); }}/>,
+    today:       <ScreenToday onGo={setRoute}/>,
+    agents:      <ScreenAgentsHub onGo={setRoute}/>,
+    performance: <ScreenPerformanceHub/>,
+    lab:         <ScreenLabHub onGo={setRoute}/>,
     dashboard:   <ScreenDashboard mode={mode} tick={tick} onTradeClick={handleTradeClick} onMode={requestMode} ctx={ctx}/>,
     activity:    <ScreenActivity mode={mode} tick={tick} onTradeClick={handleTradeClick} running={running} ctx={ctx}/>,
     history:     <ScreenHistory mode={mode} tick={tick} onTradeClick={handleTradeClick} ctx={ctx}/>,
@@ -9154,9 +9484,11 @@ const App = () => {
   };
 
   const navItem = NAV.find(n => n.id === route);
-  const navItemLabel = navItem ? navItem.label : 'Dashboard';
+  const navItemLabel = hubOf(route) && hubOf(route).tabs.length > 1 ? `${hubOf(route).label} · ${(hubOf(route).tabs.find(t => t[0] === route) || [])[1]}` : hubOf(route) ? hubOf(route).label : navItem ? navItem.label : 'Today';
 
   const closeNavOnMobile = () => setSidebarOpen(false);
+  // The browser bot's controls (symbol, direction, balance, speed, pause) only on its own screens
+  const botUi = !['today', 'agents', 'performance', 'lab', 'settings', 'guide'].includes(route) && !!screens[route];
 
   return (
     <div className={'shell ' + (mode === 'LIVE' ? 'live' : '')}>
@@ -9183,31 +9515,30 @@ const App = () => {
           </div>
         </div>
 
-        {/* Collapsible workspace group */}
+        {/* The five main screens (step 5); each groups its detailed screens behind tabs */}
         <div className="nav-section">
-          <div className="nav-group-header" onClick={()=>setNavGroups(g=>({...g, workspace: !g.workspace}))}>
-            <div className="nav-label" style={{paddingLeft:0,paddingTop:0,paddingBottom:0}}>Workspace</div>
-            <span className={'nav-chevron ' + (navGroups.workspace ? 'open' : '')}>▶</span>
+          <div className={'nav-item ' + (route==='guide'?'active':'')} onClick={()=>{ setRoute('guide'); closeNavOnMobile(); }}>
+            <span className="nav-icon"><Icon name="dash"/></span><span>Guide · start here</span>
           </div>
-          {navGroups.workspace && NAV.slice(0, 7).map(n => (
-            <div key={n.id} className={'nav-item ' + (route===n.id?'active':'')} onClick={()=>{ setRoute(n.id); closeNavOnMobile(); }}>
-              <span className="nav-icon"><Icon name={n.icon}/></span>
-              <span>{n.label}</span>
+          {HUBS.map(h => (
+            <div key={h.id} className={'nav-item ' + (hubOf(route) && hubOf(route).id === h.id ? 'active' : '')} onClick={()=>{ setRoute(h.tabs[0][0]); closeNavOnMobile(); }}>
+              <span className="nav-icon"><Icon name={h.icon}/></span>
+              <span>{h.label}</span>
+              {h.id === 'settings' && !alpaca.connected && serverTrading && !serverTrading.enabled && <span className="nav-num warn" style={{color:'var(--warn)'}}>!</span>}
             </div>
           ))}
         </div>
 
-        {/* Collapsible system group */}
+        {/* Every screen, for direct access */}
         <div className="nav-section">
           <div className="nav-group-header" onClick={()=>setNavGroups(g=>({...g, system: !g.system}))}>
-            <div className="nav-label" style={{paddingLeft:0,paddingTop:0,paddingBottom:0}}>Test &amp; tune</div>
+            <div className="nav-label" style={{paddingLeft:0,paddingTop:0,paddingBottom:0}}>All screens</div>
             <span className={'nav-chevron ' + (navGroups.system ? 'open' : '')}>▶</span>
           </div>
-          {navGroups.system && NAV.slice(7).map(n => (
+          {navGroups.system && NAV.filter(n => n.id !== 'guide').map(n => (
             <div key={n.id} className={'nav-item ' + (route===n.id?'active':'')} onClick={()=>{ setRoute(n.id); closeNavOnMobile(); }}>
               <span className="nav-icon"><Icon name={n.icon}/></span>
               <span>{n.label}</span>
-              {n.id === 'settings' && !alpaca.connected && <span className="nav-num warn" style={{color:'var(--warn)'}}>!</span>}
             </div>
           ))}
         </div>
@@ -9232,6 +9563,7 @@ const App = () => {
             <span/><span/><span/>
           </button>
           <div className="crumb">SHOAL / <b>{navItemLabel}</b></div>
+          {botUi && (<>
           <button className="btn" style={{marginLeft:8,padding:'6px 12px',display:'flex',alignItems:'center',gap:10}} onClick={()=>setSymbolPicker(true)} title="Switch symbol ( / )">
             <span className="mono" style={{color:'var(--ink)',fontWeight:500,letterSpacing:'0.02em'}}>◎ {activeSymbol}</span>
             {alpaca.connected && !marketStatus.isOpen && <span style={{fontSize:9,letterSpacing:'0.12em',padding:'2px 6px',borderRadius:3,background:'var(--line-2)',color:'var(--warn)',fontFamily:'var(--mono)',fontWeight:500}}>CLOSED</span>}
@@ -9245,7 +9577,10 @@ const App = () => {
               </div>
             ))}
           </div>
+          </>)}
           <div className="topbar-spacer"></div>
+          {!botUi && <div className="mono tiny muted" style={{letterSpacing:'0.08em'}}>The browser bot's controls are under Lab → Browser bot</div>}
+          {botUi && (<>
           {/* Available balance badge */}
           <div className="session-pnl" style={{color:'var(--ink-2)',background:'var(--bg-2)',cursor:'help'}}
                title={`Free cash available for new trades.\nEquity ${fmtMoney(balance, 0)} − locked ${fmtMoney(openExposure, 0)} = available ${fmtMoney(availableBalance, 0)}`}>
@@ -9271,14 +9606,16 @@ const App = () => {
             <span>{running ? 'BOT RUNNING' : 'BOT PAUSED'}</span>
             <button onClick={()=>setRunning(!running)}>{running ? 'PAUSE' : 'RESUME'}</button>
           </div>
+          </>)}
         </div>
 
         <div className="notif-strip">
-          <ToastOverlay toasts={toasts} onRemove={id=>setToasts(prev=>prev.filter(t=>t.id!==id))}/>
+          {botUi && <ToastOverlay toasts={toasts} onRemove={id=>setToasts(prev=>prev.filter(t=>t.id!==id))}/>}
         </div>
 
         <div className="main-scroll">
-          {screens[route]}
+          <HubTabs route={route} setRoute={setRoute}/>
+          {screens[route] || screens.today}
         </div>
       </main>
 

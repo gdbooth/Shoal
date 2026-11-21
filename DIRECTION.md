@@ -43,7 +43,7 @@ The 16 original agents are retired (not kept as advisory).
 2. **The 9 agents, each tested in the Swing lab, plus the majority-and-confidence rule** (done).
 3. **The daily cycle's learning: scoring every call, end-of-day scorecard and damped weight updates** (done).
 4. **Hourly risk guardian and order handling** (done).
-5. Simpler screens (Today / Agents / Performance / Lab / Settings) and notifications.
+5. **Simpler screens (Today / Agents / Performance / Lab / Settings) and notifications** (done).
 6. A month of paper trading, then a decision on live money.
 
 ## Step 1: what's in place
@@ -165,3 +165,24 @@ The day's low stood in for what an hourly check would have seen:
 Crash exits cut returns badly on one history and were mixed on the other; stops were neutral at
 best. Sharp intraday falls were usually recovered. That's why the guardian protects by not buying into
 a falling market rather than by selling, and the stop stays off unless you set one.
+
+## Step 5: what's in place
+
+- **Five main screens.** The menu is now Guide, **Today**, **Agents**, **Performance**, **Lab** and
+  **Settings**. Each groups its detailed screens behind tabs; "All screens" in the menu still lists
+  everything, and nothing was removed.
+  - **Today**: the server engine on the paper account. Equity, today against the S&P 500, positions,
+    risk-guardian alerts, the team's latest calls (each picker's vote as a small bar), today's runs and
+    what happens next.
+  - **Agents**: the scorecard, plus each picker's weight trend (one sparkline per agent).
+  - **Performance**: Shoal against the S&P 500 (growth of 100), days ahead, progress towards the 21-day
+    paper month, and the daily reports with fills.
+  - **Lab**: backtest, optimiser, swing and intraday labs, and the original browser bot. Its controls
+    (symbol, long/short, balance, speed, pause) now appear only on the browser bot's screens.
+  - **Settings**: the Server engine card comes first, with the new notifications section.
+- **Notifications** (`notify.js`). Off until `SHOAL_NOTIFY_URL` is set:
+  - an ntfy topic (free phone push), a Slack or Discord webhook, or any https webhook;
+  - you get the end-of-day report with the scorecard summary, risk-guardian alerts (once a day each)
+    and engine errors; `SHOAL_NOTIFY_LEVEL=all` adds every order;
+  - a failed notification never fails a tick; the URL is never shown in the app;
+  - Settings → Server engine → **Send test** checks the channel.

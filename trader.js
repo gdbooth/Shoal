@@ -14,6 +14,7 @@ import fs from 'fs';
 import vm from 'vm';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { notifyConfig } from './notify.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 let LIBS = null;
@@ -42,6 +43,7 @@ export function serverConfig(env = process.env) {
     watchlist: (list.length >= 5 ? list : W.DEFAULT).slice(0, 150),
     dailyLossPct: Math.max(1, Math.min(50, parseFloat(env.SHOAL_DAILY_LOSS_PCT) || 5)),
     strategy: env.SHOAL_STRATEGY === 'tilt' ? 'tilt' : 'team',
+    notify: notifyConfig(env),
     stopPct: Math.max(0, Math.min(50, parseFloat(env.SHOAL_STOP_PCT) || 0)),
     marketDropPct: Math.max(0.5, Math.min(20, parseFloat(env.SHOAL_MARKET_DROP_PCT) || 3)),
     staleMin: Math.max(5, Math.min(240, parseInt(env.SHOAL_STALE_MIN, 10) || 30)),

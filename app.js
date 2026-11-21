@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { alpaca } from './brokers/alpaca.js';
 import { ig } from './brokers/ig.js';
 import { serverConfig, strategyFor, learnFromBroker, learnedWeights } from './trader.js';
+import { notify } from './notify.js';
 import { engineTick, ENGINE } from './engine.js';
 import { createStore, storeKind } from './store.js';
 
@@ -375,7 +376,7 @@ app.get('/api/engine/status', async (_req, res) => {
   try {
     const state = (await store.get('state.json')) || {};
     res.json({ enabled: serverEnabled(cfg), configured: !!(cfg.keyId && cfg.secret), cronSecret: !!process.env.CRON_SECRET, env: cfg.env, storage: storeKind(), strategy: cfg.strategy,
-      topK: cfg.topK, investFraction: cfg.investFraction, watchlistSize: cfg.watchlist.length, dailyLossPct: cfg.dailyLossPct, marketDropPct: cfg.marketDropPct, stopPct: cfg.stopPct, openDelayMin: ENGINE.openDelayMin,
+      topK: cfg.topK, investFraction: cfg.investFraction, watchlistSize: cfg.watchlist.length, dailyLossPct: cfg.dailyLossPct, marketDropPct: cfg.marketDropPct, stopPct: cfg.stopPct, openDelayMin: ENGINE.openDelayMin, notify: cfg.notify.kind, notifyLevel: cfg.notify.level,
       lastTick: state.lastTick || null, lastOpenDate: state.lastOpenDate || null, lastHourlyKey: state.lastHourlyKey || null, lastCloseDate: state.lastCloseDate || null,
       recent: state.recent || [], reports: state.reports || [] });
   } catch (err) { res.status(502).json({ error: err.message }); }
@@ -400,6 +401,13 @@ app.post('/api/engine/learn', async (_req, res) => {
     res.status(r.ok ? 200 : 502).json(r);
   } catch (err) { res.status(502).json({ ok: false, error: err.message }); }
   finally { learning = false; }
+});
+// Send a test notification to the configured channel (behind the login; the URL itself is never returned)
+app.post('/api/engine/notify-test', async (_req, res) => {
+  const cfg = serverConfig();
+  if (cfg.notify.kind === 'off') return res.status(400).json({ sent: false, error: 'Set SHOAL_NOTIFY_URL first (see Settings → Server engine → Notifications).' });
+  const r = await notify(cfg.notify, { title: 'Shoal: test notification', text: 'Notifications are working. You will get the end-of-day report, risk alerts and errors here.', tags: ['white_check_mark'] });
+  res.status(r.sent ? 200 : 502).json({ sent: !!r.sent, kind: cfg.notify.kind, status: r.status ?? null, error: r.sent ? undefined : (r.reason || `HTTP ${r.status}`) });
 });
 app.get('/api/engine/day', async (req, res) => {
   const d = String(req.query.date || '');
