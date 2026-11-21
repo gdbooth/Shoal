@@ -445,393 +445,253 @@
   }
 
   // ── Agents ─────────────────────────────────────────────────────────────────
+  // Nine agents, each built on a method with long-run evidence (see DIRECTION.md). Seven stock pickers rank
+  // every stock against the others each day; Market trend times the whole market; Risk guardian only ever
+  // says SELL (danger) or nothing. Each agent has:
+  //   AGENT_RAW[id](F, i, U, sym)  its continuous reading (positive = good for the stock), every day
+  //   AGENT_FNS[id](F, i, P, U, sym)  its vote { dir, strength, note }: pickers vote BUY when the stock is in
+  //       the top `band` of today's ranking and SELL in the bottom `band` (strength = how far out); otherwise
+  //       no view. Rankings are across the stocks that have a reading that day, cached per universe and day.
   const DEFAULT_PARAMS = {
-    momo: { fast: 12, slow: 26, adxMin: 20 },
-    mean: { period: 20, k: 2.0, rsiLo: 30, rsiHi: 70, adxMax: 25 },
-    brkt: { kcMult: 1.5, recent: 5, volZ: 0.5 },
-    vwap: { period: 20, devThr: 1.5 },
-    vol:  { lookback: 10, expand: 1.25, contract: 0.85 },
-    skew: { window: 20, thr: 0.5 },
-    flow: { period: 20, cmfThr: 0.1 },
-    mm:   { nr: 7, atrRank: 0.3 },
-    corr: { period: 20, rsThr: 0.03 },
-    pair: { zEntry: 2.0, lookback: 60 },
-    macr: { hi: 0.6, lo: 0.4 },
-    earn: { lookback: 126, skip: 21, thr: 0.5 },
-    fund: { period: 60, thr: 1.0 },
-    news: { gapThr: 0.75, volZ: 1.0 },
-    soc:  { volThr: 2.0 },
-    patt: { k: 10, horizon: 5 },
+    mom:      { lookback: 252, skip: 21, band: 0.3 },        // 12-month return excluding the last month, risk-adjusted
+    hi52:     { window: 252, band: 0.3 },                     // price relative to its 52-week high
+    sect:     { lookback: 126, band: 0.3 },                   // the stock's sector trend vs the market
+    rev:      { window: 10, band: 0.3 },                      // last 2 weeks vs sector peers, faded
+    lowvol:   { window: 120, band: 0.3 },                     // calm stocks over the last ~6 months
+    volshock: { short: 5, long: 60, band: 0.3 },              // abnormal trading volume (high-volume premium)
+    drift:    { gapAtr: 1.0, volZ: 1.5, window: 20, band: 0.3 }, // big gap on heavy volume, then follow-through
+    mkt:      { sma: 200, thr: 0.2 },                         // index vs its 200-day average and 12-month trend
+    risk:     { volRatio: 1.6, crashSigma: 3.5, ddLimit: 0.15 }, // volatility jumps, crash days, drawdowns
   };
   const AGENT_IDS = Object.keys(DEFAULT_PARAMS);
+  const PICKERS = ['mom', 'hi52', 'sect', 'rev', 'lowvol', 'volshock', 'drift'];
+  const AGENT_ROLE = { mkt: 'timing', risk: 'risk' };
+  const roleOf = (id) => AGENT_ROLE[id] || 'picker';
+  // The trend score behind Rank & tilt (6-month return skipping the last month) is kept as its own setting
+  const TREND_PARAMS = { lookback: 126, skip: 21 };
 
-  const NEUTRAL = Object.freeze({ dir: 0, strength: 0, note: 'no signal' });
-  const sig = (dir, strength, note) => (dir && strength > 0.02 ? { dir, strength: +strength.toFixed(3), note } : { dir: 0, strength: 0, note: note || 'no signal' });
+  const NEUTRAL = Object.freeze({ dir: 0, strength: 0, note: 'no view' });
+  const sig = (dir, strength, note) => (dir && strength > 0.02 ? { dir, strength: +strength.toFixed(3), note } : { dir: 0, strength: 0, note: note || 'no view' });
   const sign = (x) => (x > 0 ? 1 : x < 0 ? -1 : 0);
   const pct = (x) => `${(x * 100).toFixed(1)}%`;
 
-  const AGENT_FNS = {
-    // Trend Follower: MACD histogram and EMA order agree, only when ADX says the market is trending.
-    momo(F, i, p) {
-      const m = F.macd(p.fast, p.slow, 9), a = F.adx(14).adx[i], atr = F.atr(14)[i];
-      const h = m.hist[i], gap = m.emaFast[i] - m.emaSlow[i];
-      if (![h, gap, a, atr].every(fin)) return NEUTRAL;
-      if (a < p.adxMin) return sig(0, 0, `ADX ${a.toFixed(0)} < ${p.adxMin}: no trend`);
-      const d = sign(h);
-      if (d !== sign(gap)) return sig(0, 0, 'MACD and EMAs disagree');
-      return sig(d, squash(Math.abs(h) / atr, 0.12) * clamp(a / 40, 0.4, 1), `MACD hist ${h > 0 ? '+' : ''}${(h / atr).toFixed(2)} ATR · ADX ${a.toFixed(0)}`);
-    },
-
-    // Bollinger Reverter: closes at or beyond a band with RSI confirming, only in ranging markets.
-    mean(F, i, p) {
-      const b = F.bb(p.period, p.k), r = F.rsi(14)[i], a = F.adx(14).adx[i];
-      const pb = b.pctB[i];
-      if (![pb, r, a].every(fin)) return NEUTRAL;
-      if (a > p.adxMax) return sig(0, 0, `ADX ${a.toFixed(0)}: trending, no reversion`);
-      if (pb < 0 || (pb <= 0.1 && r <= p.rsiLo)) return sig(1, squash(0.1 - pb, 0.15) * 0.6 + squash(p.rsiLo - r, 8) * 0.4, `%B ${pb.toFixed(2)} · RSI ${r.toFixed(0)}`);
-      if (pb > 1 || (pb >= 0.9 && r >= p.rsiHi)) return sig(-1, squash(pb - 0.9, 0.15) * 0.6 + squash(r - p.rsiHi, 8) * 0.4, `%B ${pb.toFixed(2)} · RSI ${r.toFixed(0)}`);
-      return sig(0, 0, `%B ${pb.toFixed(2)} inside bands`);
-    },
-
-    // Squeeze Breakout: Bollinger bands inside Keltner channels recently, then a close beyond a band.
-    brkt(F, i, p) {
-      const b = F.bb(20, 2), kc = F.kc(20, p.kcMult), atr = F.atr(14)[i], c = F.c[i];
-      if (i < p.recent + 1 || ![b.up[i], b.lo[i], atr].every(fin)) return NEUTRAL;
-      let squeezed = false;
-      for (let j = i - p.recent; j < i; j++) if (b.up[j] < kc.up[j] && b.lo[j] > kc.lo[j]) { squeezed = true; break; }
-      if (!squeezed) return sig(0, 0, 'no recent squeeze');
-      const d = c > b.up[i] ? 1 : c < b.lo[i] ? -1 : 0;
-      if (!d) return sig(0, 0, 'squeeze on, no break yet');
-      let confirm;
-      if (F.hasVolume) {
-        const vz = F.volZ(20)[i];
-        confirm = fin(vz) && vz >= p.volZ;
-        if (!confirm) return sig(0, 0, 'break without volume');
-      } else {
-        confirm = d > 0 ? c > F.donHi(20)[i] : c < F.donLo(20)[i];
-        if (!confirm) return sig(0, 0, 'break inside 20-day range');
+  // Per-universe helpers (cached on U): sector average of an N-day return at global day g, market index SMA
+  function xsCache(U) { return U._xs || (U._xs = new Map()); }
+  function sectorMean(U, n, g, sec) {
+    const key = `sec:${n}:${g}`, c = xsCache(U);
+    if (!c.has(key)) {
+      const sums = {}, cnt = {};
+      let all = 0, nAll = 0;
+      for (const s of U.syms) {
+        const F = U.F[s], i = g - U.off[s];
+        if (i < n) continue;
+        const r = F.c[i] / F.c[i - n] - 1;
+        if (!fin(r)) continue;
+        const k = (U.sectorOf && U.sectorOf[s]) || 'Other';
+        sums[k] = (sums[k] || 0) + r; cnt[k] = (cnt[k] || 0) + 1; all += r; nAll++;
       }
-      const beyond = d > 0 ? c - b.up[i] : b.lo[i] - c;
-      const tight = 1 - (F.bwRank(20, 2, 120)[i] ?? 0.5);
-      return sig(d, squash(beyond / atr, 0.4) * 0.6 + tight * 0.4, `squeeze break ${d > 0 ? 'up' : 'down'}${F.hasVolume ? ` · vol z ${F.volZ(20)[i].toFixed(1)}` : ''}`);
-    },
+      const m = { _all: nAll ? all / nAll : NaN, _n: nAll };
+      for (const k of Object.keys(sums)) m[k] = { mean: sums[k] / cnt[k], n: cnt[k] };
+      c.set(key, m);
+    }
+    const m = c.get(key);
+    return { sector: m[sec] || null, market: m._all, n: m._n };
+  }
+  function mktSma(U, n) {
+    const key = `mktsma:${n}`, c = xsCache(U);
+    if (!c.has(key)) c.set(key, sma(U.ctx.mktIdx, n));
+    return c.get(key);
+  }
 
-    // VWAP Reversion: stretched far from the 20-day VWAP in a range → revert; pullback to it in a trend → rejoin.
-    vwap(F, i, p) {
-      const vw = F.vwap(p.period)[i], atr = F.atr(14)[i], ax = F.adx(14);
-      if (![vw, atr, ax.adx[i]].every(fin)) return NEUTRAL;
-      const dev = (F.c[i] - vw) / atr;
-      if (ax.adx[i] >= 25) {
-        const up = ax.pdi[i] > ax.mdi[i];
-        if (up && dev > -0.6 && dev < 0.3) return sig(1, squash(ax.adx[i] - 20, 15) * 0.7, `uptrend pullback to VWAP (${dev.toFixed(2)} ATR)`);
-        if (!up && dev < 0.6 && dev > -0.3) return sig(-1, squash(ax.adx[i] - 20, 15) * 0.7, `downtrend rally to VWAP (${dev.toFixed(2)} ATR)`);
-        return sig(0, 0, `trend, ${dev.toFixed(2)} ATR from VWAP`);
-      }
-      if (Math.abs(dev) >= p.devThr) return sig(-sign(dev), squash(Math.abs(dev) - p.devThr + 0.5, 1), `${dev.toFixed(2)} ATR from VWAP${F.hasVolume ? '' : ' (no volume: typical-price avg)'}`);
-      return sig(0, 0, `${dev.toFixed(2)} ATR from VWAP`);
-    },
-
-    // Volatility Regime: expanding volatility below the 50-day average = risk-off; contracting above it = risk-on.
-    vol(F, i, p) {
-      const ap = F.atrPct(14), m50 = F.sma(50)[i];
-      if (i < p.lookback || ![ap[i], ap[i - p.lookback], m50].every(fin)) return NEUTRAL;
-      const ratio = ap[i] / ap[i - p.lookback];
-      const above = F.c[i] > m50;
-      if (ratio >= p.expand && !above) return sig(-1, squash(Math.log(ratio / p.expand) + 0.1, 0.25), `ATR up ${pct(ratio - 1)} below 50d avg`);
-      if (ratio <= p.contract && above) return sig(1, squash(Math.log(p.contract / ratio) + 0.1, 0.25), `ATR down ${pct(1 - ratio)} above 50d avg`);
-      return sig(0, 0, `ATR change ${pct(ratio - 1)}`);
-    },
-
-    // Return Skew: lottery-like positive skew tends to underperform and crash-prone negative skew tends to
-    // be paid for (Bali, Cakici & Whitelaw 2011; Boyer, Mitton & Vorkink 2010). A fattening left tail
-    // (recent downside deviation well above normal) cancels the BUY side.
-    skew(F, i, p) {
-      const sk = F.skew(p.window)[i], dS = F.ddev(p.window)[i], dL = F.ddev(60)[i];
-      if (![sk, dS, dL].every(fin) || dL === 0) return NEUTRAL;
-      const ddRatio = dS / dL;
-      if (sk >= p.thr) return sig(-1, squash(sk - p.thr + 0.2, 0.6), `skew +${sk.toFixed(2)}: lottery-like`);
-      if (sk <= -p.thr && ddRatio < 1.3) return sig(1, squash(-sk - p.thr + 0.2, 0.6), `skew ${sk.toFixed(2)}: crash-risk premium`);
-      return sig(0, 0, `skew ${sk.toFixed(2)} · downside ${ddRatio.toFixed(2)}× normal`);
-    },
-
-    // Money Flow: Chaikin money flow (close location × volume), confirmed by on-balance-volume trend.
-    flow(F, i, p) {
-      const cmf = F.cmf(p.period)[i];
-      if (!fin(cmf)) return NEUTRAL;
-      if (Math.abs(cmf) < p.cmfThr) return sig(0, 0, `CMF ${cmf.toFixed(2)}`);
-      let s = squash(Math.abs(cmf) - p.cmfThr + 0.05, 0.15);
-      let note = `${F.hasVolume ? 'CMF' : 'close location (no volume)'} ${cmf.toFixed(2)}`;
-      if (F.hasVolume) {
-        const ob = F.obv(), o10 = sma(ob.slice(Math.max(0, i - 40), i + 1), 10), o30 = sma(ob.slice(Math.max(0, i - 40), i + 1), 30);
-        const a = o10[o10.length - 1], b = o30[o30.length - 1];
-        if (fin(a) && fin(b)) {
-          if (sign(a - b) === sign(cmf)) note += ' · OBV agrees'; else { s *= 0.5; note += ' · OBV disagrees'; }
-        }
-        const mf = F.mfi(14)[i];
-        if (fin(mf) && ((cmf > 0 && mf > 85) || (cmf < 0 && mf < 15))) { s *= 0.6; note += ` · MFI ${mf.toFixed(0)} stretched`; }
-      }
-      return sig(sign(cmf), s, note);
-    },
-
-    // Range Contraction: narrowest range in N days (or an inside day) with low ATR — an expansion is due;
-    // direction from where the bar closed and the 20-day EMA slope.
-    mm(F, i, p) {
-      const tr = F.tr(), rank = F.atrRank(14, 120)[i], e = F.ema(20);
-      if (i < p.nr || ![rank, e[i], e[i - 5]].every(fin)) return NEUTRAL;
-      const range = F.h[i] - F.l[i];
-      let nr = true;
-      for (let j = i - p.nr + 1; j < i; j++) if (F.h[j] - F.l[j] <= range) { nr = false; break; }
-      const inside = F.h[i] <= F.h[i - 1] && F.l[i] >= F.l[i - 1];
-      if (!(nr || inside) || rank > p.atrRank) return sig(0, 0, 'no contraction');
-      const loc = F.clv()[i], slope = (e[i] - e[i - 5]) / e[i - 5];
-      const d = loc > 0.2 && slope > 0 ? 1 : loc < -0.2 && slope < 0 ? -1 : 0;
-      if (!d) return sig(0, 0, `${nr ? `NR${p.nr}` : 'inside day'}, no direction`);
-      return sig(d, (1 - rank) * 0.5 + squash(Math.abs(loc), 0.6) * 0.4, `${nr ? `NR${p.nr}` : 'inside day'} · ATR rank ${(rank * 100).toFixed(0)}%`);
-    },
-
-    // Relative Strength: 20-day return vs same-sector peers; leaders above their 50-day average keep leading.
-    // When relative strength is neutral, a sharp sector move the stock lagged signals catch-up.
-    corr(F, i, p, U, sym) {
-      if (!U) return NEUTRAL;
-      const g = i + U.off[sym], sec = U.sectorOf[sym] || 'Other';
-      const r20 = F.rN(p.period)[i], m50 = F.sma(50)[i];
-      const S = U.ctx.sectorR20[sec], S1 = U.ctx.sectorR1[sec];
-      if (![r20, m50].every(fin) || S.cnt[g] < 2) return NEUTRAL;
-      const peer20 = (S.sum[g] - r20) / (S.cnt[g] - 1);
-      const rs = r20 - peer20;
-      if (rs >= p.rsThr && F.c[i] > m50) return sig(1, squash(rs - p.rsThr + 0.01, 0.05), `+${pct(rs)} vs sector (20d)`);
-      if (rs <= -p.rsThr && F.c[i] < m50) return sig(-1, squash(-rs - p.rsThr + 0.01, 0.05), `${pct(rs)} vs sector (20d)`);
-      const r1 = F.ret()[i];
-      if (fin(r1) && S1.cnt[g] >= 3) {
-        const peer1 = (S1.sum[g] - r1) / (S1.cnt[g] - 1);
-        const vol = F.vol(20)[i] / Math.sqrt(252);
-        if (fin(vol) && vol > 0 && Math.abs(peer1) > 1.5 * vol && Math.abs(r1) < Math.abs(peer1) * 0.3) {
-          return sig(sign(peer1), squash(Math.abs(peer1) / vol - 1.5, 1.5) * 0.6, `lagged a ${pct(peer1)} sector move`);
-        }
-      }
-      return sig(0, 0, `${pct(rs)} vs sector`);
-    },
-
-    // Pairs Spread: z-score of the log-price spread against the most-correlated sector peer.
-    pair(F, i, p, U, sym) {
-      if (!U) return NEUTRAL;
-      const best = pairFor(U, sym, i);
-      if (!best || best.corr < 0.5) return sig(0, 0, 'no correlated peer');
-      const fb = U.F[best.peer], ob = U.off[sym] - U.off[best.peer];
-      const n = p.lookback;
-      if (i - n + 1 < 0 || i + ob - n + 1 < 0) return NEUTRAL;
-      const la = [], lb = [];
-      for (let j = i - n + 1; j <= i; j++) { la.push(Math.log(F.c[j])); lb.push(Math.log(fb.c[j + ob])); }
-      const ma = la.reduce((s, x) => s + x, 0) / n, mb = lb.reduce((s, x) => s + x, 0) / n;
-      let cov = 0, vb = 0;
-      for (let k = 0; k < n; k++) { cov += (la[k] - ma) * (lb[k] - mb); vb += (lb[k] - mb) ** 2; }
-      const beta = vb > 0 ? cov / vb : 1;
-      const spread = la.map((x, k) => x - beta * lb[k]);
-      const sm = spread.reduce((s, x) => s + x, 0) / n;
-      const sd = Math.sqrt(spread.reduce((s, x) => s + (x - sm) ** 2, 0) / n);
-      if (!(sd > 0)) return NEUTRAL;
-      const z = (spread[n - 1] - sm) / sd;
-      if (Math.abs(z) >= p.zEntry) return sig(-sign(z), squash(Math.abs(z) - p.zEntry + 0.3, 0.8) * clamp(best.corr, 0.5, 1), `spread z ${z.toFixed(2)} vs ${best.peer} (ρ ${best.corr.toFixed(2)})`);
-      return sig(0, 0, `spread z ${z.toFixed(2)} vs ${best.peer}`);
-    },
-
-    // Market Breadth: share of the universe above its 50-day average, with the equal-weight index trend.
-    macr(F, i, p, U, sym) {
-      if (!U) return NEUTRAL;
-      const g = i + U.off[sym];
-      const b50 = U.ctx.breadth50[g], b200 = U.ctx.breadth200[g];
-      const idx = U.ctx.mktIdx[g], m = U.ctx.mktSma50[g];
-      if (![b50, idx, m].every(fin)) return NEUTRAL;
-      const agree200 = fin(b200) ? (b200 - 0.5) : 0;
-      if (b50 >= p.hi && idx > m) return sig(1, squash(b50 - p.hi + 0.05 + Math.max(0, agree200) * 0.5, 0.12), `${(b50 * 100).toFixed(0)}% above 50d · index above avg`);
-      if (b50 <= p.lo && idx < m) return sig(-1, squash(p.lo - b50 + 0.05 + Math.max(0, -agree200) * 0.5, 0.12), `${(b50 * 100).toFixed(0)}% above 50d · index below avg`);
-      return sig(0, 0, `${(b50 * 100).toFixed(0)}% above 50d`);
-    },
-
-    // Trend Persistence: 6-month return excluding the most recent month, scaled by volatility.
-    earn(F, i, p) {
-      const lb = Math.min(p.lookback, i - 1);
-      if (lb < p.skip + 40) return NEUTRAL;
-      const r = F.c[i - p.skip] / F.c[i - lb] - 1;
-      const vol = F.vol(60)[i];
-      if (![r, vol].every(fin) || vol <= 0) return NEUTRAL;
-      const ra = r / (vol * Math.sqrt((lb - p.skip) / 252));
-      if (Math.abs(ra) < p.thr) return sig(0, 0, `${pct(r)} over ${lb - p.skip}d (risk-adj ${ra.toFixed(2)})`);
-      return sig(sign(ra), squash(Math.abs(ra) - p.thr + 0.2, 0.8), `${pct(r)} over ${lb - p.skip}d, skipping last ${p.skip}d`);
-    },
-
-    // Risk-Adjusted Return: annualised 60-day Sortino ratio.
-    fund(F, i, p) {
-      const s = F.sortino(p.period)[i];
-      if (!fin(s)) return NEUTRAL;
-      if (Math.abs(s) < p.thr) return sig(0, 0, `Sortino ${s.toFixed(2)}`);
-      return sig(sign(s), squash(Math.abs(s) - p.thr + 0.3, 1.5), `Sortino ${s.toFixed(2)} (${p.period}d)`);
-    },
-
-    // Gap Reactor: an opening gap of ≥ gapThr ATR in the last 3 days. Holding the gap on high volume
-    // (or with no volume, holding it into the close) = continuation; filling over half of it = reversal.
-    news(F, i, p) {
-      const atr = F.atr(14);
-      for (let back = 0; back < 3; back++) {
-        const j = i - back;
-        if (j < 1 || !fin(atr[j - 1])) return NEUTRAL;
-        const gap = (F.o[j] - F.c[j - 1]) / atr[j - 1];
-        if (Math.abs(gap) < p.gapThr) continue;
-        const d = sign(gap);
-        const filled = (F.c[i] - F.c[j - 1]) / (F.o[j] - F.c[j - 1]); // 1 = still at the gap open, 0 = fully filled
-        const decay = 1 - back * 0.25;
-        if (filled < 0.5) return sig(-d, squash(Math.abs(gap) - p.gapThr + 0.3, 1) * decay * 0.8, `${gap > 0 ? 'up' : 'down'} gap ${Math.abs(gap).toFixed(1)} ATR filling`);
-        const vz = F.volZ(20)[j];
-        const strongVol = F.hasVolume ? fin(vz) && vz >= p.volZ : F.clv()[j] * d > 0.3;
-        if (strongVol) return sig(d, squash(Math.abs(gap) - p.gapThr + 0.3, 1) * decay, `${gap > 0 ? 'up' : 'down'} gap ${Math.abs(gap).toFixed(1)} ATR holding${F.hasVolume ? ` · vol z ${vz.toFixed(1)}` : ''}`);
-        return sig(0, 0, 'gap without follow-through');
-      }
-      return sig(0, 0, 'no recent gap');
-    },
-
-    // Attention: abnormal volume (or, with no volume, an outsized range) on a decisive day → follow-through.
-    soc(F, i, p) {
-      const atr = F.atr(14)[i - 1], r = F.c[i] - F.c[i - 1];
-      if (i < 1 || !fin(atr) || atr <= 0) return NEUTRAL;
-      const move = r / atr;
-      let surge, note;
-      if (F.hasVolume) {
-        const vz = F.volZ(20)[i];
-        if (!fin(vz)) return NEUTRAL;
-        surge = vz - p.volThr;
-        note = `volume z ${vz.toFixed(1)}`;
-      } else {
-        const trx = F.tr()[i] / atr;
-        surge = trx - p.volThr;
-        note = `range ${trx.toFixed(1)}× ATR (no volume)`;
-      }
-      if (surge < 0 || Math.abs(move) < 0.5) return sig(0, 0, note);
-      return sig(sign(move), squash(surge + 0.3, 1) * 0.6 + squash(Math.abs(move) - 0.5, 1) * 0.4, `${note} · ${move > 0 ? 'up' : 'down'} ${Math.abs(move).toFixed(1)} ATR`);
-    },
-
-    // Pattern Memory: the k most similar past setups (on standardised indicator readings) and what the
-    // next `horizon` days did, plus engulfing / hammer / shooting-star candles.
-    patt(F, i, p) {
-      const H = p.horizon, K = p.k;
-      const fv = pattFeatures(F);
-      if (!fv[i]) return NEUTRAL;
-      const lo = Math.max(0, i - 750);
-      const cand = [];
-      for (let j = lo; j + H < i; j++) {
-        if (!fv[j]) continue;
-        let d = 0;
-        for (let k = 0; k < fv[i].length; k++) d += (fv[i][k] - fv[j][k]) ** 2;
-        cand.push([d, j]);
-      }
-      if (cand.length < K * 4) return NEUTRAL;
-      cand.sort((a, b) => a[0] - b[0]);
-      let sum = 0, up = 0;
-      for (let k = 0; k < K; k++) {
-        const j = cand[k][1];
-        const fr = F.c[j + H] / F.c[j] - 1;
-        sum += fr; if (fr > 0) up++;
-      }
-      const pred = sum / K;
-      const vol = F.vol(20)[i] / Math.sqrt(252) * Math.sqrt(H);
-      let candle = 0, cNote = '';
-      const o = F.o, h = F.h, l = F.l, c = F.c;
-      const body = Math.abs(c[i] - o[i]), rng = h[i] - l[i];
-      if (rng > 0) {
-        if (c[i] > o[i] && c[i - 1] < o[i - 1] && c[i] >= o[i - 1] && o[i] <= c[i - 1]) { candle = 1; cNote = ' · bullish engulfing'; }
-        else if (c[i] < o[i] && c[i - 1] > o[i - 1] && c[i] <= o[i - 1] && o[i] >= c[i - 1]) { candle = -1; cNote = ' · bearish engulfing'; }
-        else if (body < rng * 0.35 && Math.min(o[i], c[i]) - l[i] > 2 * body && h[i] - Math.max(o[i], c[i]) < body) { candle = 1; cNote = ' · hammer'; }
-        else if (body < rng * 0.35 && h[i] - Math.max(o[i], c[i]) > 2 * body && Math.min(o[i], c[i]) - l[i] < body) { candle = -1; cNote = ' · shooting star'; }
-      }
-      if (!fin(vol) || vol <= 0) return NEUTRAL;
-      const z = pred / vol + candle * 0.15;
-      const agree = Math.abs(up / K - 0.5) * 2;
-      if (Math.abs(z) < 0.15) return sig(0, 0, `analogs ${pct(pred)} over ${H}d${cNote}`);
-      return sig(sign(z), squash(Math.abs(z), 0.5) * (0.5 + 0.5 * agree), `${K} analogs avg ${pct(pred)} next ${H}d (${up}/${K} up)${cNote}`);
-    },
-  };
-
-  // ── Continuous readings (step 1 of the agent redesign) ─────────────────────
-  // The same quantity each agent judges, before any threshold turns it into a vote: available every day,
-  // signed so that positive means what the agent expects to be good for the stock. The swing lab ranks
-  // these across stocks each day. Roles: 'picker' (which stocks beat the others), 'timing' (the whole
-  // market), 'risk' (calm vs turbulent ahead, not direction).
-  const AGENT_ROLE = { macr: 'timing', vol: 'risk' };
-  const roleOf = (id) => AGENT_ROLE[id] || 'picker';
   const AGENT_RAW = {
-    momo(F, i) { const m = F.macd(12, 26, 9), atr = F.atr(14)[i]; return atr > 0 ? m.hist[i] / atr : NaN; },
-    mean(F, i) { const pb = F.bb(20, 2).pctB[i], r = F.rsi(14)[i]; return fin(pb) && fin(r) ? -((pb - 0.5) / 0.5 + (r - 50) / 20) / 2 : NaN; },
-    brkt(F, i) { const b = F.bb(20, 2), rank = F.bwRank(20, 2, 120)[i], w = b.up[i] - b.lo[i]; return w > 0 && fin(rank) ? ((F.c[i] - (b.up[i] + b.lo[i]) / 2) / w) * (1 - rank) : NaN; },
-    vwap(F, i) { const vw = F.vwap(20)[i], atr = F.atr(14)[i]; return fin(vw) && atr > 0 ? -(F.c[i] - vw) / atr : NaN; },
-    vol(F, i) { const ap = F.atrPct(14); return i >= 10 && ap[i] > 0 && ap[i - 10] > 0 ? -Math.log(ap[i] / ap[i - 10]) : NaN; },
-    skew(F, i) { const sk = F.skew(20)[i]; return fin(sk) ? -sk : NaN; },
-    flow(F, i) { const c = F.cmf(20)[i]; return fin(c) ? c : NaN; },
-    mm(F, i) { const rank = F.atrRank(14, 120)[i], e = F.ema(20), loc = F.clv()[i]; return fin(rank) && fin(loc) && e[i - 5] > 0 ? loc * (1 - rank) * (e[i] >= e[i - 5] ? 1 : -1) : NaN; },
-    corr(F, i, U, sym) {
-      if (!U) return NaN;
-      const g = i + U.off[sym], S = U.ctx.sectorR20[U.sectorOf[sym] || 'Other'], r20 = F.rN(20)[i];
-      if (!fin(r20)) return NaN;
-      return S.cnt[g] >= 2 ? r20 - (S.sum[g] - r20) / (S.cnt[g] - 1) : r20 - (fin(U.ctx.mktRet20?.[g]) ? U.ctx.mktRet20[g] : 0);
+    // Momentum: return from 12 months ago to 1 month ago, divided by volatility
+    mom(F, i, U, sym, p = DEFAULT_PARAMS.mom) {
+      const lb = Math.min(p.lookback, i - 1);
+      if (lb < 126) return NaN;
+      const r = F.c[i - p.skip] / F.c[i - lb] - 1, vol = F.vol(lb)[i];
+      return fin(r) && vol > 0 ? r / (vol * Math.sqrt((lb - p.skip) / 252)) : NaN;
     },
-    pair(F, i, U, sym) {
-      const s = AGENT_FNS.pair(F, i, DEFAULT_PARAMS.pair && { ...DEFAULT_PARAMS.pair, zEntry: 0 }, U, sym);
-      const m = /spread z (-?[\d.]+)/.exec(s.note || '');
-      return m ? -parseFloat(m[1]) : NaN;
+    // 52-week high: close as a share of the highest high in the window (1 = at the high)
+    hi52(F, i, U, sym, p = DEFAULT_PARAMS.hi52) {
+      const w = Math.min(p.window, i + 1);
+      if (w < 126) return NaN;
+      let hi = -Infinity; for (let j = i - w + 1; j <= i; j++) if (F.h[j] > hi) hi = F.h[j];
+      return hi > 0 ? F.c[i] / hi : NaN;
     },
-    macr(F, i, U, sym) { if (!U) return NaN; const b = U.ctx.breadth50[i + U.off[sym]]; return fin(b) ? b - 0.5 : NaN; },
-    earn(F, i) {
-      const lb = Math.min(126, i - 1); if (lb < 61) return NaN;
-      const r = F.c[i - 21] / F.c[i - lb] - 1, vol = F.vol(60)[i];
-      return fin(r) && vol > 0 ? r / (vol * Math.sqrt((lb - 21) / 252)) : NaN;
+    // Sector strength: the stock's sector average return over ~6 months minus the market's
+    sect(F, i, U, sym, p = DEFAULT_PARAMS.sect) {
+      if (!U || i < p.lookback) return NaN;
+      const g = i + U.off[sym], m = sectorMean(U, p.lookback, g, (U.sectorOf && U.sectorOf[sym]) || 'Other');
+      return m.sector && m.sector.n >= 2 && fin(m.market) ? m.sector.mean - m.market : NaN;
     },
-    fund(F, i) { const s = F.sortino(60)[i]; return fin(s) ? s : NaN; },
-    news(F, i) {
-      const atr = F.atr(14);
-      for (let back = 0; back < 3; back++) {
-        const j = i - back; if (j < 1 || !fin(atr[j - 1])) return NaN;
+    // Short-term reversal: minus the stock's last-2-weeks return relative to its sector (or the market)
+    rev(F, i, U, sym, p = DEFAULT_PARAMS.rev) {
+      if (i < p.window) return NaN;
+      const r = F.c[i] / F.c[i - p.window] - 1;
+      if (!U) return -r;
+      const g = i + U.off[sym], m = sectorMean(U, p.window, g, (U.sectorOf && U.sectorOf[sym]) || 'Other');
+      const peer = m.sector && m.sector.n >= 3 ? (m.sector.mean * m.sector.n - r) / (m.sector.n - 1) : m.market;
+      return fin(r) && fin(peer) ? -(r - peer) : NaN;
+    },
+    // Low volatility: minus annualised volatility over ~6 months
+    lowvol(F, i, U, sym, p = DEFAULT_PARAMS.lowvol) {
+      if (i < Math.min(p.window, 60)) return NaN;
+      const v = F.vol(Math.min(p.window, i))[i];
+      return v > 0 ? -v : NaN;
+    },
+    // Volume shock: log of last week's average volume over the previous ~3 months' (no volume → no view)
+    volshock(F, i, U, sym, p = DEFAULT_PARAMS.volshock) {
+      if (!F.hasVolume || i < p.long + p.short) return NaN;
+      let a = 0, b = 0;
+      for (let j = i - p.short + 1; j <= i; j++) a += F.v[j];
+      for (let j = i - p.short - p.long + 1; j <= i - p.short; j++) b += F.v[j];
+      a /= p.short; b /= p.long;
+      return a > 0 && b > 0 ? Math.log(a / b) : NaN;
+    },
+    // News drift: the biggest gap (≥ gapAtr ATR) on heavy volume in the last `window` days, signed, scaled
+    // by how much of it has held and fading with age; 0 when there's none
+    drift(F, i, U, sym, p = DEFAULT_PARAMS.drift) {
+      const atr = F.atr(14), vz = F.hasVolume ? F.volZ(20) : null;
+      if (i < p.window + 15) return NaN;
+      let best = 0;
+      for (let j = i - p.window + 1; j <= i; j++) {
+        if (!fin(atr[j - 1]) || !(atr[j - 1] > 0)) continue;
         const gap = (F.o[j] - F.c[j - 1]) / atr[j - 1];
-        if (Math.abs(gap) < 0.5) continue;
-        const held = (F.c[i] - F.c[j - 1]) / (F.o[j] - F.c[j - 1]);
-        return gap * (held >= 0.5 ? 1 : -1) * (1 - back * 0.25);
+        if (Math.abs(gap) < p.gapAtr) continue;
+        if (vz && !(fin(vz[j]) && vz[j] >= p.volZ)) continue;
+        const held = (F.c[i] - F.c[j - 1]) / (F.o[j] - F.c[j - 1]); // 1 = still at the gap, ≤0 = fully filled
+        if (held <= 0.25) continue;
+        const v = Math.sign(gap) * Math.min(4, Math.abs(gap)) * Math.min(1.5, held) * (1 - (i - j) / (p.window + 5));
+        if (Math.abs(v) > Math.abs(best)) best = v;
       }
-      return 0;
+      return best;
     },
-    soc(F, i) {
-      const atr = F.atr(14)[i - 1]; if (!(atr > 0)) return NaN;
-      const move = (F.c[i] - F.c[i - 1]) / atr;
-      const surge = F.hasVolume ? F.volZ(20)[i] : F.tr()[i] / atr - 1;
-      return fin(surge) ? Math.max(0, surge) * move : NaN;
+    // Market trend: equal-weight index vs its 200-day average, and its 12-month trend (same for every stock)
+    mkt(F, i, U, sym, p = DEFAULT_PARAMS.mkt) {
+      if (!U) return NaN;
+      const g = i + U.off[sym], idx = U.ctx.mktIdx, s = mktSma(U, p.sma)[g];
+      if (!fin(idx[g]) || !fin(s) || g < 252) return NaN;
+      return 0.5 * Math.tanh((idx[g] / s - 1) / 0.05) + 0.5 * Math.tanh((idx[g] / idx[g - 252] - 1) / 0.2);
     },
-    patt(F, i) {
-      const s = AGENT_FNS.patt(F, i, DEFAULT_PARAMS.patt);
-      const m = /avg (-?[\d.]+)%/.exec(s.note || '') || /analogs (-?[\d.]+)%/.exec(s.note || '');
-      return m ? parseFloat(m[1]) / 100 : NaN;
+    // Risk guardian: danger reading (negative = danger) from a volatility jump, a crash day or a deep drop
+    risk(F, i, U, sym, p = DEFAULT_PARAMS.risk) {
+      if (i < 130) return NaN;
+      const v20 = F.vol(20)[i], v120 = F.vol(120)[i], r1 = F.c[i] / F.c[i - 1] - 1;
+      let hi = -Infinity; for (let j = i - 19; j <= i; j++) if (F.c[j] > hi) hi = F.c[j];
+      if (!(v20 > 0) || !(v120 > 0)) return NaN;
+      const jump = Math.max(0, v20 / v120 / p.volRatio - 1) * 2;
+      const crash = Math.max(0, -r1 / (v120 / Math.sqrt(252)) / p.crashSigma - 0.5);
+      const dd = Math.max(0, (1 - F.c[i] / hi) / p.ddLimit - 0.5);
+      return -(jump + crash + dd);
     },
   };
-  function agentReadings(U, sym, i) {
+
+  // Today's ranking of a picker's readings across the universe: rank in [0, 1] per symbol (cached)
+  function pickerRanks(U, id, g, P) {
+    const key = `rank:${id}:${g}:${JSON.stringify(P || '')}`, c = xsCache(U);
+    if (c.has(key)) return c.get(key);
+    const vals = [];
+    for (const s of U.syms) {
+      const i = g - U.off[s];
+      if (i < 1) continue;
+      let v; try { v = AGENT_RAW[id](U.F[s], i, U, s, P); } catch (e) { v = NaN; }
+      if (fin(v)) vals.push([s, v]);
+    }
+    vals.sort((a, b) => a[1] - b[1]);
+    const ranks = new Map();
+    if (vals.length >= 3) {
+      // ties share their average rank
+      let k = 0;
+      while (k < vals.length) {
+        let e = k; while (e + 1 < vals.length && vals[e + 1][1] === vals[k][1]) e++;
+        const r = ((k + e) / 2) / (vals.length - 1);
+        for (let q = k; q <= e; q++) ranks.set(vals[q][0], r);
+        k = e + 1;
+      }
+    }
+    c.set(key, ranks);
+    return ranks;
+  }
+  const PICKER_TEXT = {
+    mom: (v) => `12-month momentum ${v.toFixed(2)} (risk-adjusted)`, hi52: (v) => `${pct(v)} of its 52-week high`,
+    sect: (v) => `sector ${v >= 0 ? '+' : ''}${pct(v)} vs market (6 months)`, rev: (v) => `${pct(-v)} vs sector peers (2 weeks)`,
+    lowvol: (v) => `volatility ${pct(-v)} a year`, volshock: (v) => `volume ${Math.exp(v).toFixed(1)}× normal`,
+    drift: (v) => (v ? `${v > 0 ? 'up' : 'down'} gap on heavy volume holding` : 'no recent news gap'),
+  };
+  function pickerVote(id, F, i, P, U, sym) {
+    if (!U) return NEUTRAL;
+    const g = i + U.off[sym], ranks = pickerRanks(U, id, g, P), r = ranks.get(sym);
+    if (r == null) return NEUTRAL;
+    let raw; try { raw = AGENT_RAW[id](F, i, U, sym, P); } catch (e) { raw = NaN; }
+    if (id === 'drift' && !raw) return sig(0, 0, PICKER_TEXT.drift(0));
+    const band = P.band ?? 0.3, note = `${PICKER_TEXT[id](raw)} · rank ${Math.round(r * 100)}%`;
+    if (r >= 1 - band) return sig(1, (r - (1 - band)) / band * 0.7 + 0.3, note);
+    if (r <= band) return sig(-1, (band - r) / band * 0.7 + 0.3, note);
+    return sig(0, 0, note);
+  }
+  const AGENT_FNS = {
+    mom: (F, i, P, U, sym) => pickerVote('mom', F, i, P, U, sym),
+    hi52: (F, i, P, U, sym) => pickerVote('hi52', F, i, P, U, sym),
+    sect: (F, i, P, U, sym) => pickerVote('sect', F, i, P, U, sym),
+    rev: (F, i, P, U, sym) => pickerVote('rev', F, i, P, U, sym),
+    lowvol: (F, i, P, U, sym) => pickerVote('lowvol', F, i, P, U, sym),
+    volshock: (F, i, P, U, sym) => pickerVote('volshock', F, i, P, U, sym),
+    drift: (F, i, P, U, sym) => pickerVote('drift', F, i, P, U, sym),
+    mkt(F, i, P, U, sym) {
+      const v = AGENT_RAW.mkt(F, i, U, sym, P);
+      if (!fin(v)) return NEUTRAL;
+      const note = `market trend ${v >= 0 ? '+' : ''}${v.toFixed(2)} (index vs ${P.sma}-day average, 12-month trend)`;
+      return Math.abs(v) >= P.thr ? sig(sign(v), Math.min(1, Math.abs(v)), note) : sig(0, 0, note);
+    },
+    risk(F, i, P, U, sym) {
+      const v = AGENT_RAW.risk(F, i, U, sym, P);
+      if (!fin(v)) return NEUTRAL;
+      return v < 0 ? sig(-1, Math.min(1, -v), `danger ${(-v).toFixed(2)}: volatility jump, crash day or deep drop`) : sig(0, 0, 'no danger signs');
+    },
+  };
+
+  function agentReadings(U, sym, i, params) {
     const F = U.F[sym];
     if (!F || i == null || i < 60) return null;
-    const out = {};
-    for (const id of AGENT_IDS) { let v; try { v = AGENT_RAW[id](F, i, U, sym); } catch (e) { v = NaN; } out[id] = fin(v) ? v : NaN; }
+    const P = mergeParams(params), out = {};
+    for (const id of AGENT_IDS) { let v; try { v = AGENT_RAW[id](F, i, U, sym, P[id]); } catch (e) { v = NaN; } out[id] = fin(v) ? v : NaN; }
     return out;
   }
 
-  // Feature vectors for Pattern Memory (cached per symbol). Each reading is centred and scaled with
-  // fixed constants rather than statistics of the whole series, so no future data leaks in.
-  function pattFeatures(F) {
-    if (F._patt) return F._patt;
-    const b = F.bb(20, 2), r = F.rsi(14), m = F.macd(12, 26, 9), a = F.adx(14).adx, atr = F.atr(14);
-    const r5 = F.rN(5), r20 = F.rN(20), vol = F.vol(20), bwr = F.bwRank(20, 2, 120), vz = F.volZ(20);
-    F._patt = [];
-    for (let i = 0; i < F.n; i++) {
-      const dv = vol[i] / Math.sqrt(252);
-      const row = [
-        (b.pctB[i] - 0.5) / 0.35, (r[i] - 50) / 12, m.hist[i] / atr[i] / 0.25, (a[i] - 25) / 10,
-        r5[i] / (dv * Math.sqrt(5)), r20[i] / (dv * Math.sqrt(20)), (bwr[i] - 0.5) / 0.3,
-        F.hasVolume && fin(vz[i]) ? vz[i] : 0,
-      ];
-      F._patt.push(row.every(fin) ? row : null);
+  // The team decision for one stock from its nine votes:
+  //   BUY  (not held) when at least `minVotes` of the 7 pickers vote BUY, the weighted picker score is at
+  //        least `minConf`, the market trend isn't strongly negative and the risk guardian sees no danger;
+  //   SELL (held) when at least `minVotes` pickers vote SELL, or the risk guardian's danger is ≥ riskExit;
+  //   otherwise HOLD (held) or WAIT (not held). A tie can't be a majority: 7 voters, abstentions allowed.
+  const DECISION = { minVotes: 4, minConf: 0.25, riskExit: 1.0, fill: false };
+  function teamDecision(signals, { weights = null, held = false, ...o } = {}) {
+    const d = { ...DECISION, ...o };
+    let fv = 0, av = 0, sw = 0, ws = 0;
+    const votes = {};
+    for (const id of PICKERS) {
+      const s = signals && signals[id], w = weights ? (weights[id] ?? 0) : 1;
+      votes[id] = s ? s.dir : 0;
+      ws += w; // abstaining counts as a view of 0: the collective confidence of all seven
+      if (!s || !s.dir) continue;
+      if (s.dir > 0) fv++; else av++;
+      sw += w * s.dir * s.strength;
     }
-    return F._patt;
+    const score = ws > 0 ? sw / ws : 0;
+    const mkt = signals && signals.mkt ? signals.mkt.dir * signals.mkt.strength : 0;
+    const danger = signals && signals.risk && signals.risk.dir < 0 ? signals.risk.strength : 0;
+    let action, why;
+    if (held) {
+      if (danger >= d.riskExit) { action = 'SELL'; why = `risk guardian: danger ${danger.toFixed(2)}`; }
+      else if (av >= d.minVotes) { action = 'SELL'; why = `${av} of 7 pickers say sell`; }
+      else { action = 'HOLD'; why = `${fv} for, ${av} against: no majority to sell`; }
+    } else if ((fv >= d.minVotes && score >= d.minConf || d.fill && score > 0 && fv > av) && danger < d.riskExit && mkt > -0.6) {
+      action = 'BUY'; why = `${fv} of 7 pickers say buy (score ${score.toFixed(2)})`;
+    } else {
+      action = 'WAIT';
+      why = fv >= d.minVotes ? (danger >= d.riskExit ? 'majority to buy, but the risk guardian objects' : mkt <= -0.6 ? 'majority to buy, but the market trend is strongly down' : `majority to buy, but confidence ${score.toFixed(2)} < ${d.minConf}`)
+        : `${fv} for, ${av} against: no majority to buy`;
+    }
+    return { action, why, forVotes: fv, againstVotes: av, abstain: PICKERS.length - fv - av, score, confidence: Math.abs(score), p: 0.5 + score / 2, mkt, danger, votes };
   }
 
   function mergeParams(user = {}) {
@@ -950,7 +810,7 @@
   // close of the month, trades at the next open). Swap-only: dropped names are sold, new names bought
   // with an equal share of equity; holdings that stay are not resized, keeping turnover and costs low.
   // Default score: the trend score (return from 6 months ago to 1 month ago).
-  function trendScore(F, i, p = DEFAULT_PARAMS.earn) {
+  function trendScore(F, i, p = TREND_PARAMS) {
     const lb = p.lookback ?? 126, skip = p.skip ?? 21;
     return i >= lb ? F.c[i - skip] / F.c[i - lb] - 1 : NaN;
   }
@@ -973,11 +833,93 @@
   // Holding at least as many stocks as exist would just be buy-and-hold: fall back to the top half
   const effectiveTopK = (topK, N) => (topK && topK < N ? Math.max(1, topK) : Math.max(1, Math.ceil(N / 2)));
 
+  // The 9-agent team traded day by day with the same rule the server engine uses: decide at each close
+  // (teamDecision on every stock: SELL holdings the majority or the risk guardian turns against, BUY new
+  // names a majority backs with enough confidence, best scores first), trade at the next open, at most
+  // maxPos positions of equity × investFraction / maxPos each (halved while the market trend is negative),
+  // costs on every buy and sell. Decisions use only bars up to that close.
+  function runTeam(U, o = {}) {
+    const start = Math.max(o.start ?? 260, 130), end = Math.min(o.end ?? U.L - 1, U.L - 1);
+    const capital = o.capital ?? 100000, cost = costOf(o), frac = o.investFraction ?? 0.9;
+    const maxPos = Math.max(1, Math.min(o.maxPos ?? 12, U.syms.length));
+    const signalsAt = o.signalsAt || ((sym, i) => agentSignals(U, sym, i, o.params));
+    let cash = capital, orders = null, traded = 0, invSum = 0, buys = 0, sells = 0, riskSells = 0;
+    const pos = {}, trades = [], curve = [], bench = [], days = [];
+    for (let g = start; g <= end; g++) {
+      if (orders) {
+        for (const s of orders.sell) {
+          const F = U.F[s], i = g - U.off[s], p = pos[s];
+          if (!p || i < 0) continue;
+          const px = F.o[i] * (1 - cost);
+          cash += p.qty * px; traded += p.qty * px; sells++;
+          trades.push({ sym: s, entry: p.entry, exit: px, qty: p.qty, pnl: (px - p.entry) * p.qty, pnlPct: px / p.entry - 1, entryG: p.entryG, exitG: g, reason: orders.why[s] });
+          delete pos[s];
+        }
+        let eqOpen = cash;
+        for (const s of Object.keys(pos)) eqOpen += pos[s].qty * U.F[s].o[g - U.off[s]];
+        const per = eqOpen * frac * orders.scale / maxPos;
+        for (const s of orders.buy) {
+          if (Object.keys(pos).length >= maxPos) break;
+          const F = U.F[s], i = g - U.off[s];
+          if (pos[s] || i < 0) continue;
+          const val = Math.min(cash, per);
+          if (val < per * 0.5) break;
+          const px = F.o[i] * (1 + cost);
+          pos[s] = { qty: val / px, entry: px, entryG: g }; cash -= val; traded += val; buys++;
+        }
+        orders = null;
+      }
+      let eq = cash;
+      for (const s of Object.keys(pos)) eq += pos[s].qty * U.F[s].c[g - U.off[s]];
+      let bsum = 0, bn = 0;
+      for (const s of U.syms) { const i = g - U.off[s], i0 = start - U.off[s]; if (i0 >= 0) { bsum += U.F[s].c[i] / U.F[s].c[i0]; bn++; } }
+      curve.push(eq); bench.push(bn ? capital * bsum / bn : capital); days.push(g);
+      invSum += (eq - cash) / eq;
+      if (g === end) break;
+      const sell = [], why = {}, cands = [];
+      let mkt = 0;
+      for (const s of U.syms) {
+        const i = g - U.off[s];
+        if (i < 130) continue;
+        const sg = signalsAt(s, i);
+        if (!sg) continue;
+        const d = teamDecision(sg, { held: !!pos[s], weights: o.weights, ...(o.decision || {}) });
+        mkt = d.mkt;
+        if (d.action === 'SELL') { sell.push(s); why[s] = d.why; if (/risk/.test(d.why)) riskSells++; }
+        else if (d.action === 'BUY') cands.push([s, d.score]);
+      }
+      cands.sort((a, b) => b[1] - a[1]);
+      if (sell.length || cands.length) orders = { sell, why, buy: cands.map(x => x[0]), scale: mkt < -(o.timingThr ?? 0.2) ? 0.5 : 1 };
+    }
+    for (const s of Object.keys(pos)) {
+      const F = U.F[s], i = end - U.off[s], p = pos[s];
+      trades.push({ sym: s, entry: p.entry, exit: F.c[i], qty: p.qty, pnl: (F.c[i] - p.entry) * p.qty, pnlPct: F.c[i] / p.entry - 1, entryG: p.entryG, exitG: end, reason: 'END' });
+    }
+    const rets = curve.slice(1).map((v, k) => v / curve[k] - 1);
+    const mu = rets.reduce((s, r) => s + r, 0) / (rets.length || 1);
+    const sd = Math.sqrt(rets.reduce((s, r) => s + (r - mu) ** 2, 0) / (rets.length || 1));
+    const brets = bench.slice(1).map((v, k) => v / bench[k] - 1);
+    const bmu = brets.reduce((s, r) => s + r, 0) / (brets.length || 1);
+    const bsd = Math.sqrt(brets.reduce((s, r) => s + (r - bmu) ** 2, 0) / (brets.length || 1));
+    const dd = (c) => { let peak = -Infinity, m = 0; for (const v of c) { peak = Math.max(peak, v); m = Math.min(m, (v - peak) / peak); } return m; };
+    const years = Math.max(1 / 252, curve.length / 252), avgEq = curve.reduce((s, v) => s + v, 0) / (curve.length || 1);
+    const closed = trades.filter(t => t.reason !== 'END');
+    return {
+      curve, bench, days, trades,
+      totalReturn: curve[curve.length - 1] / capital - 1, benchReturn: bench[bench.length - 1] / capital - 1,
+      sharpe: sd > 0 ? (mu / sd) * Math.sqrt(252) : 0, benchSharpe: bsd > 0 ? (bmu / bsd) * Math.sqrt(252) : 0,
+      maxDD: dd(curve), benchMaxDD: dd(bench), invested: invSum / (curve.length || 1),
+      buys, sells, riskSells, turnover: traded / avgEq / years,
+      winRate: closed.length ? closed.filter(t => t.pnl > 0).length / closed.length : 0,
+      avgHoldDays: closed.length ? closed.reduce((s, t) => s + (t.exitG - t.entryG), 0) / closed.length : 0,
+    };
+  }
+
   function runTilt(U, o = {}) {
     const start = Math.max(o.start ?? 130, 130), end = Math.min(o.end ?? U.L - 1, U.L - 1);
     const capital = o.capital ?? 100000, cost = costOf(o), frac = o.investFraction ?? 1;
     const N = U.syms.length, K = effectiveTopK(o.topK, N);
-    const scoreAt = o.scoreAt || ((sym, i) => trendScore(U.F[sym], i, mergeParams(o.params).earn));
+    const scoreAt = o.scoreAt || ((sym, i) => trendScore(U.F[sym], i, (o.params && o.params.trend) || TREND_PARAMS));
     let cash = capital;
     const pos = {}; // sym → { qty, entry, entryG }
     const trades = [], curve = [], bench = [], days = [], picks = [];
@@ -1396,22 +1338,15 @@
   // average over the tickers it called), so the t-statistic is over days, not correlated tickers.
   // Days are global universe indices; a call made on day g matures on day g + h.
   const TUNE_KEYS = {
-    momo: { id: 'adxMin',   values: [15, 18, 20, 23, 25, 30] },
-    mean: { id: 'k',        values: [1.6, 1.8, 2.0, 2.2, 2.5] },
-    brkt: { id: 'kcMult',   values: [1.0, 1.25, 1.5, 1.75, 2.0] },
-    vwap: { id: 'devThr',   values: [1.0, 1.25, 1.5, 2.0, 2.5] },
-    vol:  { id: 'expand',   values: [1.1, 1.2, 1.25, 1.35, 1.5] },
-    skew: { id: 'thr',      values: [0.3, 0.5, 0.7, 0.9, 1.2] },
-    flow: { id: 'cmfThr',   values: [0.05, 0.08, 0.1, 0.15, 0.2] },
-    mm:   { id: 'atrRank',  values: [0.15, 0.2, 0.3, 0.4, 0.5] },
-    corr: { id: 'rsThr',    values: [0.015, 0.02, 0.03, 0.04, 0.06] },
-    pair: { id: 'zEntry',   values: [1.5, 1.75, 2.0, 2.5, 3.0] },
-    macr: { id: 'hi',       values: [0.55, 0.6, 0.65, 0.7, 0.75] },
-    earn: { id: 'lookback', values: [63, 84, 126, 168, 210] },
-    fund: { id: 'thr',      values: [0.5, 0.75, 1.0, 1.5, 2.0] },
-    news: { id: 'gapThr',   values: [0.5, 0.75, 1.0, 1.25, 1.5] },
-    soc:  { id: 'volThr',   values: [1.5, 1.75, 2.0, 2.5, 3.0] },
-    patt: { id: 'k',        values: [5, 8, 10, 15, 20] },
+    mom:      { id: 'lookback', values: [168, 210, 252] },
+    hi52:     { id: 'window',   values: [126, 189, 252] },
+    sect:     { id: 'lookback', values: [63, 126, 189] },
+    rev:      { id: 'window',   values: [5, 10, 21] },
+    lowvol:   { id: 'window',   values: [60, 120, 250] },
+    volshock: { id: 'short',    values: [3, 5, 10] },
+    drift:    { id: 'window',   values: [10, 20, 40] },
+    mkt:      { id: 'sma',      values: [100, 150, 200] },
+    risk:     { id: 'volRatio', values: [1.4, 1.6, 2.0] },
   };
 
   const AUTOPILOT = { h: 5, window: 120, minDays: 20, smooth: 5, tFloor: 0.5, testDays: 60 };
@@ -1679,7 +1614,7 @@
   function configWeights(cfg) {
     return Object.fromEntries(AGENT_IDS.map(id => [id,
       cfg.agents === 'swarm' ? 1 / AGENT_IDS.length
-        : cfg.agents === 'default' ? (cfg.style === 'both' ? 1 / AGENT_IDS.length : (id === 'earn' ? 1 : 0))
+        : cfg.agents === 'default' ? (cfg.style === 'both' ? 1 / AGENT_IDS.length : (id === 'mom' ? 1 : 0))
         : (id === cfg.agents ? 1 : 0)]));
   }
   function configParams(cfg, base = {}) {
@@ -1830,7 +1765,7 @@
   const api = {
     ind, normalizeBars, makeFeatures, buildUniverse, pairFor,
     REGIME_KEYS, REGIME_LABELS, regimeAt,
-    AGENT_IDS, DEFAULT_PARAMS, mergeParams, agentSignals, AGENT_FNS, agentReadings, AGENT_ROLE, roleOf,
+    AGENT_IDS, DEFAULT_PARAMS, mergeParams, agentSignals, AGENT_FNS, agentReadings, AGENT_ROLE, roleOf, PICKERS, teamDecision, DECISION, TREND_PARAMS, runTeam,
     ensemble, correlationAdjust, regimeMultipliers, atrPlan,
     runBacktest, evaluateAgents, synthUniverseBars,
     TUNE_KEYS, AUTOPILOT, createScoreBook, proposeWeights, tuneParam, runInvested,

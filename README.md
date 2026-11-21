@@ -37,12 +37,15 @@ end-of-day report) and keeps its records in a private Vercel Blob store.
   stream uses a one-minute ticket from `POST /api/stream-ticket`, so the token never appears in a URL.
 - **Browser calls**: on Vercel only the app's own origin (plus `SHOAL_ALLOWED_ORIGINS`) may call the API;
   per-IP rate limits (600/min, 10/min for connect); security headers on the API and the static app.
-- **Server trading** (`trader.js`; now run by the engine at the open and on hourly checks, see DIRECTION.md): it runs Rank & tilt on the Alpaca account in `ALPACA_KEY_ID` / `ALPACA_SECRET`
-  (`ALPACA_ENV=paper`; live also needs `SHOAL_SERVER_LIVE=1`): picks = top `SHOAL_TOPK` (12) of
-  `SHOAL_WATCHLIST` (default 100) by trend score as of last month's close; sells non-picks; buys missing
-  picks with equity × `SHOAL_INVEST_FRACTION` (0.9) / K, from cash on hand. Requires `CRON_SECRET` (Vercel
-  sends it). `GET /api/cron/tilt?dry=1` (with the secret) or Settings → Server trading → Preview shows the
-  plan without trading. When it trades the account the browser is connected to, the browser places no orders.
+- **Server trading** (`trader.js`, run by the engine at the open and on hourly checks, see DIRECTION.md) trades the
+  Alpaca account in `ALPACA_KEY_ID` / `ALPACA_SECRET` (`ALPACA_ENV=paper`; live also needs `SHOAL_SERVER_LIVE=1`).
+  Default strategy: the **9-agent team** over `SHOAL_WATCHLIST` (default 100): buys stocks 4 of the 7 pickers
+  back with enough confidence (best first, up to `SHOAL_TOPK`, 12, positions of equity × `SHOAL_INVEST_FRACTION`
+  (0.9) / K, half size while the market trend is down, from cash on hand) and sells holdings 4 of 7 turn against
+  or the risk guardian flags. `SHOAL_STRATEGY=tilt` uses Rank & tilt instead (top K by trend score as of last
+  month's close). Requires `CRON_SECRET`. `GET /api/cron/tilt?dry=1` (with the secret) or Settings → Server
+  engine → Preview shows the plan and votes without trading. When it trades the account the browser is
+  connected to, the browser places no orders.
 
 ## Running
 
@@ -84,7 +87,7 @@ frontend already understands, so adding a broker doesn't touch the trading logic
 
 ## Agents
 
-`signals.js` holds the signal engine: indicators, regime detection, the 16 agents, the ensemble and a
+`signals.js` holds the signal engine: indicators, regime detection, the 9 agents, the team rule (`teamDecision`, `runTeam`), the ensemble and a
 walk-forward backtester. It's a plain script loaded by `index.html` and unit-tested in Node
 (`test/signals.test.mjs`, including a check that no agent looks at future bars).
 

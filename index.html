@@ -1557,7 +1557,7 @@ function getMarketStatus() {
 }
 
 // ── Signals ───────────────────────────────────────────────────────────────────
-// Indicators, the 16 agents, regimes, ensemble and backtester live in signals.js (window.ShoalSignals),
+// Indicators, the 9 agents, regimes, ensemble and backtester live in signals.js (window.ShoalSignals),
 // which runs on full OHLCV bars and is unit-tested in Node.
 const SS = window.ShoalSignals;
 
@@ -1746,133 +1746,68 @@ const AGENT_PARAMS_DEFAULT = SS.DEFAULT_PARAMS;
 
 const pctFmt = (d = 0) => v => `${(v * 100).toFixed(d)}%`;
 const AGENT_PARAM_DEFS = {
-  momo: [
-    { key: 'fast',   label: 'Fast EMA',   min: 5,  max: 20, step: 1,  fmt: v => `${v}d`,
-      hint: 'Fast EMA for the MACD line. Shorter reacts sooner to a turn but whipsaws more. Default 12d is the standard MACD setting.' },
-    { key: 'slow',   label: 'Slow EMA',   min: 20, max: 50, step: 2,  fmt: v => `${v}d`,
-      hint: 'Slow EMA for the MACD line and the trend baseline. A BUY needs the MACD histogram and fast-above-slow EMAs to agree. Default 26d.' },
-    { key: 'adxMin', label: 'Min ADX',    min: 10, max: 35, step: 1,  fmt: v => String(v),
-      hint: 'The agent stays silent unless ADX (trend strength) is at least this. Raise to trade only strong trends; 20 is the usual "trending" line.' },
+  mom: [
+    { key: 'lookback', label: 'Lookback', min: 126, max: 252, step: 21, fmt: v => `${v}d`,
+      hint: 'Momentum window. Default 252 trading days ≈ 12 months, the most studied setting.' },
+    { key: 'skip', label: 'Skip recent', min: 0, max: 42, step: 7, fmt: v => `${v}d`,
+      hint: 'The last month is left out because very short-term returns tend to reverse. Default 21 days.' },
+    { key: 'band', label: 'Vote band', min: 0.1, max: 0.5, step: 0.05, fmt: pctFmt(),
+      hint: 'Votes BUY for the top share of the watchlist and SELL for the bottom share; silent in between. Default 30%.' },
   ],
-  mean: [
-    { key: 'period', label: 'Band period', min: 10, max: 30, step: 1,   fmt: v => `${v}d`,
-      hint: 'Bollinger band lookback. Default 20d is the classic setting.' },
-    { key: 'k',      label: 'Band width',  min: 1.5, max: 3, step: 0.1, fmt: v => `${v.toFixed(1)}σ`,
-      hint: 'Standard deviations from the middle band. Wider bands = rarer, more extreme entries. Default 2σ.' },
-    { key: 'rsiLo',  label: 'RSI oversold', min: 15, max: 40, step: 1,  fmt: v => String(v),
-      hint: 'A close just inside the lower band also counts when RSI is at or below this. Default 30.' },
-    { key: 'rsiHi',  label: 'RSI overbought', min: 60, max: 85, step: 1, fmt: v => String(v),
-      hint: 'A close just inside the upper band also counts when RSI is at or above this. Default 70.' },
-    { key: 'adxMax', label: 'Max ADX',     min: 15, max: 40, step: 1,   fmt: v => String(v),
-      hint: 'Reversion is skipped when ADX is above this (the market is trending, so stretched prices tend to keep going). Default 25.' },
+  hi52: [
+    { key: 'window', label: 'High window', min: 126, max: 252, step: 21, fmt: v => `${v}d`,
+      hint: 'Stocks closest to their high over this window are favoured. Default 252 days = 52 weeks.' },
   ],
-  brkt: [
-    { key: 'kcMult', label: 'Keltner width', min: 1, max: 2.5, step: 0.1, fmt: v => `${v.toFixed(1)}× ATR`,
-      hint: 'A squeeze is when the Bollinger bands sit inside Keltner channels of this many ATRs. Higher = squeezes are called more often. Default 1.5.' },
-    { key: 'recent', label: 'Squeeze window', min: 2, max: 15, step: 1, fmt: v => `${v}d`,
-      hint: 'How recently the squeeze must have been on for a band break to count. Default 5 days.' },
-    { key: 'volZ',   label: 'Volume confirm', min: 0, max: 2.5, step: 0.25, fmt: v => `z ≥ ${v}`,
-      hint: 'The breakout day needs volume this many standard deviations above normal. Without volume data the break must also clear the 20-day range.' },
+  sect: [
+    { key: 'lookback', label: 'Sector trend', min: 63, max: 252, step: 21, fmt: v => `${v}d`,
+      hint: 'Sector average return over this window, compared with the whole watchlist. Default 126 days ≈ 6 months.' },
   ],
-  vwap: [
-    { key: 'period', label: 'VWAP window', min: 5,  max: 40, step: 1,   fmt: v => `${v}d`,
-      hint: 'Rolling VWAP lookback (typical price weighted by volume). Default 20 days.' },
-    { key: 'devThr', label: 'Stretch',     min: 0.5, max: 3, step: 0.1, fmt: v => `${v.toFixed(1)} ATR`,
-      hint: 'In ranging markets, fade moves this many ATRs away from VWAP. In trends the agent instead buys pullbacks to VWAP.' },
+  rev: [
+    { key: 'window', label: 'Window', min: 5, max: 21, step: 1, fmt: v => `${v}d`,
+      hint: 'Recent return against sector peers, faded: last week\'s losers tend to bounce. Default 10 days.' },
   ],
-  vol: [
-    { key: 'lookback', label: 'Compare to',  min: 5,   max: 30,  step: 1,    fmt: v => `${v}d ago`,
-      hint: 'ATR% today is compared with ATR% this many days ago to decide whether volatility is expanding or contracting.' },
-    { key: 'expand',   label: 'Expansion',   min: 1.05, max: 2,  step: 0.05, fmt: v => `+${((v - 1) * 100).toFixed(0)}%`,
-      hint: 'Volatility up at least this much while price is below its 50-day average = risk-off (SELL).' },
-    { key: 'contract', label: 'Contraction', min: 0.5, max: 0.95, step: 0.05, fmt: v => `−${((1 - v) * 100).toFixed(0)}%`,
-      hint: 'Volatility down at least this much while price is above its 50-day average = risk-on (BUY).' },
+  lowvol: [
+    { key: 'window', label: 'Volatility window', min: 60, max: 250, step: 10, fmt: v => `${v}d`,
+      hint: 'Calmer stocks are favoured. Default 120 days.' },
   ],
-  skew: [
-    { key: 'window', label: 'Window',    min: 10, max: 60, step: 5,   fmt: v => `${v}d`,
-      hint: 'Days of daily returns used to measure skew.' },
-    { key: 'thr',    label: 'Skew level', min: 0.2, max: 1.5, step: 0.1, fmt: v => v.toFixed(1),
-      hint: 'Positive skew above this = lottery-like (SELL); negative skew below minus this = crash-risk premium (BUY, unless the left tail is fattening).' },
+  volshock: [
+    { key: 'short', label: 'Recent volume', min: 3, max: 10, step: 1, fmt: v => `${v}d`,
+      hint: 'Average volume over these days compared with the last 60. Unusual interest tends to be followed by gains. Needs volume data.' },
   ],
-  flow: [
-    { key: 'period', label: 'CMF window', min: 10, max: 40, step: 1,    fmt: v => `${v}d`,
-      hint: 'Chaikin money flow lookback. Default 20 days.' },
-    { key: 'cmfThr', label: 'CMF level',  min: 0.03, max: 0.3, step: 0.01, fmt: v => `±${v.toFixed(2)}`,
-      hint: 'Money flow must be beyond this to signal. OBV trending the other way halves the strength.' },
+  drift: [
+    { key: 'gapAtr', label: 'Gap size', min: 0.5, max: 2, step: 0.25, fmt: v => `${v} ATR`,
+      hint: 'Opening gaps at least this many ATRs count (they usually mean news).' },
+    { key: 'volZ', label: 'Volume confirm', min: 0.5, max: 3, step: 0.25, fmt: v => `z ≥ ${v}`,
+      hint: 'The gap day needs volume this many standard deviations above normal.' },
+    { key: 'window', label: 'Follow-through', min: 10, max: 40, step: 5, fmt: v => `${v}d`,
+      hint: 'How long after the gap the agent keeps voting in its direction, fading as it ages.' },
   ],
-  mm: [
-    { key: 'nr',      label: 'Narrowest of', min: 4, max: 10, step: 1,   fmt: v => `${v} days`,
-      hint: 'Today must be the narrowest range in this many days (NR7 by default) or an inside day.' },
-    { key: 'atrRank', label: 'Max ATR rank', min: 0.1, max: 0.6, step: 0.05, fmt: pctFmt(),
-      hint: 'ATR% must be in the lowest part of its last 120 days, so the contraction is real.' },
+  mkt: [
+    { key: 'sma', label: 'Trend average', min: 100, max: 250, step: 10, fmt: v => `${v}d`,
+      hint: 'The market (equal-weight watchlist) above or below this average, plus its 12-month return. Default 200 days.' },
+    { key: 'thr', label: 'Signal level', min: 0.1, max: 0.5, step: 0.05, fmt: v => v.toFixed(2),
+      hint: 'Reading needed to call the market up or down. While it is down, new positions are half size; strongly down, no new buys.' },
   ],
-  corr: [
-    { key: 'period', label: 'Window',      min: 10, max: 60, step: 5,     fmt: v => `${v}d`,
-      hint: 'Return window for relative strength against same-sector peers.' },
-    { key: 'rsThr',  label: 'RS threshold', min: 0.01, max: 0.1, step: 0.005, fmt: pctFmt(1),
-      hint: 'Outperform peers by at least this (and be above the 50-day average) to BUY; underperform and be below it to SELL.' },
-  ],
-  pair: [
-    { key: 'zEntry',   label: 'Entry z',  min: 1, max: 3.5, step: 0.25, fmt: v => `±${v}`,
-      hint: 'Trade the spread against the most-correlated sector peer when its z-score is beyond this. Higher = rarer, more stretched entries.' },
-    { key: 'lookback', label: 'Window',   min: 30, max: 120, step: 10, fmt: v => `${v}d`,
-      hint: 'Days used for the hedge ratio and the spread\'s mean and standard deviation.' },
-  ],
-  macr: [
-    { key: 'hi', label: 'Bull breadth', min: 0.5, max: 0.85, step: 0.05, fmt: pctFmt(),
-      hint: 'Share of the universe above its 50-day average needed (with the index above its own average) to call risk-on.' },
-    { key: 'lo', label: 'Bear breadth', min: 0.15, max: 0.5, step: 0.05, fmt: pctFmt(),
-      hint: 'At or below this share (with the index below its average) the agent calls risk-off.' },
-  ],
-  earn: [
-    { key: 'lookback', label: 'Lookback',  min: 63, max: 252, step: 21, fmt: v => `${v}d`,
-      hint: 'Momentum window. Default 126 trading days ≈ 6 months.' },
-    { key: 'skip',     label: 'Skip recent', min: 0, max: 42, step: 7, fmt: v => `${v}d`,
-      hint: 'The most recent days are left out because very short-term returns tend to reverse. Default 21 ≈ 1 month.' },
-    { key: 'thr',      label: 'Min strength', min: 0.2, max: 1.5, step: 0.1, fmt: v => v.toFixed(1),
-      hint: 'Volatility-adjusted return needed to signal (roughly a t-statistic).' },
-  ],
-  fund: [
-    { key: 'period', label: 'Window',      min: 20, max: 120, step: 10, fmt: v => `${v}d`,
-      hint: 'Days used for the Sortino ratio (return per unit of downside volatility).' },
-    { key: 'thr',    label: 'Min Sortino', min: 0.25, max: 3, step: 0.25, fmt: v => v.toFixed(2),
-      hint: 'Annualised Sortino needed to signal, positive for BUY, negative for SELL.' },
-  ],
-  news: [
-    { key: 'gapThr', label: 'Gap size',     min: 0.25, max: 2, step: 0.25, fmt: v => `${v} ATR`,
-      hint: 'Opening gaps at least this many ATRs count (gaps usually mean news). Needs open prices.' },
-    { key: 'volZ',   label: 'Volume confirm', min: 0, max: 3, step: 0.25, fmt: v => `z ≥ ${v}`,
-      hint: 'A gap that holds on volume this far above normal = continuation. Filling over half the gap = reversal.' },
-  ],
-  soc: [
-    { key: 'volThr', label: 'Surge level', min: 1, max: 4, step: 0.25, fmt: v => `z ≥ ${v}`,
-      hint: 'Volume this many standard deviations above normal on a decisive day draws attention and follow-through. Without volume, an outsized range is used.' },
-  ],
-  patt: [
-    { key: 'k',       label: 'Analogs',  min: 5, max: 30, step: 1, fmt: v => String(v),
-      hint: 'How many of the most similar past setups to average. More = smoother but blurrier.' },
-    { key: 'horizon', label: 'Horizon',  min: 2, max: 15, step: 1, fmt: v => `${v}d`,
-      hint: 'Forward days whose returns the analogs predict.' },
+  risk: [
+    { key: 'volRatio', label: 'Vol jump', min: 1.2, max: 2.5, step: 0.1, fmt: v => `${v.toFixed(1)}×`,
+      hint: 'Recent volatility this many times its normal level counts as danger.' },
+    { key: 'crashSigma', label: 'Crash day', min: 2.5, max: 5, step: 0.25, fmt: v => `${v}σ`,
+      hint: 'A one-day fall this many standard deviations counts as a crash day.' },
+    { key: 'ddLimit', label: 'Drawdown', min: 0.05, max: 0.3, step: 0.01, fmt: pctFmt(),
+      hint: 'A fall from the recent high bigger than this counts as danger. Strong danger exits a holding and blocks new buys.' },
   ],
 };
 
 const AGENT_OPTIMIZE_KEYS = {
-  momo: { id: 'adxMin',   values: [15, 18, 20, 23, 25, 30] },
-  mean: { id: 'k',        values: [1.6, 1.8, 2.0, 2.2, 2.5] },
-  brkt: { id: 'kcMult',   values: [1.0, 1.25, 1.5, 1.75, 2.0] },
-  vwap: { id: 'devThr',   values: [1.0, 1.25, 1.5, 2.0, 2.5] },
-  vol:  { id: 'expand',   values: [1.1, 1.2, 1.25, 1.35, 1.5] },
-  skew: { id: 'thr',      values: [0.3, 0.5, 0.7, 0.9, 1.2] },
-  flow: { id: 'cmfThr',   values: [0.05, 0.08, 0.1, 0.15, 0.2] },
-  mm:   { id: 'atrRank',  values: [0.15, 0.2, 0.3, 0.4, 0.5] },
-  corr: { id: 'rsThr',    values: [0.015, 0.02, 0.03, 0.04, 0.06] },
-  pair: { id: 'zEntry',   values: [1.5, 1.75, 2.0, 2.5, 3.0] },
-  macr: { id: 'hi',       values: [0.55, 0.6, 0.65, 0.7, 0.75] },
-  earn: { id: 'lookback', values: [63, 84, 126, 168, 210] },
-  fund: { id: 'thr',      values: [0.5, 0.75, 1.0, 1.5, 2.0] },
-  news: { id: 'gapThr',   values: [0.5, 0.75, 1.0, 1.25, 1.5] },
-  soc:  { id: 'volThr',   values: [1.5, 1.75, 2.0, 2.5, 3.0] },
-  patt: { id: 'k',        values: [5, 8, 10, 15, 20] },
+  mom:      { id: 'lookback', values: [168, 210, 252] },
+  hi52:     { id: 'window',   values: [126, 189, 252] },
+  sect:     { id: 'lookback', values: [63, 126, 189] },
+  rev:      { id: 'window',   values: [5, 10, 21] },
+  lowvol:   { id: 'window',   values: [60, 120, 250] },
+  volshock: { id: 'short',    values: [3, 5, 10] },
+  drift:    { id: 'window',   values: [10, 20, 40] },
+  mkt:      { id: 'sma',      values: [100, 150, 200] },
+  risk:     { id: 'volRatio', values: [1.4, 1.6, 2.0] },
 };
 
 // Walk-forward grid search of one parameter for one agent across the whole universe.
@@ -1919,25 +1854,19 @@ function mulberry32(a) {
   };
 }
 
-// accuracy = 5-day hit rate on real daily OHLCV, Feb 2015 – Feb 2018 (24 of the 25 tickers, out of sample).
-// It is the starting prior for each agent; live trading replaces it with the agent's own record.
+// The 9 agents (step 2 of the new direction, see DIRECTION.md): 7 stock pickers that vote BUY/SELL on
+// where a stock ranks within the watchlist, a market-timing agent and a risk guardian. A majority of the
+// pickers (4 of 7) with enough confidence decides; accuracy starts at 0.5 until calls are scored.
 const AGENTS = [
-  { id: 'momo', short: 'Trend', name: 'Trend Follower',       glyph: '↗', desc: 'MACD + EMA trend, only when ADX shows a trend',          weight: 0.0625, accuracy: 0.494, color: '#7dd87d', family: 'Trend' },
-  { id: 'mean', short: 'Bollinger', name: 'Bollinger Reverter',   glyph: '~', desc: 'close outside a Bollinger band + RSI, ranging markets',  weight: 0.0625, accuracy: 0.491, color: '#7ec0ee', family: 'Mean reversion' },
-  { id: 'brkt', short: 'Squeeze', name: 'Squeeze Breakout',     glyph: '⟰', desc: 'Bollinger inside Keltner, then a band break on volume',  weight: 0.0625, accuracy: 0.514, color: '#a8d8b9', family: 'Volatility' },
-  { id: 'vwap', short: 'VWAP', name: 'VWAP Reversion',       glyph: '⎯', desc: 'fade 20d VWAP stretches in ranges, buy pullbacks in trends', weight: 0.0625, accuracy: 0.494, color: '#9dc4e8', family: 'Mean reversion' },
-  { id: 'news', short: 'Gap', name: 'Gap Reactor',          glyph: '✦', desc: 'opening gaps: hold on volume = go, fill = fade',         weight: 0.0625, accuracy: 0.521, color: '#f0c674', family: 'Event' },
-  { id: 'soc', short: 'Attention',  name: 'Attention',            glyph: '☉', desc: 'abnormal volume on a decisive day → follow-through',     weight: 0.0625, accuracy: 0.475, color: '#f4a87c', family: 'Volume' },
-  { id: 'earn', short: 'Persistence', name: 'Trend Persistence',    glyph: '⌹', desc: '6-month return skipping the last month, vol-scaled',     weight: 0.0625, accuracy: 0.528, color: '#ecc080', family: 'Trend' },
-  { id: 'fund', short: 'Sortino', name: 'Risk-Adjusted Return', glyph: '◬', desc: '60-day Sortino ratio (return per downside risk)',        weight: 0.0625, accuracy: 0.516, color: '#d4b070', family: 'Trend' },
-  { id: 'corr', short: 'Rel. strength', name: 'Relative Strength',    glyph: '∴', desc: '20d return vs sector peers + lagged catch-up',           weight: 0.0625, accuracy: 0.501, color: '#c594c5', family: 'Cross-asset' },
-  { id: 'pair', short: 'Pairs', name: 'Pairs Spread',         glyph: '⇌', desc: 'spread z-score vs the most-correlated sector peer',      weight: 0.0625, accuracy: 0.503, color: '#b888c4', family: 'Cross-asset' },
-  { id: 'vol', short: 'Vol regime',  name: 'Volatility Regime',    glyph: '⌇', desc: 'ATR expanding below 50d avg = risk-off, contracting above = risk-on', weight: 0.0625, accuracy: 0.507, color: '#ff8a3d', family: 'Volatility' },
-  { id: 'skew', short: 'Skew', name: 'Return Skew',          glyph: '⎈', desc: 'lottery-like positive skew sells, crash-risk skew buys', weight: 0.0625, accuracy: 0.483, color: '#ffa060', family: 'Statistical' },
-  { id: 'flow', short: 'Money flow', name: 'Money Flow',           glyph: '◈', desc: 'Chaikin money flow confirmed by on-balance volume',      weight: 0.0625, accuracy: 0.521, color: '#7dd8c0', family: 'Volume' },
-  { id: 'mm', short: 'Contraction',   name: 'Range Contraction',    glyph: '◇', desc: 'NR7 / inside day at low ATR → expansion due',            weight: 0.0625, accuracy: 0.514, color: '#95dccb', family: 'Volatility' },
-  { id: 'macr', short: 'Breadth', name: 'Market Breadth',       glyph: '⊙', desc: '% of universe above its 50d / 200d average + index trend', weight: 0.0625, accuracy: 0.500, color: '#b0a8e0', family: 'Market' },
-  { id: 'patt', short: 'Pattern', name: 'Pattern Memory',       glyph: '◊', desc: 'nearest past indicator setups + candlestick patterns',   weight: 0.0625, accuracy: 0.505, color: '#e08a8a', family: 'Pattern' },
+  { id: 'mom',      short: 'Momentum',   name: 'Momentum',           glyph: '↗', desc: '12-month return skipping the last month, risk-adjusted',       weight: 1/9, accuracy: 0.5, color: '#7dd87d', family: 'Picker', role: 'picker' },
+  { id: 'hi52',     short: '52w high',   name: '52-Week High',       glyph: '⌃', desc: 'price close to its 52-week high',                            weight: 1/9, accuracy: 0.5, color: '#a8d8b9', family: 'Picker', role: 'picker' },
+  { id: 'sect',     short: 'Sector',     name: 'Sector Strength',    glyph: '▦', desc: 'the stock\'s sector trend over 6 months vs the market',      weight: 1/9, accuracy: 0.5, color: '#c594c5', family: 'Picker', role: 'picker' },
+  { id: 'rev',      short: 'Reversal',   name: 'Short-Term Reversal', glyph: '↺', desc: 'last 2 weeks vs sector peers, faded',                       weight: 1/9, accuracy: 0.5, color: '#7ec0ee', family: 'Picker', role: 'picker' },
+  { id: 'lowvol',   short: 'Low vol',    name: 'Low Volatility',     glyph: '≈', desc: 'calmer stocks favoured (6-month volatility)',                weight: 1/9, accuracy: 0.5, color: '#9dc4e8', family: 'Picker', role: 'picker' },
+  { id: 'volshock', short: 'Vol shock',  name: 'Volume Shock',       glyph: '☉', desc: 'unusual recent volume vs the last 3 months',                 weight: 1/9, accuracy: 0.5, color: '#f4a87c', family: 'Picker', role: 'picker' },
+  { id: 'drift',    short: 'News drift', name: 'News Drift',         glyph: '✦', desc: 'big gap on heavy volume that holds, then follow-through',    weight: 1/9, accuracy: 0.5, color: '#f0c674', family: 'Picker', role: 'picker' },
+  { id: 'mkt',      short: 'Market',     name: 'Market Trend',       glyph: '⊙', desc: 'market vs its 200-day average and 12-month trend: sizing',  weight: 0,   accuracy: 0.5, color: '#b0a8e0', family: 'Timing', role: 'timing' },
+  { id: 'risk',     short: 'Risk',       name: 'Risk Guardian',      glyph: '⛨', desc: 'volatility jumps, crash days, drawdowns: exits and vetoes', weight: 0,   accuracy: 0.5, color: '#ff8a3d', family: 'Risk', role: 'risk' },
 ];
 
 // Stocks the app watches. Default: 100 large US stocks across 11 sectors (the original 25 first, so
@@ -2002,11 +1931,11 @@ const RISK_DEFAULTS = {
   stopLoss: 2.5, takeProfit: 5, minConsensus: 5, maxHoldHours: 48, atrStops: true, regimeWeights: false, corrPenalty: false,
 };
 
-// Starting weights per style. Stay-invested sells on Trend Persistence alone: on real 2015–2018 daily data
+// Starting weights per style. Stay-invested sells on Momentum alone: on real 2015–2018 daily data
 // it kept 88% of buy-and-hold's 95% gain with a −10% worst drop (vs −15%). Trading both ways starts equal.
 // Autopilot, when on, starts from these and changes them only after beating them on days it hadn't seen.
 const defaultWeightsFor = (style) => Object.fromEntries(AGENTS.map(a => [a.id,
-  style === 'both' ? 1 / AGENTS.length : (a.id === 'earn' ? 1 : 0)]));
+  style === 'both' ? (a.role === 'picker' ? 1 / SS.PICKERS.length : 0) : (a.id === 'mom' ? 1 : 0)]));
 
 const styleLabel = (st) => (st === 'both' ? 'trade both ways' : st === 'invested' ? 'stay invested' : 'rank & tilt');
 // Trading cost per trade side (bps): the setting, or the profile for the data/broker in use
@@ -2016,11 +1945,11 @@ const costBpsFor = (risk, U, brokerId) => {
   if (U && U.fictional) return SS.COST_PROFILES.fictional.bps;
   return brokerId === 'ig' ? SS.COST_PROFILES.ig.bps : SS.COST_PROFILES.alpaca.bps;
 };
-// Weights shown for the model: positive coefficients, the trend score counted under Trend Persistence
+// Weights shown for the model: positive coefficients, the trend score counted under Momentum
 const weightsFromModel = (model) => {
   if (!model || !model.beta) return null;
   const w = Object.fromEntries(AGENTS.map(a => [a.id, 0]));
-  model.features.forEach((f, k) => { const id = f === 'trend' ? 'earn' : f; if (id in w) w[id] += Math.max(0, model.beta[k] / model.sd[k]); });
+  model.features.forEach((f, k) => { const id = f === 'trend' ? 'mom' : f; if (id in w) w[id] += Math.max(0, model.beta[k] / model.sd[k]); });
   const tot = Object.values(w).reduce((a, b) => a + b, 0);
   if (!(tot > 0)) return null;
   AGENTS.forEach(a => { w[a.id] /= tot; });
@@ -3053,7 +2982,7 @@ const ScreenDashboard = ({ mode, tick, onTradeClick, onMode, ctx }) => {
                 {(ctx?.risk?.style || 'tilt') === 'tilt'
                   ? 'Rank & tilt trades only at the monthly re-rank (and to finish it as cash frees up). Between re-ranks it holds, so no trades is normal.'
                   : ctx?.risk?.style === 'invested'
-                  ? 'Stay invested buys every stock once, then only sells when Trend Persistence signals weakness and buys back when that clears.'
+                  ? 'Stay invested buys every stock once, then only sells when Momentum signals weakness and buys back when that clears.'
                   : 'Trade both ways opens a trade when enough agents agree with enough confidence; the list below shows which filter stopped each stock.'}
                 {' '}In VIRTUAL and LIVE, orders are only placed while the US market is open. The <b>BOT STATUS</b> line on the dashboard says exactly what the bot is waiting for.
               </div>
@@ -3739,7 +3668,7 @@ const ScreenLearning = ({ mode, ctx }) => {
   const whyFor = (a) => {
     const w = agentWeights[a.id] ?? 0;
     if (disabled.has && disabled.has(a.id)) return { w: 0, why: 'switched off in Agent config' };
-    if (w > 0.0005) return { w, why: a.id === 'earn' ? 'the trend score: the main way stocks are ranked' : 'adds to the ranking: its signal predicted next-month returns' };
+    if (w > 0.0005) return { w, why: a.id === 'mom' ? 'the trend score: the main way stocks are ranked' : 'adds to the ranking: its signal predicted next-month returns' };
     if (!autopilotOn) return { w: 0, why: 'Autopilot is off, so only the trend score is used' };
     const e = evAll && evAll[a.id];
     if (!e) return { w: 0, why: 'not enough history yet to test it' };
@@ -4374,7 +4303,7 @@ const AutopilotLog = ({ log = [], limit = 8, empty = 'No changes yet.' }) => (
 
 // Strategy definitions: which agents are active and how they're weighted
 const STRAT_ENABLED = {
-  'Momentum only':    new Set(['momo', 'brkt', 'earn', 'fund', 'corr', 'soc', 'news', 'flow']),
+  'Momentum only':    new Set(['mom', 'hi52', 'sect', 'drift']),
   'Mean revert only': new Set(['mean', 'vwap', 'pair', 'skew', 'mm']),
 };
 
@@ -4439,7 +4368,7 @@ const configFromSettings = (risk, frozen) => ({
 });
 const describeConfig = (cfg) => {
   if (cfg.style === 'tilt') return `Rank & tilt · top ${cfg.topK} by ${cfg.score === 'model' ? 'model' : 'trend'} score · ${Math.round(cfg.investFraction * 100)}% invested · re-ranked monthly`;
-  const who = cfg.agents === 'default' ? (cfg.style === 'both' ? 'the whole swarm' : 'Trend Persistence (default)')
+  const who = cfg.agents === 'default' ? (cfg.style === 'both' ? 'the whole swarm' : 'Momentum (default)')
     : cfg.agents === 'swarm' ? 'the whole swarm' : (AGENTS.find(a => a.id === cfg.agents)?.name || cfg.agents);
   const how = cfg.style === 'both'
     ? `stop ${cfg.atrStop}× ATR, target ${cfg.atrTarget}× ATR, max ${cfg.maxHold} days`
@@ -4721,7 +4650,7 @@ const ScreenSwing = ({ ctx }) => {
       <div className="page-head">
         <div className="page-eyebrow">Swing lab · agents together · {H}-day holds</div>
         <h1 className="page-title">Do the agents, <em>together</em>, call the next {H === 21 ? 'month' : `${H} days`}?</h1>
-        <p className="page-sub">Every day each of the 16 agents scores every stock. A combined model turns the scores into a probability of a rise and an expected move, weighting each agent by how much it actually helped. It is refitted every quarter on past data only and tested on the days after, so every result below is from days it hadn't seen. No orders are placed.</p>
+        <p className="page-sub">Every day each of the 9 agents scores every stock. A combined model turns the scores into a probability of a rise and an expected move, weighting each agent by how much it actually helped. It is refitted every quarter on past data only and tested on the days after, so every result below is from days it hadn't seen. No orders are placed.</p>
       </div>
 
       <div className="grid-2" style={{marginBottom:16}}>
@@ -4767,7 +4696,7 @@ const ScreenSwing = ({ ctx }) => {
             {mode === 'ranked'
               ? <p style={{margin:'0 0 8px'}}><b>Trade</b>: every {H} days hold the {maxPos} stocks (at most half of them) the combined model ranks best, equal weights, always invested; costs paid on the names that change. That isolates stock picking: the fair comparison is holding all of them.</p>
               : <p style={{margin:'0 0 8px'}}><b>Buy</b> when the probability is at least 55% and the expected move beats the {cost * 2}bp round-trip cost; hold {H} days; best probabilities first, up to {maxPos} at once.</p>}
-            <p style={{margin:'0 0 8px'}}><b>An agent counts</b> only with t ≥ 3 on unseen days (2–3 is "promising"): with 16 agents, one or two will look good by luck at t ≈ 2.</p>
+            <p style={{margin:'0 0 8px'}}><b>An agent counts</b> only with t ≥ 3 on unseen days (2–3 is "promising"): with 9 agents, one may look good by luck at t ≈ 2.</p>
             <p style={{margin:0}}><b>GO</b> needs reliable stock picking by the agents together on unseen days (t ≥ 2), a profit per trade after costs, and a better risk-adjusted return than both buy &amp; hold and the trend score alone.</p>
           </div>
         </div>
@@ -4813,7 +4742,7 @@ const ScreenSwing = ({ ctx }) => {
             <thead><tr><th></th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'right'}}>Per year</th><th style={{textAlign:'right'}}>Sharpe</th><th style={{textAlign:'right'}}>Worst drop</th><th style={{textAlign:'right'}}>Trades</th><th style={{textAlign:'right'}}>Won</th><th style={{textAlign:'right'}}>Per trade</th></tr></thead>
             <tbody>
               {row('All agents together', R.model, rel ? `hold the ${R.maxPos} best-ranked stocks, re-ranked every ${R.H} days` : 'buy when the combined probability ≥ 55% and the expected move beats costs')}
-              {R.trendOnly && row('Trend score only', R.trendOnly, 'the same rules using Trend Persistence alone (Rank & tilt is this idea)')}
+              {R.trendOnly && row('Trend score only', R.trendOnly, 'the same rules using Momentum alone (Rank & tilt is this idea)')}
               {row('Buy & hold', R.hold, 'every stock, equal weights, never sold')}
             </tbody>
           </table>
@@ -5383,7 +5312,7 @@ const ServerTradingCard = ({ alpaca, st }) => {
         <div className="mono tiny" style={{color: on ? 'var(--up)' : 'var(--ink-3)'}}>{!eng ? (err ? 'unavailable' : 'checking…') : on ? `ON · ${eng.env}` : 'OFF'}</div>
       </div>
       <div className="mono tiny muted" style={{marginTop:6,lineHeight:1.6}}>
-        Every trading day, using Alpaca's market clock: an <b>open review</b> {eng ? eng.openDelayMin : 15} minutes after the open (14:30 UK most of the year), <b>hourly checks</b> until the close (risk snapshot, {eng ? eng.dailyLossPct : 5}% daily loss guard, finishing unfinished orders) and an <b>end-of-day report</b> after the close (21:00 UK). A free GitHub Actions schedule wakes it every 15 minutes. Decisions: Rank &amp; tilt for now (top {eng ? eng.topK : 12} of {eng ? eng.watchlistSize : 100} stocks) until the 9-agent ensemble replaces it. It treats its Alpaca account as its own{sameAcct ? '; this browser only watches it' : ''}.
+        Every trading day, using Alpaca's market clock: an <b>open review</b> {eng ? eng.openDelayMin : 15} minutes after the open (14:30 UK most of the year), <b>hourly checks</b> until the close (risk snapshot, {eng ? eng.dailyLossPct : 5}% daily loss guard, finishing unfinished orders) and an <b>end-of-day report</b> after the close (21:00 UK). A free GitHub Actions schedule wakes it every 15 minutes. Decisions: {eng && eng.strategy === 'tilt' ? <>Rank &amp; tilt (SHOAL_STRATEGY=tilt)</> : <>the <b>9-agent team</b>: a stock is bought when 4 of the 7 pickers back it with enough confidence and the risk guardian doesn't object, and sold when 4 turn against it or the risk guardian sees serious danger</>}; at most {eng ? eng.topK : 12} positions from {eng ? eng.watchlistSize : 100} stocks. It treats its Alpaca account as its own{sameAcct ? '; this browser only watches it' : ''}.
       </div>
       {eng && (
         <div className="mono tiny" style={{marginTop:8,lineHeight:1.7,color:'var(--ink-2)'}}>
@@ -5423,7 +5352,10 @@ const ServerTradingCard = ({ alpaca, st }) => {
       {preview && (
         <div className="mono tiny" style={{marginTop:8,color: preview.error ? 'var(--down)' : 'var(--ink-2)',lineHeight:1.6}}>
           {preview.error ? preview.error : <>
-            Picks for {preview.month} (ranked on {preview.rankedAsOf}): {preview.picks.join(', ')}.<br/>
+            {preview.strategy === 'team'
+              ? <>Votes on {preview.rankedAsOf}: {preview.tally.BUY} buy, {preview.tally.SELL} sell, {preview.tally.HOLD} hold, {preview.tally.WAIT} wait · market {preview.mkt > 0 ? '+' : ''}{preview.mkt}{preview.scale < 1 ? ' (half-size buys)' : ''}.<br/>
+                  {preview.decisions.filter(d => d.action === 'BUY' || d.action === 'SELL').sort((a, b) => b.score - a.score).slice(0, 8).map(d => `${d.sym} ${d.action} ${d.action === 'SELL' ? d.againstVotes : d.forVotes}/7 agree, conf ${(d.confidence * 100).toFixed(0)}%`).join(' · ')}<br/></>
+              : <>Picks for {preview.month} (ranked on {preview.rankedAsOf}): {preview.picks.join(', ')}.<br/></>}
             {preview.sells.length ? `Would sell: ${preview.sells.join(', ')}. ` : 'Nothing to sell. '}
             {preview.buys.length ? `Would buy: ${preview.buys.map(b => `${b.sym} $${b.notional.toLocaleString()}`).join(', ')}. ` : 'Nothing to buy. '}
             {preview.waiting.length ? `Waiting for cash: ${preview.waiting.join(', ')}.` : ''}
@@ -5733,7 +5665,7 @@ const ScreenSettings = ({ serverTrading = null, mode, alpaca, setAlpaca, risk, s
               {risk.style === 'both'
                 ? 'Long and short trades when enough agents agree, with ATR stops and targets. On 2015–2018 daily data this lost to simply holding the stocks.'
                 : risk.style === 'invested'
-                ? 'Hold all the stocks and sell one only when it shows weakness (Trend Persistence by default); buy it back when that clears. On 2015–2018 daily data: 88% vs 95% for holding everything, with a −10% worst drop instead of −15%.'
+                ? 'Hold all the stocks and sell one only when it shows weakness (Momentum by default); buy it back when that clears. On 2015–2018 daily data: 88% vs 95% for holding everything, with a −10% worst drop instead of −15%.'
                 : `Stay fully invested in the ${risk.topK || 12} stocks with the strongest trend (return from 6 months to 1 month ago), re-ranked at each month end. Tested on real daily data after costs, it is not a reliable way to beat simply holding everything. On 12 stocks and sector funds over 2017–2026 it made about the same (+1153% vs +1178%) with a smaller worst drop (−39% vs −49%). On 6 sector funds alone it trailed (+119% vs +176%). Its earlier wins came mostly from riding a few big winners such as NVDA. Expect it to help most in long bear markets like 2022; watch the buy-and-hold comparison and paper-trade before going live.`}
             </div>
           </div>
@@ -5991,7 +5923,7 @@ const ScreenSettings = ({ serverTrading = null, mode, alpaca, setAlpaca, risk, s
               <div className="mono" style={{fontSize:13}}>≥ {risk.minConsensus ?? 7} agents</div>
             </div>
             <input type="range" min="4" max="16" step="1" value={risk.minConsensus ?? 7} onChange={e=>setRisk({...risk, minConsensus: +e.target.value})}/>
-            <div className="mono tiny muted" style={{marginTop:4}}>Only enter a trade when at least N of 16 agents vote in the same direction. Higher = more selective, fewer trades.</div>
+            <div className="mono tiny muted" style={{marginTop:4}}>Only enter a trade when at least N of the 9 agents vote in the same direction. Higher = more selective, fewer trades.</div>
           </div>
 
           <div className="field">
@@ -7574,24 +7506,25 @@ const ScreenGuide = ({ onGo }) => {
             [<span className="pill virtual">◑ VIRTUAL</span>, 'Real orders to your Alpaca paper or IG demo account. No real money. Only trades while the US market is open.'],
             [<span className="pill live">◉ LIVE</span>, 'Real money through your live account. Daily loss limit and Autopilot caps apply. Use with care.'],
           ]}/>
-          <p style={{margin:'8px 0 0'}}>The bot runs in this browser tab: <b>keep the tab open</b> for VIRTUAL and LIVE to keep trading, or turn on <b>Server trading</b> (Settings) so the server runs Rank &amp; tilt once a day on your Alpaca paper account without a browser. While server trading is on for the account you're connected to, the browser only watches.</p>
+          <p style={{margin:'8px 0 0'}}>The bot runs in this browser tab: <b>keep the tab open</b> for VIRTUAL and LIVE to keep trading, or use the <b>Server engine</b> (Settings): the server runs the 9-agent team on your Alpaca paper account every trading day (open review, hourly checks, end-of-day report) without a browser. While server trading is on for the account you're connected to, the browser only watches.</p>
         </Sec>
 
         <Sec n="4" title="Styles (Settings → Style)">
           <T head={['Style', 'What it does', 'When to use']} rows={[
             ['Rank & tilt (default)', 'Fully invested in the top stocks by trend score (6-month return, skipping the last month), re-ranked once a month. Dropped names sold, new ones bought.', 'The default. Low trading, best evidence.'],
-            ['Stay invested', 'Holds every stock; sells one when Trend Persistence signals weakness, buys it back when that clears.', 'If you want to own everything and only step aside from weak names.'],
+            ['Stay invested', 'Holds every stock; sells one when Momentum signals weakness, buys it back when that clears.', 'If you want to own everything and only step aside from weak names.'],
             ['Trade both ways', 'Long and short trades when enough agents agree, with stops, targets and a maximum holding period.', 'Experimental: it lost to buy & hold in testing.'],
           ]}/>
         </Sec>
 
         <Sec n="5" title="The agents">
-          <p style={{margin:'0 0 6px'}}>16 agents each read one thing from daily prices and volume (trend, Bollinger bands, volume, gaps, volatility, breadth and so on). Each gives a <b>vote</b> (buy/sell with a strength, when its rule triggers) and a continuous <b>reading</b> every day.</p>
-          <ul style={{margin:'0 0 0 18px',padding:0}}>
-            <li><b>Roles</b>: 14 are <b>stock pickers</b> (which stocks beat the others), Market Breadth is <b>market timing</b> (the whole market), Volatility Regime is <b>risk</b> (calm or turbulent ahead).</li>
-            <li><b>How they're used</b>: Rank &amp; tilt uses the trend score only (or Autopilot's model when Autopilot is on); Stay invested uses Trend Persistence to sell; Trade both ways uses the weighted vote of all agents.</li>
-            <li><b>Weights</b> change only when Autopilot adopts a refitted model (a few times a year), never per trade. <Go to="learning">Strategy / learning</Go> shows every agent's weight and why it's 0%.</li>
-            <li><b>Evidence</b>: <Go to="agentconfig">Agent config</Go> marks each agent CORE, ADVISORY or MARKET-WIDE from its record on your data; the <Go to="swing">Swing lab</Go> is the full test.</li>
+          <p style={{margin:'0 0 6px'}}>A team of <b>9 agents</b>, each using one well-evidenced method on daily prices and volume. Every day each one scores every watched stock and gives a <b>vote</b> (BUY or SELL with a strength, or no view) and a continuous <b>reading</b>.</p>
+          <T head={['Agent', 'Role', 'What it looks at']} rows={AGENTS.map(a => [a.name, a.role, a.desc])}/>
+          <ul style={{margin:'8px 0 0 18px',padding:0}}>
+            <li><b>The team rule</b> (used by the server engine): BUY a stock when at least <b>4 of the 7 pickers</b> back it with enough combined confidence, the risk guardian doesn't object and the market trend isn't strongly down. SELL a holding when 4 of 7 turn against it or the risk guardian sees serious danger. Otherwise HOLD or WAIT. With 7 pickers a tie can't happen.</li>
+            <li><b>Market trend</b> sets the size: new positions are half size while the market is below trend. <b>Risk guardian</b> can exit a holding and veto buys.</li>
+            <li><b>Honest evidence</b>: on real data so far the team rule made money but trailed buy &amp; hold and Rank &amp; tilt; Momentum was the strongest picker and the risk guardian reliably spots turbulence. Step 3 scores every call and adjusts each agent's weight from its record.</li>
+            <li><b>In this browser</b>: Rank &amp; tilt uses the trend score (or Autopilot's model); Stay invested sells on Momentum; Trade both ways uses the weighted vote of the 7 pickers. <Go to="agentconfig">Agent config</Go> and the <Go to="swing">Swing lab</Go> test each agent on your data.</li>
           </ul>
         </Sec>
 
@@ -8310,7 +8243,7 @@ const App = () => {
     const c = scorerCacheRef.current;
     if (c.U !== U || c.key !== key) scorerCacheRef.current = { U, key, ms: useModel ? SS.createModelScorer(U, book.signalsAt) : null, fitsSeen: 0 };
     const ms = scorerCacheRef.current.ms;
-    const earnP = SS.mergeParams(params).earn;
+    const earnP = SS.TREND_PARAMS;
     return ms ? ms.scoreAt : (sym, i) => SS.trendScore(U.F[sym], i, earnP);
   };
   const pctTxt = (x) => `${(x * 100).toFixed(0)}%`;
@@ -9126,7 +9059,7 @@ const App = () => {
         setAgentEvidenceDisplay({
           U: evidenceUniverse,
           ev: SS.agentEvidence(evidenceUniverse, { signalsAt: bookFor(evidenceUniverse, agentParams).signalsAt }),
-          trend: SS.rankIC(evidenceUniverse, (sym, i) => SS.trendScore(evidenceUniverse.F[sym], i, SS.mergeParams(agentParams).earn), { from: 130, to: evidenceUniverse.L - 1 }),
+          trend: SS.rankIC(evidenceUniverse, (sym, i) => SS.trendScore(evidenceUniverse.F[sym], i, SS.TREND_PARAMS), { from: 130, to: evidenceUniverse.L - 1 }),
         });
       } catch (_) {}
     }, 400);

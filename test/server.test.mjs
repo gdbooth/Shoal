@@ -35,7 +35,8 @@ before(async () => {
   Object.assign(process.env, {
     ALPACA_PAPER_URL: url, ALPACA_DATA_URL: url, PORT: '0', VERCEL: '1', SHOAL_SESSION_SECRET: 'test-secret',
     SHOAL_ACCESS_CODE: 'open-sesame', CRON_SECRET: 'cron-secret-xyz', ALPACA_KEY_ID: 'PKSERVER1234567890', ALPACA_SECRET: 's', ALPACA_ENV: 'paper',
-    SHOAL_WATCHLIST: SYMS.join(','), SHOAL_TOPK: '3', SHOAL_DATA_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'shoal-srv-')),
+    SHOAL_WATCHLIST: SYMS.join(','), SHOAL_TOPK: '3', SHOAL_STRATEGY: 'tilt', // these tests check Rank & tilt's orders; the team is tested in trader.test.mjs
+    SHOAL_DATA_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'shoal-srv-')),
   });
   ({ server } = await import('../server.js'));
   if (!server.listening) await new Promise(r => server.once('listening', r));

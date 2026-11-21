@@ -1,4 +1,5 @@
-// Server-side Rank & tilt: run once a day by a Vercel cron job, so the strategy trades without a browser.
+// Server-side strategies run by the engine (engine.js): the 9-agent team (default) and Rank & tilt
+// (SHOAL_STRATEGY=tilt). Rank & tilt:
 //
 // Each run (market open only):
 //   1. ranks the watchlist by the trend score as of the last trading day of the previous month, so the
@@ -40,6 +41,7 @@ export function serverConfig(env = process.env) {
     investFraction: Math.max(0.1, Math.min(1, parseFloat(env.SHOAL_INVEST_FRACTION) || 0.9)),
     watchlist: (list.length >= 5 ? list : W.DEFAULT).slice(0, 150),
     dailyLossPct: Math.max(1, Math.min(50, parseFloat(env.SHOAL_DAILY_LOSS_PCT) || 5)),
+    strategy: env.SHOAL_STRATEGY === 'tilt' ? 'tilt' : 'team',
     schedule: 'every trading day: open review 15 min after the open, hourly checks, end-of-day report',
   };
 }
@@ -103,3 +105,93 @@ export async function runTilt(session, cfg, { dry = false, now = new Date() } = 
   }
   return result;
 }
+
+// ── The 9-agent team (default strategy from step 2) ─────────────────────────────────────────────────
+// Each run (market open only):
+//   1. builds the universe from completed daily bars (today's unfinished bar is dropped, so the open
+//      review and every hourly check see the same data and the same votes all day);
+//   2. asks the 9 agents for their votes on every watched stock and applies the team rule
+//      (S.teamDecision): SELL a holding when a majority of the 7 pickers turns against it or the risk
+//      guardian sees serious danger; BUY a stock a majority backs with enough confidence, while the
+//      market-trend agent isn't strongly negative;
+//   3. sells holdings that are no longer on the watchlist;
+//   4. buys the best-scored BUYs it doesn't hold, up to topK positions, each equity × investFraction / topK
+//      (halved while the market trend is negative), spending only cash it already has.
+// Every decision (votes per agent, score, confidence) is returned so step 3 can score each call later.
+const nyDate = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+
+export function teamPlan(barsBySym, { held = [], watchlist, topK, now = new Date(), params, decision } = {}) {
+  const { S, W } = libs();
+  const today = nyDate(now);
+  const sectors = Object.fromEntries(W.CATALOG.map(r => [r[0], r[2]]));
+  const done = {};
+  for (const [sym, arr] of Object.entries(barsBySym || {})) {
+    const a = (arr || []).filter(b => String(b.t).slice(0, 10) < today);
+    if (a.length) done[sym] = a;
+  }
+  const U = S.buildUniverse(done, sectors);
+  const heldSet = new Set(held), watch = new Set(watchlist || U.syms);
+  const decisions = [];
+  let asOf = null, mkt = 0;
+  for (const sym of U.syms) {
+    const F = U.F[sym], i = F.n - 1;
+    if (i < 130) continue;
+    const sg = S.agentSignals(U, sym, i, params);
+    const d = S.teamDecision(sg, { held: heldSet.has(sym), ...(decision || {}) });
+    mkt = d.mkt;
+    const day = String(F.t[i]).slice(0, 10);
+    if (!asOf || day > asOf) asOf = day;
+    decisions.push({ sym, action: d.action, why: d.why, score: Math.round(d.score * 1000) / 1000, confidence: Math.round(d.confidence * 1000) / 1000,
+      forVotes: d.forVotes, againstVotes: d.againstVotes, votes: Object.fromEntries(Object.entries(sg).map(([id, s]) => [id, Math.round(s.dir * s.strength * 100) / 100])) });
+  }
+  const by = Object.fromEntries(decisions.map(d => [d.sym, d]));
+  const sells = held.filter(s => !watch.has(s) || by[s]?.action === 'SELL');
+  const keep = held.filter(s => !sells.includes(s));
+  const room = Math.max(0, topK - keep.length);
+  const cands = decisions.filter(d => d.action === 'BUY' && !heldSet.has(d.sym) && watch.has(d.sym)).sort((a, b) => b.score - a.score);
+  return { asOf, mkt: Math.round(mkt * 100) / 100, scale: mkt < -0.2 ? 0.5 : 1, decisions, sells, keep, wanted: cands.slice(0, room).map(d => d.sym),
+    sellWhy: Object.fromEntries(sells.map(s => [s, watch.has(s) ? by[s]?.why : 'not on the watchlist'])) };
+}
+
+export async function runTeamLive(session, cfg, { dry = false, now = new Date() } = {}) {
+  const clock = await session.req('/v2/clock');
+  const isOpen = !!clock.body?.is_open;
+  if (!isOpen && !dry) return { ok: true, skipped: 'market closed', nextOpen: clock.body?.next_open || null };
+  const [acct, pos] = await Promise.all([session.account(), session.positions()]);
+  if (acct.status !== 200 || pos.status !== 200) return { ok: false, error: 'could not read the account' };
+  const held = (Array.isArray(pos.body) ? pos.body : []).map(p => p.symbol);
+  const syms = [...new Set([...cfg.watchlist, ...held])];
+  const bars = await session.bars(syms, 420);
+  if (bars.status !== 200) return { ok: false, error: `bars: HTTP ${bars.status}` };
+  const plan = teamPlan(bars.body.bars || {}, { held, watchlist: cfg.watchlist, topK: cfg.topK, now });
+  if (!plan.decisions.length) return { ok: false, error: 'not enough price history for the agents' };
+  const equity = num(acct.body.equity), cash = Math.min(num(acct.body.cash), num(acct.body.buying_power));
+  const per = (equity * cfg.investFraction * plan.scale) / cfg.topK;
+  const buys = [];
+  let left = Number.isFinite(cash) ? cash : 0;
+  for (const sym of plan.wanted) {
+    if (plan.sells.length && left < per * 0.95) break; // sells still settling: wait for a full share
+    const notional = Math.floor(Math.min(per, left) * 100) / 100;
+    if (notional < 1 || notional < per * 0.5) break;
+    buys.push({ sym, notional });
+    left -= notional;
+  }
+  const count = (a) => plan.decisions.filter(d => d.action === a).length;
+  const result = { ok: true, dry, strategy: 'team', marketOpen: isOpen, rankedAsOf: plan.asOf, K: cfg.topK, mkt: plan.mkt, scale: plan.scale,
+    picks: [...plan.keep, ...buys.map(b => b.sym)], held, sells: plan.sells, buys, waiting: plan.wanted.filter(s => !buys.some(b => b.sym === s)),
+    sellWhy: plan.sellWhy, tally: { BUY: count('BUY'), SELL: count('SELL'), HOLD: count('HOLD'), WAIT: count('WAIT') },
+    decisions: plan.decisions, equity, cash, perPosition: Math.round(per * 100) / 100, orders: [] };
+  if (dry || !isOpen) return result;
+  for (const sym of plan.sells) {
+    const r = await session.closePosition(sym);
+    result.orders.push({ sym, side: 'sell', status: r.status, ok: r.status === 200, message: r.body?.message, why: plan.sellWhy[sym] });
+  }
+  for (const b of buys) {
+    const r = await session.placeOrder({ symbol: b.sym, notional: b.notional.toFixed(2), side: 'buy', type: 'market', time_in_force: 'day' });
+    result.orders.push({ sym: b.sym, side: 'buy', notional: b.notional, status: r.status, ok: r.status === 200, message: r.body?.message });
+  }
+  return result;
+}
+
+export const STRATEGIES = { team: runTeamLive, tilt: runTilt };
+export const strategyFor = (cfg) => STRATEGIES[cfg?.strategy] || runTeamLive;

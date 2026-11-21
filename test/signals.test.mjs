@@ -123,7 +123,44 @@ test('every agent returns a valid signal', () => {
       }
     }
   }
-  assert.deepEqual([...S.AGENT_IDS].filter(id => !fired.has(id)), [], 'every agent should fire at least once');
+  // News drift only speaks after a gap on heavy volume; it gets its own test below
+  assert.deepEqual([...S.AGENT_IDS].filter(id => !fired.has(id) && id !== 'drift'), [], 'every agent should fire at least once');
+});
+
+test('news drift: a big gap up on heavy volume that holds is a BUY for the next weeks, then fades', () => {
+  const bars = Object.fromEntries(Object.entries(FULL).map(([s, b]) => [s, { o: [...b.o], h: [...b.h], l: [...b.l], c: [...b.c], v: [...b.v] }]));
+  const b = bars.A1, j = 300, k = 1.08; // a +8% opening gap on 5x volume that holds
+  for (let i = j; i < b.c.length; i++) { b.o[i] *= k; b.h[i] *= k; b.l[i] *= k; b.c[i] *= k; }
+  b.l[j] = Math.min(b.o[j], b.c[j]); b.v[j] *= 5;
+  const U = S.buildUniverse(bars, SECT);
+  assert.ok(S.agentReadings(U, 'A1', j + 3).drift > 0);
+  assert.equal(S.agentSignals(U, 'A1', j + 3).drift.dir, 1);
+  assert.equal(S.agentReadings(U, 'A1', j + 40).drift, 0); // older than the window
+});
+
+test('team decision: majority of the 7 pickers, confidence, risk veto; a tie is never a majority', () => {
+  const v = (dir, strength = 0.8) => ({ dir, strength, note: '' });
+  const base = { mkt: v(0, 0), risk: v(0, 0) };
+  const four = { ...base, mom: v(1), hi52: v(1), sect: v(1), rev: v(1), lowvol: v(0, 0), volshock: v(-1), drift: v(0, 0) };
+  assert.equal(S.teamDecision(four).action, 'BUY');
+  const three = { ...four, rev: v(0, 0) };
+  assert.equal(S.teamDecision(three).action, 'WAIT');                       // 3 of 7 isn't a majority
+  assert.equal(S.teamDecision({ ...four, risk: v(-1, 1) }).action, 'WAIT');  // the risk guardian objects
+  assert.equal(S.teamDecision({ ...four, mom: v(1, 0.05), hi52: v(1, 0.05), sect: v(1, 0.05), rev: v(1, 0.05) }).action, 'WAIT'); // low confidence
+  const against = { ...base, mom: v(-1), hi52: v(-1), sect: v(-1), rev: v(-1), lowvol: v(1), volshock: v(0, 0), drift: v(0, 0) };
+  assert.equal(S.teamDecision(against, { held: true }).action, 'SELL');
+  assert.equal(S.teamDecision(three, { held: true }).action, 'HOLD');
+  assert.equal(S.teamDecision({ ...three, risk: v(-1, 1) }, { held: true }).action, 'SELL'); // strong danger exits
+  assert.equal(S.teamDecision({ ...three, risk: v(-1, 0.6) }, { held: true }).action, 'HOLD'); // mild danger doesn't
+  assert.equal(S.PICKERS.length % 2, 1);
+});
+
+test('team backtest: decisions use only past bars; trades, stays solvent, reports against buy & hold', () => {
+  const a = S.runTeam(U_FULL, { start: 300, end: 420, costBps: 5, maxPos: 3 });
+  const b = S.runTeam(U_CUT(420), { start: 300, end: 420, costBps: 5, maxPos: 3 });
+  assert.deepEqual(a.curve, b.curve);
+  assert.ok(a.buys > 0 && a.curve.every(x => x > 0));
+  assert.ok(Number.isFinite(a.benchReturn) && Number.isFinite(a.sharpe));
 });
 
 test('no lookahead: signals at bar i ignore every later bar', () => {
@@ -145,7 +182,7 @@ test('volume agents fall back to price-only when there is no volume', () => {
   const U = S.buildUniverse(noVol, SECT);
   assert.equal(U.F.A1.hasVolume, false);
   const sigs = S.agentSignals(U, 'A1', 400);
-  assert.match(sigs.flow.note, /no volume|CMF|close location/);
+  assert.equal(sigs.volshock.dir, 0); // no volume → no view
   for (const s of Object.values(sigs)) assert.ok(Number.isFinite(s.strength));
 });
 
@@ -248,11 +285,11 @@ test('watch-it-first: promotion decided only on outcomes known at the time', () 
 
 test('tested tuning: no lookahead and only accepts values that also win on newer data', () => {
   const asOf = 450;
-  const a = S.tuneParam(U_FULL, 'earn', asOf, {}, { testDays: 40 });
-  const b = S.tuneParam(U_CUT(asOf), 'earn', asOf, {}, { testDays: 40 });
+  const a = S.tuneParam(U_FULL, 'mom', asOf, {}, { testDays: 40 });
+  const b = S.tuneParam(U_CUT(asOf), 'mom', asOf, {}, { testDays: 40 });
   assert.deepEqual(a, b);
   if (a.accepted) assert.ok(a.testMean > a.testMeanCurrent);
-  assert.ok(S.TUNE_KEYS.earn.values.includes(a.best) || a.best === S.DEFAULT_PARAMS.earn.lookback);
+  assert.ok(S.TUNE_KEYS.mom.values.includes(a.best) || a.best === S.DEFAULT_PARAMS.mom.lookback);
 });
 
 test('stay invested: never selling matches buy-and-hold; selling reduces time invested', () => {
@@ -336,13 +373,13 @@ test('rank & tilt: re-ranks at month ends when bars have dates', () => {
 });
 
 test('model: falls back while warming up, then fits; no lookahead', () => {
-  assert.equal(S.fitModel(U_FULL, { asOf: 160, ids: ['earn'] }).status, 'warming-up');
-  const a = S.fitModel(U_FULL, { asOf: 420, ids: ['earn', 'fund'] });
-  assert.equal(a.status, 'ok'); assert.equal(a.beta.length, 3); assert.deepEqual(a.features, ['trend', 'earn', 'fund']);
-  const b = S.fitModel(U_CUT(420), { asOf: 420, ids: ['earn', 'fund'] });
+  assert.equal(S.fitModel(U_FULL, { asOf: 160, ids: ['mom'] }).status, 'warming-up');
+  const a = S.fitModel(U_FULL, { asOf: 420, ids: ['mom', 'hi52'] });
+  assert.equal(a.status, 'ok'); assert.equal(a.beta.length, 3); assert.deepEqual(a.features, ['trend', 'mom', 'hi52']);
+  const b = S.fitModel(U_CUT(420), { asOf: 420, ids: ['mom', 'hi52'] });
   a.beta.forEach((v, k) => close(v, b.beta[k], 1e-12));
   // heavy shrinkage → the trend coefficient stays positive (the prior)
-  const strong = S.fitModel(U_FULL, { asOf: 420, ids: ['earn'], lambda: 1e6 });
+  const strong = S.fitModel(U_FULL, { asOf: 420, ids: ['mom'], lambda: 1e6 });
   assert.ok(strong.beta[0] > 0 && Math.abs(strong.beta[1]) < Math.abs(strong.beta[0]));
 });
 

@@ -59,8 +59,8 @@ test('continuous readings: every agent, no future data', () => {
     for (const id of S.AGENT_IDS) assert.ok((Number.isNaN(a[id]) && Number.isNaN(b[id])) || Math.abs(a[id] - b[id]) < 1e-9, `${sym} ${id} @${i}`);
   }
   const r = S.agentReadings(U1, 'A1', 300);
-  assert.equal(Object.keys(r).length, 16);
-  assert.equal(S.roleOf('macr'), 'timing'); assert.equal(S.roleOf('vol'), 'risk'); assert.equal(S.roleOf('earn'), 'picker');
+  assert.equal(Object.keys(r).length, 9);
+  assert.equal(S.roleOf('mkt'), 'timing'); assert.equal(S.roleOf('risk'), 'risk'); assert.equal(S.roleOf('mom'), 'picker');
 });
 
 test('ranked mode: relative target, pickers only in the model, stricter bar, an informative reading is found', async () => {

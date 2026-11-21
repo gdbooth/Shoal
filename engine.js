@@ -6,11 +6,11 @@
 //           snapshot, daily-loss guard, and finishing any orders the open couldn't complete
 //   close   once a day after the session ends (full or half day): end-of-day report
 //
-// Decisions come from a strategy function. Until the 9-agent ensemble lands (step 2) that is the existing
-// Rank & tilt (trader.js), so behaviour is unchanged while the plumbing changes. Everything is recorded in
+// Decisions come from a strategy function (trader.js): the 9-agent team by default, or Rank & tilt when
+// SHOAL_STRATEGY=tilt. Everything is recorded in
 // the store: state.json (what ran, recent events and reports — one read for the dashboard) and
 // days/YYYY-MM-DD.json (that day's full log). A tick with nothing due reads state and writes nothing.
-import { runTilt } from './trader.js';
+import { strategyFor } from './trader.js';
 
 export const ENGINE = { openDelayMin: 15, hourlyFromMin: 60, lockMs: 4 * 60_000, keepEvents: 60, keepReports: 90 };
 
@@ -41,7 +41,8 @@ async function snapshot(session) {
   return { equity: round2(num(acct.body?.equity)), cash: round2(num(acct.body?.cash)), positions };
 }
 
-export async function engineTick({ session, store, cfg, strategy = runTilt, now = new Date(), dry = false }) {
+export async function engineTick({ session, store, cfg, strategy, now = new Date(), dry = false }) {
+  strategy = strategy || strategyFor(cfg);
   const clock = await session.req('/v2/clock');
   if (clock.status !== 200) return { ok: false, error: `clock: HTTP ${clock.status}` };
   const isOpen = !!clock.body.is_open;
@@ -116,5 +117,6 @@ function summarise(r) {
   if (r.sells?.length) parts.push(`sold ${r.sells.join(', ')}`);
   if (r.buys?.length) parts.push(`bought ${r.buys.map(b => b.sym).join(', ')}`);
   if (r.waiting?.length) parts.push(`waiting for cash: ${r.waiting.join(', ')}`);
-  return parts.length ? parts.join('; ') : `holding ${r.picks?.length ?? 0} picks, nothing to change`;
+  const votes = r.tally ? ` · team: ${r.tally.BUY} buy, ${r.tally.SELL} sell, ${r.tally.HOLD} hold, ${r.tally.WAIT} wait` : '';
+  return (parts.length ? parts.join('; ') : `holding ${r.picks?.length ?? 0} positions, nothing to change`) + votes;
 }

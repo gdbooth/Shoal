@@ -6,7 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { alpaca } from './brokers/alpaca.js';
 import { ig } from './brokers/ig.js';
-import { serverConfig, runTilt } from './trader.js';
+import { serverConfig, strategyFor } from './trader.js';
 import { engineTick, ENGINE } from './engine.js';
 import { createStore, storeKind } from './store.js';
 
@@ -327,7 +327,7 @@ app.get('/api/stream', async (req, res, next) => {
   req.on('close', () => clearInterval(interval));
 });
 
-// ── Server trading: Rank & tilt once a day without a browser (Vercel cron → /api/cron/tilt) ──────────
+// ── Server trading: run the configured strategy once by hand (/api/cron/tilt, scheduler secret) ──────
 // Needs ALPACA_KEY_ID, ALPACA_SECRET (and ALPACA_ENV=paper|live) plus CRON_SECRET in the server's
 // environment. Live money also needs SHOAL_SERVER_LIVE=1. Vercel sends "Authorization: Bearer CRON_SECRET".
 const cronOk = (req) => !!process.env.CRON_SECRET && sameSecret(req.header('authorization') || '', `Bearer ${process.env.CRON_SECRET}`);
@@ -340,7 +340,7 @@ app.get('/api/cron/tilt', async (req, res) => {
   if (cfg.env === 'live' && !cfg.liveAllowed) return res.json({ ok: false, error: 'ALPACA_ENV is live but SHOAL_SERVER_LIVE is not 1: not trading real money.' });
   try {
     const { session } = await alpaca.connect({ keyId: cfg.keyId, secret: cfg.secret, env: cfg.env });
-    const r = await runTilt(session, cfg, { dry: req.query.dry === '1' });
+    const r = await strategyFor(cfg)(session, cfg, { dry: req.query.dry === '1' });
     console.log('[cron/tilt]', JSON.stringify(r));
     res.json(r);
   } catch (err) {
@@ -374,7 +374,7 @@ app.get('/api/engine/status', async (_req, res) => {
   const cfg = serverConfig();
   try {
     const state = (await store.get('state.json')) || {};
-    res.json({ enabled: serverEnabled(cfg), configured: !!(cfg.keyId && cfg.secret), cronSecret: !!process.env.CRON_SECRET, env: cfg.env, storage: storeKind(),
+    res.json({ enabled: serverEnabled(cfg), configured: !!(cfg.keyId && cfg.secret), cronSecret: !!process.env.CRON_SECRET, env: cfg.env, storage: storeKind(), strategy: cfg.strategy,
       topK: cfg.topK, investFraction: cfg.investFraction, watchlistSize: cfg.watchlist.length, dailyLossPct: cfg.dailyLossPct, openDelayMin: ENGINE.openDelayMin,
       lastTick: state.lastTick || null, lastOpenDate: state.lastOpenDate || null, lastHourlyKey: state.lastHourlyKey || null, lastCloseDate: state.lastCloseDate || null,
       recent: state.recent || [], reports: state.reports || [] });
@@ -390,13 +390,13 @@ app.get('/api/engine/day', async (req, res) => {
 app.get('/api/server-trading', auth, (req, res) => {
   const cfg = serverConfig();
   res.json({ enabled: serverEnabled(cfg), configured: !!(cfg.keyId && cfg.secret), cronSecret: !!process.env.CRON_SECRET, env: cfg.env,
-    liveAllowed: cfg.liveAllowed, sameAccount: sameAccount(req, cfg), topK: cfg.topK, investFraction: cfg.investFraction, watchlistSize: cfg.watchlist.length, schedule: cfg.schedule, storage: storeKind() });
+    liveAllowed: cfg.liveAllowed, sameAccount: sameAccount(req, cfg), topK: cfg.topK, investFraction: cfg.investFraction, watchlistSize: cfg.watchlist.length, schedule: cfg.schedule, storage: storeKind(), strategy: cfg.strategy });
 });
 // Dry run with the browser's own session (only for the account the server trades)
 app.get('/api/server-trading/preview', auth, async (req, res) => {
   const cfg = serverConfig();
   if (!sameAccount(req, cfg)) return res.status(403).json({ error: 'Preview is only available for the account the server trades.' });
-  try { res.json(await runTilt(req.session, cfg, { dry: true })); }
+  try { res.json(await strategyFor(cfg)(req.session, cfg, { dry: true })); }
   catch (err) { res.status(502).json({ error: err.message }); }
 });
 

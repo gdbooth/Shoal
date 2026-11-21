@@ -39,8 +39,8 @@ The 16 original agents are retired (not kept as advisory).
 
 ## Steps
 
-1. **Server engine, durable storage and a free external scheduler** (this step).
-2. The 9 agents, each tested in the Swing lab, plus the majority-and-confidence rule.
+1. **Server engine, durable storage and a free external scheduler** (done).
+2. **The 9 agents, each tested in the Swing lab, plus the majority-and-confidence rule** (done).
 3. The daily cycle's learning: scoring every call, end-of-day scorecard and damped weight updates.
 4. Hourly risk guardian and order handling.
 5. Simpler screens (Today / Agents / Performance / Lab / Settings) and notifications.
@@ -52,7 +52,7 @@ The 16 original agents are retired (not kept as advisory).
   15+ minutes after the open, `hourly` once per clock hour from an hour after the open (snapshot, daily
   loss guard, finishing orders), `close` once after the session ends, full or half day (end-of-day
   report against SPY). Ticks are idempotent and locked; a tick with nothing due writes nothing.
-  Decisions come from Rank & tilt until step 2 replaces it with the 9 agents.
+  Decisions come from the 9-agent team (step 2); SHOAL_STRATEGY=tilt switches back to Rank & tilt.
 - `store.js`: durable JSON storage. Vercel Blob (private store `shoal-engine`) in production, files
   locally. `state.json` holds what ran, recent events and daily reports; `days/YYYY-MM-DD.json` holds
   each day's full log.
@@ -63,3 +63,37 @@ The 16 original agents are retired (not kept as advisory).
 - API: `/api/engine/tick` (scheduler secret), `/api/engine/status` and `/api/engine/day?date=` (behind
   the login). The old once-a-day Vercel cron is removed so nothing trades twice.
 - Settings → **Server engine** shows status, storage, the last runs and the daily reports.
+
+## Step 2: what's in place
+
+- `signals.js`: the 9 agents replace the 16 old ones. The 7 pickers rank the watchlist every day and
+  vote BUY for the top 30% and SELL for the bottom 30% on their own measure (strength 0.3–1.0 by rank);
+  Market trend votes on the whole market; Risk guardian votes SELL with a strength when it sees danger.
+- `teamDecision`, the majority rule: BUY when at least 4 of the 7 pickers back a stock, their combined
+  confidence (weighted score) is at least 0.25, the risk guardian's danger is below 1.0 and the market
+  trend is not strongly down; SELL a holding when 4 of 7 turn against it or danger reaches 1.0; otherwise
+  HOLD (held) or WAIT. Seven pickers means no ties.
+- `runTeam`: the same rule backtested day by day (decide at the close, trade at the next open, costs on
+  every trade, half-size buys while the market trend is down). The Swing lab tests every agent on its own.
+- `trader.js` `runTeamLive`: the engine now trades the team on paper by default. It decides on completed
+  daily bars only, so the open review and the hourly checks see the same votes all day, and records
+  every decision (each agent's vote, score, confidence) for step 3 to score. `SHOAL_STRATEGY=tilt`
+  switches the engine back to Rank & tilt.
+- App: the agent screens, guide and Server engine card describe the 9 agents; the engine card's
+  preview shows the team's votes.
+
+### Honest results on real data (5 bp per side)
+
+| Data | Team rule | Rank & tilt | Buy & hold |
+|---|---|---|---|
+| 12 stocks + ETFs, Nov 2017 – Nov 2026 | +62%, Sharpe 0.53 | +873%, 1.01 | +1002%, 0.98 |
+| 24 stocks, 2014–2018 | +67%, Sharpe 1.25 | +174%, 1.55 | +106%, 1.34 |
+
+The team makes money but trails buy & hold, mainly because it holds far fewer stocks for less of the
+time. Momentum is the strongest picker; the Risk guardian predicts turbulence very reliably (t 6–11) but
+as a seller it whipsaws, so its exit threshold was raised to 1.0 (strong danger only). Changing the
+majority (3 or 5 of 7) or adding a fill-up rule didn't close the gap.
+
+**Direction note:** the team is implemented as specified and trades on paper, because the purpose of
+the tool is a voting team that learns. Step 3 (scoring every call, damped weight updates) is where it
+can improve; the live-money gate stays shut until a month of paper results beats buy & hold.

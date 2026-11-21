@@ -237,7 +237,7 @@
     o.onProgress && o.onProgress(0.62);
     // the combined model: stock pickers (all agents in votes mode), fitted to the relative return when asked
     const Rt = relative ? relativeTo(U, R) : R;
-    const all = ids.map((_, j) => j).filter(j => mode !== 'ranked' || roles[j] === 'picker'), trendJ = ids.indexOf(o.trendId || 'earn');
+    const all = ids.map((_, j) => j).filter(j => mode !== 'ranked' || roles[j] === 'picker'), trendJ = ids.indexOf(o.trendId || 'mom');
     const W = await walkForward(U, X, Rt, { cols: all, H, start, refit, window });
     o.onProgress && o.onProgress(0.8);
     const WT = trendJ >= 0 ? await walkForward(U, X, Rt, { cols: [trendJ], H, start, refit, window }) : null;
