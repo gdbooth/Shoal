@@ -6,7 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { alpaca } from './brokers/alpaca.js';
 import { ig } from './brokers/ig.js';
-import { serverConfig, strategyFor } from './trader.js';
+import { serverConfig, strategyFor, learnFromBroker, learnedWeights } from './trader.js';
 import { engineTick, ENGINE } from './engine.js';
 import { createStore, storeKind } from './store.js';
 
@@ -340,7 +340,7 @@ app.get('/api/cron/tilt', async (req, res) => {
   if (cfg.env === 'live' && !cfg.liveAllowed) return res.json({ ok: false, error: 'ALPACA_ENV is live but SHOAL_SERVER_LIVE is not 1: not trading real money.' });
   try {
     const { session } = await alpaca.connect({ keyId: cfg.keyId, secret: cfg.secret, env: cfg.env });
-    const r = await strategyFor(cfg)(session, cfg, { dry: req.query.dry === '1' });
+    const r = await strategyFor(cfg)(session, cfg, { dry: req.query.dry === '1', weights: await learnedWeights(store) });
     console.log('[cron/tilt]', JSON.stringify(r));
     res.json(r);
   } catch (err) {
@@ -380,6 +380,27 @@ app.get('/api/engine/status', async (_req, res) => {
       recent: state.recent || [], reports: state.reports || [] });
   } catch (err) { res.status(502).json({ error: err.message }); }
 });
+// The agent scorecard and weight history (behind the login)
+app.get('/api/engine/learning', async (_req, res) => {
+  try {
+    const l = (await store.get('learning.json')) || null;
+    res.json(l ? { scorecard: l.scorecard, savedAt: l.savedAt, weights: l.state?.weights || null, history: (l.state?.history || []).slice(-60) } : { scorecard: null });
+  } catch (err) { res.status(502).json({ error: err.message }); }
+});
+// Build or refresh the scorecard now from the server account's price history (reads prices, never trades)
+let learning = false;
+app.post('/api/engine/learn', async (_req, res) => {
+  const cfg = serverConfig();
+  if (!cfg.keyId || !cfg.secret) return res.status(400).json({ ok: false, error: 'Set ALPACA_KEY_ID and ALPACA_SECRET first.' });
+  if (learning) return res.status(429).json({ ok: false, error: 'Already building the scorecard.' });
+  learning = true;
+  try {
+    const { session } = await alpaca.connect({ keyId: cfg.keyId, secret: cfg.secret, env: cfg.env });
+    const r = await learnFromBroker(session, cfg, store);
+    res.status(r.ok ? 200 : 502).json(r);
+  } catch (err) { res.status(502).json({ ok: false, error: err.message }); }
+  finally { learning = false; }
+});
 app.get('/api/engine/day', async (req, res) => {
   const d = String(req.query.date || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return res.status(400).json({ error: 'date=YYYY-MM-DD required' });
@@ -396,7 +417,7 @@ app.get('/api/server-trading', auth, (req, res) => {
 app.get('/api/server-trading/preview', auth, async (req, res) => {
   const cfg = serverConfig();
   if (!sameAccount(req, cfg)) return res.status(403).json({ error: 'Preview is only available for the account the server trades.' });
-  try { res.json(await strategyFor(cfg)(req.session, cfg, { dry: true })); }
+  try { res.json(await strategyFor(cfg)(req.session, cfg, { dry: true, weights: await learnedWeights(store) })); }
   catch (err) { res.status(502).json({ error: err.message }); }
 });
 

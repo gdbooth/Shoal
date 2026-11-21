@@ -118,9 +118,10 @@ export async function runTilt(session, cfg, { dry = false, now = new Date() } = 
 //   4. buys the best-scored BUYs it doesn't hold, up to topK positions, each equity × investFraction / topK
 //      (halved while the market trend is negative), spending only cash it already has.
 // Every decision (votes per agent, score, confidence) is returned so step 3 can score each call later.
+const BARS_DAYS = 600, LEARN_DAYS = 820;
 const nyDate = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 
-export function teamPlan(barsBySym, { held = [], watchlist, topK, now = new Date(), params, decision } = {}) {
+export function teamPlan(barsBySym, { held = [], watchlist, topK, now = new Date(), params, decision, weights } = {}) {
   const { S, W } = libs();
   const today = nyDate(now);
   const sectors = Object.fromEntries(W.CATALOG.map(r => [r[0], r[2]]));
@@ -137,7 +138,7 @@ export function teamPlan(barsBySym, { held = [], watchlist, topK, now = new Date
     const F = U.F[sym], i = F.n - 1;
     if (i < 130) continue;
     const sg = S.agentSignals(U, sym, i, params);
-    const d = S.teamDecision(sg, { held: heldSet.has(sym), ...(decision || {}) });
+    const d = S.teamDecision(sg, { held: heldSet.has(sym), weights, ...(decision || {}) });
     mkt = d.mkt;
     const day = String(F.t[i]).slice(0, 10);
     if (!asOf || day > asOf) asOf = day;
@@ -153,7 +154,7 @@ export function teamPlan(barsBySym, { held = [], watchlist, topK, now = new Date
     sellWhy: Object.fromEntries(sells.map(s => [s, watch.has(s) ? by[s]?.why : 'not on the watchlist'])) };
 }
 
-export async function runTeamLive(session, cfg, { dry = false, now = new Date() } = {}) {
+export async function runTeamLive(session, cfg, { dry = false, now = new Date(), weights = null } = {}) {
   const clock = await session.req('/v2/clock');
   const isOpen = !!clock.body?.is_open;
   if (!isOpen && !dry) return { ok: true, skipped: 'market closed', nextOpen: clock.body?.next_open || null };
@@ -161,9 +162,9 @@ export async function runTeamLive(session, cfg, { dry = false, now = new Date() 
   if (acct.status !== 200 || pos.status !== 200) return { ok: false, error: 'could not read the account' };
   const held = (Array.isArray(pos.body) ? pos.body : []).map(p => p.symbol);
   const syms = [...new Set([...cfg.watchlist, ...held])];
-  const bars = await session.bars(syms, 420);
+  const bars = await session.bars(syms, BARS_DAYS); // ~410 trading days: momentum needs 273
   if (bars.status !== 200) return { ok: false, error: `bars: HTTP ${bars.status}` };
-  const plan = teamPlan(bars.body.bars || {}, { held, watchlist: cfg.watchlist, topK: cfg.topK, now });
+  const plan = teamPlan(bars.body.bars || {}, { held, watchlist: cfg.watchlist, topK: cfg.topK, now, weights });
   if (!plan.decisions.length) return { ok: false, error: 'not enough price history for the agents' };
   const equity = num(acct.body.equity), cash = Math.min(num(acct.body.cash), num(acct.body.buying_power));
   const per = (equity * cfg.investFraction * plan.scale) / cfg.topK;
@@ -177,7 +178,7 @@ export async function runTeamLive(session, cfg, { dry = false, now = new Date() 
     left -= notional;
   }
   const count = (a) => plan.decisions.filter(d => d.action === a).length;
-  const result = { ok: true, dry, strategy: 'team', marketOpen: isOpen, rankedAsOf: plan.asOf, K: cfg.topK, mkt: plan.mkt, scale: plan.scale,
+  const result = { ok: true, dry, strategy: 'team', weights: weights || null, marketOpen: isOpen, rankedAsOf: plan.asOf, K: cfg.topK, mkt: plan.mkt, scale: plan.scale,
     picks: [...plan.keep, ...buys.map(b => b.sym)], held, sells: plan.sells, buys, waiting: plan.wanted.filter(s => !buys.some(b => b.sym === s)),
     sellWhy: plan.sellWhy, tally: { BUY: count('BUY'), SELL: count('SELL'), HOLD: count('HOLD'), WAIT: count('WAIT') },
     decisions: plan.decisions, equity, cash, perPosition: Math.round(per * 100) / 100, orders: [] };
@@ -195,3 +196,34 @@ export async function runTeamLive(session, cfg, { dry = false, now = new Date() 
 
 export const STRATEGIES = { team: runTeamLive, tilt: runTilt };
 export const strategyFor = (cfg) => STRATEGIES[cfg?.strategy] || runTeamLive;
+
+// ── Learning (step 3) ───────────────────────────────────────────────────────────────────────────────
+// After each close: fetch ~560 trading days of the watchlist's bars, score every agent call whose horizon
+// has passed (S.learnUpdate: the first run rebuilds a year of calls from this history), move the picker
+// weights a damped step and keep the scorecard. Stored in learning.json; the team reads its weights.
+export async function learnFromBroker(session, cfg, store, { now = new Date() } = {}) {
+  const { S, W } = libs();
+  const today = nyDate(now);
+  const bars = await session.bars(cfg.watchlist, LEARN_DAYS);
+  if (bars.status !== 200) return { ok: false, error: `bars: HTTP ${bars.status}` };
+  const done = {};
+  for (const [sym, arr] of Object.entries(bars.body.bars || {})) { const a = (arr || []).filter(b => String(b.t).slice(0, 10) <= today); if (a.length) done[sym] = a; }
+  const U = S.buildUniverse(done, Object.fromEntries(W.CATALOG.map(r => [r[0], r[2]])));
+  if (U.L < 300) return { ok: false, error: `only ${U.L} days of history: the agents need ~300` };
+  const prev = (await store.get('learning.json')) || {};
+  const { scorecard, added, state, error } = S.learnUpdate(U, prev.state || {});
+  if (error) return { ok: false, error };
+  await store.put('learning.json', { state, scorecard, savedAt: now.toISOString() });
+  return { ok: true, added, scorecard };
+}
+export async function learnedWeights(store) {
+  try { const l = await store.get('learning.json'); return l?.state?.weights || null; } catch { return null; }
+}
+export function scorecardSummary(sc) {
+  if (!sc) return 'no scorecard';
+  const moved = sc.agents.filter(a => a.prevWeight != null && Math.abs(a.weight - a.prevWeight) >= 0.005)
+    .map(a => `${a.id} ${a.prevWeight.toFixed(2)}→${a.weight.toFixed(2)}`);
+  const flag = sc.agents.filter(a => a.status === 'retire candidate').map(a => a.id);
+  return `scorecard ${sc.asOf}: ${sc.days} days scored` + (moved.length ? `; weights ${moved.join(', ')}` : '; weights unchanged')
+    + (flag.length ? `; retire candidates: ${flag.join(', ')}` : '');
+}

@@ -137,3 +137,18 @@ test('engine tick: needs the scheduler secret; runs by the market clock and repo
   assert.equal(st.body.storage, 'temporary files (not durable: connect a Blob store)');
   assert.ok(!JSON.stringify(st.body).includes('cron-secret') && !JSON.stringify(st.body).includes('PKSERVER'));
 });
+
+test('agent scorecard: empty until built; building reads prices only and stores the scorecard', async () => {
+  const before = await call('/api/engine/learning');
+  assert.equal(before.status, 200);
+  const orders = state.orders.length;
+  const r = await call('/api/engine/learn', { method: 'POST' });
+  assert.ok([200, 502].includes(r.status));
+  assert.equal(state.orders.length, orders); // never trades
+  if (r.status === 200) {
+    assert.equal(r.body.scorecard.agents.length, 7);
+    const after = await call('/api/engine/learning');
+    assert.equal(after.body.scorecard.agents.length, 7);
+    assert.ok(after.body.weights);
+  } else assert.match(r.body.error, /days of history/);
+});

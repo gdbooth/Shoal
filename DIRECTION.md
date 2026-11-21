@@ -41,7 +41,7 @@ The 16 original agents are retired (not kept as advisory).
 
 1. **Server engine, durable storage and a free external scheduler** (done).
 2. **The 9 agents, each tested in the Swing lab, plus the majority-and-confidence rule** (done).
-3. The daily cycle's learning: scoring every call, end-of-day scorecard and damped weight updates.
+3. **The daily cycle's learning: scoring every call, end-of-day scorecard and damped weight updates** (done).
 4. Hourly risk guardian and order handling.
 5. Simpler screens (Today / Agents / Performance / Lab / Settings) and notifications.
 6. A month of paper trading, then a decision on live money.
@@ -97,3 +97,39 @@ majority (3 or 5 of 7) or adding a fill-up rule didn't close the gap.
 **Direction note:** the team is implemented as specified and trades on paper, because the purpose of
 the tool is a voting team that learns. Step 3 (scoring every call, damped weight updates) is where it
 can improve; the live-money gate stays shut until a month of paper results beats buy & hold.
+
+## Step 3: what's in place
+
+- **Every call is scored.** Each agent's vote on each watched stock, traded or not, is scored 5 and 21
+  trading days later against how that stock did relative to the watchlist average (rank correlation, IC).
+  Market Trend is scored on the market's direction, the Risk Guardian on whether danger came before
+  turbulence, and the team on its BUY calls after a round-trip cost. Votes are recomputed from the
+  broker's price history, so the first scorecard already holds a year of real calls.
+- **End-of-day scorecard.** After each close the engine fetches ~560 trading days of bars, scores every
+  call whose horizon has passed (`S.learnUpdate`, stored in `learning.json`) and records a `learn` event.
+  Settings → Server engine shows the scorecard; **Build scorecard now** builds it without waiting for a
+  close (it only reads prices).
+- **Damped weight updates.** Each picker's weight moves 10% a day towards 1 + (|t| − 1)/2 in the
+  direction of its t-statistic (clamped 0.25–2.5, average kept at 1). A record with |t| ≤ 1 counts as
+  noise. The weights scale each picker's say in the team's confidence; the 4-of-7 vote is unchanged.
+  The open review and hourly checks use the latest weights.
+- **Retiring agents.** A picker with t ≤ −2 over 60+ scored days is flagged as a retire candidate in the
+  scorecard and the end-of-day event. Retiring it is the owner's decision.
+- Fix: the live team now fetches 600 calendar days of bars (~410 trading days); 420 left Momentum
+  (273 days of lookback) with barely enough history.
+
+### Honest results (walk-forward on real data, 5 bp per side)
+
+The team used, each day, only weights learned from calls whose horizon had already passed.
+
+| Data | Team, equal weights | Learned, no gate | Learned, gated (shipped) |
+|---|---|---|---|
+| 24 stocks, 2014–2018 | +67%, Sharpe 1.25 | +59%, 1.12 | +63%, 1.19 |
+| 12 stocks + ETFs, 2017–2026 | +62%, 0.53 | +38%, 0.36 | +67%, 0.54 |
+
+Without the gate the weights chased noise and cost return; with it, learning does no harm and moves a
+weight only on evidence. No picker reached t ≥ 2 on either history; the Risk Guardian again spotted
+turbulence (t 6.3–6.4). The most useful finding: the team's **BUY calls trailed the average watched stock**
+after costs (21-day: −0.7% with 44% beating it on 2014–2018; −1.4% with 32% on 2017–2026). The
+majority rule picks stocks the pickers agree on, and that agreement hasn't paid. The live scorecard will
+show whether this holds on current data; step 4 and the paper month should be judged against it.

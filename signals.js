@@ -883,7 +883,7 @@
         if (i < 130) continue;
         const sg = signalsAt(s, i);
         if (!sg) continue;
-        const d = teamDecision(sg, { held: !!pos[s], weights: o.weights, ...(o.decision || {}) });
+        const d = teamDecision(sg, { held: !!pos[s], weights: o.weightsAt ? o.weightsAt(g) : o.weights, ...(o.decision || {}) });
         mkt = d.mkt;
         if (d.action === 'SELL') { sell.push(s); why[s] = d.why; if (/risk/.test(d.why)) riskSells++; }
         else if (d.action === 'BUY') cands.push([s, d.score]);
@@ -913,6 +913,149 @@
       winRate: closed.length ? closed.filter(t => t.pnl > 0).length / closed.length : 0,
       avgHoldDays: closed.length ? closed.reduce((s, t) => s + (t.exitG - t.entryG), 0) / closed.length : 0,
     };
+  }
+
+  // ── Learning (step 3): score every call, daily scorecard, damped weight updates ────────────────────
+  // Every agent's vote on every watched stock is a call, traded or not. A call made at day g's close is
+  // scored when its horizon H has passed: the stock's return from the next open to the close H days
+  // later, relative to the watchlist average (so a rising market doesn't flatter every BUY). Each day,
+  // each picker gets one score per horizon: the rank correlation (IC) between its votes and those
+  // relative returns across the watchlist. The market agent is scored on the whole market's direction,
+  // the risk guardian on whether danger came before turbulence, and the team on its BUY calls after a
+  // round-trip cost. Votes are recomputed from the bars (they depend only on past prices), so the
+  // record can be rebuilt from broker history and the first scorecard starts from a year of real calls.
+  //
+  // Weights: each picker's weight moves 10% of the way each day towards 1 + (|t| − 1)/2 in the direction
+  // of t (clamped 0.25–2.5), where t is its record's t-statistic averaged over the 5- and 21-day horizons,
+  // counting overlapping days only once per horizon. |t| ≤ 1 is treated as noise (weight stays 1): on
+  // real 2013–2026 data, ungated weights chased noise and cut the team's return; gated, they did no harm. Weights are renormalised to average 1, so a picker that keeps helping
+  // gains influence on the team's confidence, one that keeps hurting loses it, and noise moves little.
+  // The 4-of-7 vote count is unchanged. A picker with t ≤ −2 over at least 60 scored days is flagged as
+  // a retire candidate; retiring it is a decision for its owner.
+  const LEARN = { horizons: [5, 21], keepDays: 250, minDays: 20, rate: 0.1, seedRate: 0.5, wMin: 0.25, wMax: 2.5, tScale: 0.5,
+    retireT: -2, retireDays: 60, costBps: 5, keepHistory: 120, tDead: 1 };
+
+  function spearman(a, b) {
+    const n = a.length;
+    if (n < 5) return null;
+    const rank = (v) => { const o = v.map((x, i) => [x, i]).sort((p, q) => p[0] - q[0]); const r = new Array(n); let k = 0;
+      while (k < n) { let j = k; while (j + 1 < n && o[j + 1][0] === o[k][0]) j++; for (let m = k; m <= j; m++) r[o[m][1]] = (k + j) / 2; k = j + 1; } return r; };
+    const ra = rank(a), rb = rank(b), m = (n - 1) / 2;
+    let num = 0, da = 0, db = 0;
+    for (let k = 0; k < n; k++) { num += (ra[k] - m) * (rb[k] - m); da += (ra[k] - m) ** 2; db += (rb[k] - m) ** 2; }
+    return da > 0 && db > 0 ? num / Math.sqrt(da * db) : null;
+  }
+
+  // Market date of each global bar index (from the longest-history symbol)
+  function universeDates(U) {
+    const s = U.syms.find(x => U.off[x] === 0);
+    return s && U.F[s].t ? Array.from({ length: U.L }, (_, g) => String(U.F[s].t[g]).slice(0, 10)) : null;
+  }
+
+  // All of one day's calls scored at every horizon that has passed: { [H]: score }
+  function scoreDay(U, g, horizons, { weights, params, costBps = LEARN.costBps } = {}) {
+    const rows = [];
+    for (const s of U.syms) {
+      const F = U.F[s], i = g - U.off[s];
+      if (i < 130) continue;
+      const sg = agentSignals(U, s, i, params);
+      if (!sg) continue;
+      rows.push({ s, F, i, sg, team: teamDecision(sg, { weights }), danger: -(agentReadings(U, s, i, params).risk) });
+    }
+    const out = {};
+    for (const H of horizons) {
+      const ok = rows.filter(r => r.i + H <= r.F.n - 1);
+      if (ok.length < 5) continue;
+      const ret = ok.map(r => r.F.c[r.i + H] / r.F.o[r.i + 1] - 1);
+      const mean = ret.reduce((a, b) => a + b, 0) / ret.length, rel = ret.map(x => x - mean);
+      const ic = {};
+      for (const id of PICKERS) { const v = ok.map(r => (r.sg[id] ? r.sg[id].dir * r.sg[id].strength : 0)); ic[id] = new Set(v).size > 1 ? spearman(v, rel) : null; }
+      // turbulence: average absolute daily move over the horizon
+      const turb = ok.map(r => { let t = 0; for (let k = 1; k <= H; k++) t += Math.abs(r.F.c[r.i + k] / r.F.c[r.i + k - 1] - 1); return t / H; });
+      const dz = ok.map(r => r.danger), riskIC = dz.every(Number.isFinite) && new Set(dz).size > 1 ? spearman(dz, turb) : null;
+      const cost = 2 * costBps / 1e4, buys = ok.map((r, k) => [r, rel[k]]).filter(([r]) => r.team.action === 'BUY');
+      const m = ok[0].sg.mkt;
+      out[H] = { n: ok.length, ic, riskIC, mkt: m ? Math.round(m.dir * m.strength * 100) / 100 : 0, mktRet: Math.round(mean * 1e5) / 1e5,
+        buys: buys.length, buyRel: buys.length ? Math.round((buys.reduce((a, [, x]) => a + x, 0) / buys.length - cost) * 1e5) / 1e5 : null,
+        buyHits: buys.filter(([, x]) => x > cost).length };
+      for (const id of PICKERS) if (ic[id] != null) ic[id] = Math.round(ic[id] * 1e4) / 1e4;
+      if (riskIC != null) out[H].riskIC = Math.round(riskIC * 1e4) / 1e4;
+    }
+    return out;
+  }
+
+  // Mean and overlap-aware t-statistic of a list of daily scores at horizon H
+  function recordStats(xs, H) {
+    const v = xs.filter(x => x != null && Number.isFinite(x)), n = v.length;
+    if (n < 2) return { mean: n ? v[0] : 0, t: 0, n };
+    const mean = v.reduce((a, b) => a + b, 0) / n, sd = Math.sqrt(v.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1));
+    const nEff = Math.max(1, n / H);
+    return { mean, t: sd > 0 ? (mean / sd) * Math.sqrt(nEff) : 0, n };
+  }
+
+  // Update the learning state with every call whose horizon has passed, then move the weights.
+  // state: { days: { [H]: { 'YYYY-MM-DD': score } }, weights, lastUpdate, history: [{ date, weights }] }
+  function learnUpdate(U, state = {}, o = {}) {
+    const L = { ...LEARN, ...(o.learn || {}) }, dates = universeDates(U);
+    if (!dates) return { state, scorecard: null, added: 0, error: 'bars have no dates' };
+    const st = { days: {}, history: [], ...state };
+    const prevW = st.weights ? { ...st.weights } : null;
+    const weightsOn = (date) => { const h = (st.history || []).filter(x => x.date <= date).pop(); return h ? h.weights : prevW; };
+    const todo = new Map(); // g -> horizons still to score
+    for (const H of L.horizons) {
+      const book = st.days[H] = { ...(st.days[H] || {}) };
+      for (let g = Math.max(130, U.L - L.keepDays - H); g <= U.L - 1 - H; g++) if (!(dates[g] in book)) (todo.get(g) || todo.set(g, []).get(g)).push(H);
+    }
+    let added = 0;
+    for (const [g, hs] of todo) {
+      const sc = scoreDay(U, g, hs, { weights: weightsOn(dates[g]), params: o.params, costBps: L.costBps });
+      for (const H of hs) if (sc[H]) { st.days[H][dates[g]] = sc[H]; added++; }
+    }
+    // keep the last keepDays scored days per horizon
+    for (const H of L.horizons) { const keys = Object.keys(st.days[H]).sort(); for (const k of keys.slice(0, Math.max(0, keys.length - L.keepDays))) delete st.days[H][k]; }
+
+    const asOf = dates[U.L - 1];
+    const stats = {};
+    for (const id of PICKERS) {
+      stats[id] = {};
+      for (const H of L.horizons) stats[id][H] = recordStats(Object.keys(st.days[H]).sort().map(k => st.days[H][k].ic[id]), H);
+    }
+    const days = Math.min(...L.horizons.map(H => Object.keys(st.days[H]).length));
+    const target = {}, w = {};
+    for (const id of PICKERS) {
+      const t = L.horizons.reduce((a, H) => a + stats[id][H].t, 0) / L.horizons.length;
+      const tt = Math.sign(t) * Math.max(0, Math.abs(t) - L.tDead); // evidence gate: |t| ≤ tDead is treated as noise
+      target[id] = Math.min(L.wMax, Math.max(L.wMin, 1 + L.tScale * tt));
+    }
+    const fresh = st.lastUpdate !== asOf && added > 0;
+    for (const id of PICKERS) {
+      const cur = prevW && prevW[id] != null ? prevW[id] : 1;
+      w[id] = days < L.minDays ? cur : !prevW ? 1 + L.seedRate * (target[id] - 1) : fresh ? cur + L.rate * (target[id] - cur) : cur;
+    }
+    const avg = PICKERS.reduce((a, id) => a + w[id], 0) / PICKERS.length;
+    for (const id of PICKERS) w[id] = Math.round((w[id] / avg) * 1000) / 1000;
+    st.weights = w;
+    if (fresh || !prevW) { st.lastUpdate = asOf; st.history = [...(st.history || []).filter(x => x.date !== asOf), { date: asOf, weights: w }].slice(-L.keepHistory); }
+
+    // the scorecard
+    const main = Math.max(...L.horizons), keys = (H) => Object.keys(st.days[H]).sort();
+    const agents = PICKERS.map(id => {
+      const s = stats[id], t = L.horizons.reduce((a, H) => a + s[H].t, 0) / L.horizons.length, n = s[main].n;
+      const status = n < L.minDays ? 'too early' : t <= L.retireT && n >= L.retireDays ? 'retire candidate' : t >= 2 ? 'helping' : t <= -1 ? 'hurting' : t >= 1 ? 'promising' : 'no clear effect';
+      return { id, weight: w[id], prevWeight: prevW ? prevW[id] : null, target: Math.round(target[id] * 1000) / 1000, t: Math.round(t * 100) / 100, status,
+        horizons: Object.fromEntries(L.horizons.map(H => [H, { ic: Math.round(s[H].mean * 1e4) / 1e4, t: Math.round(s[H].t * 100) / 100, days: s[H].n }])) };
+    });
+    const mk = keys(main).map(k => st.days[main][k]), called = mk.filter(d => Math.abs(d.mkt) >= 0.2);
+    const timing = { days: mk.length, calls: called.length, hitRate: called.length ? Math.round(called.filter(d => Math.sign(d.mkt) === Math.sign(d.mktRet)).length / called.length * 1000) / 1000 : null };
+    const rk = recordStats(keys(5).map(k => st.days[5] && st.days[5][k].riskIC), 5);
+    const risk = { ic: Math.round(rk.mean * 1e4) / 1e4, t: Math.round(rk.t * 100) / 100, days: rk.n, status: rk.n < L.minDays ? 'too early' : rk.t >= 2 ? 'spots turbulence' : 'no clear effect' };
+    const team = {};
+    for (const H of L.horizons) {
+      const ds = keys(H).map(k => st.days[H][k]).filter(d => d.buys > 0), calls = ds.reduce((a, d) => a + d.buys, 0);
+      team[H] = { days: ds.length, calls, avgRelPct: calls ? Math.round(ds.reduce((a, d) => a + d.buyRel * d.buys, 0) / calls * 1e4) / 100 : null,
+        hitRate: calls ? Math.round(ds.reduce((a, d) => a + d.buyHits, 0) / calls * 1000) / 1000 : null };
+    }
+    return { state: st, added, scorecard: { asOf, days, agents, timing, risk, team, horizons: L.horizons, updated: fresh || !prevW } };
   }
 
   function runTilt(U, o = {}) {
@@ -1765,7 +1908,7 @@
   const api = {
     ind, normalizeBars, makeFeatures, buildUniverse, pairFor,
     REGIME_KEYS, REGIME_LABELS, regimeAt,
-    AGENT_IDS, DEFAULT_PARAMS, mergeParams, agentSignals, AGENT_FNS, agentReadings, AGENT_ROLE, roleOf, PICKERS, teamDecision, DECISION, TREND_PARAMS, runTeam,
+    AGENT_IDS, DEFAULT_PARAMS, mergeParams, agentSignals, AGENT_FNS, agentReadings, AGENT_ROLE, roleOf, PICKERS, teamDecision, DECISION, TREND_PARAMS, runTeam, LEARN, spearman, scoreDay, recordStats, learnUpdate, universeDates,
     ensemble, correlationAdjust, regimeMultipliers, atrPlan,
     runBacktest, evaluateAgents, synthUniverseBars,
     TUNE_KEYS, AUTOPILOT, createScoreBook, proposeWeights, tuneParam, runInvested,

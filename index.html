@@ -5280,6 +5280,60 @@ window.ScreenMarket = ScreenMarket;
 
 // Settings → Server engine: trades on the server all day without a browser (open review, hourly checks,
 // end-of-day report), driven by the free GitHub Actions scheduler. Shows what ran and the daily reports.
+// Step 3: the agents' scorecard. Every vote on every watched stock is scored once its horizon (5 and
+// 21 trading days) has passed; the picker weights move a damped step towards their record each day.
+const AgentScorecard = ({ configured }) => {
+  const [L, setL] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const load = () => fetch(`${BACKEND_URL}/api/engine/learning`).then(r => r.json()).then(setL).catch(e => setMsg(e.message));
+  React.useEffect(() => { load(); }, []);
+  const build = async () => {
+    setBusy(true); setMsg('Scoring a year of the agents\' calls from Alpaca\'s price history…');
+    try {
+      const r = await fetch(`${BACKEND_URL}/api/engine/learn`, { method: 'POST', signal: AbortSignal.timeout(240000) });
+      const d = await r.json();
+      setMsg(r.ok ? `Scored ${d.added} new day-horizons.` : (d.error || `HTTP ${r.status}`));
+      if (r.ok) load();
+    } catch (e) { setMsg(e.message); }
+    setBusy(false);
+  };
+  const sc = L && L.scorecard;
+  const name = (id) => (AGENTS.find(a => a.id === id) || { name: id }).name;
+  const ic = (h) => h ? <>{h.ic >= 0 ? '+' : ''}{h.ic.toFixed(3)} <span className="muted">t {h.t.toFixed(1)}</span></> : '—';
+  const col = (st) => st === 'helping' ? 'var(--up)' : st === 'promising' ? 'var(--up)' : st === 'hurting' || st === 'retire candidate' ? 'var(--down)' : 'var(--ink-3)';
+  const pct = (x) => (x == null ? '—' : `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`);
+  return (
+    <div style={{marginTop:12}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
+        <div className="mono tiny muted" style={{letterSpacing:'0.1em'}}>AGENT SCORECARD{sc ? ` · ${sc.asOf} · ${sc.days} days scored` : ''}</div>
+        {configured && <button className="btn" style={{fontSize:10,padding:'3px 8px'}} disabled={busy} onClick={build}>{busy ? 'SCORING…' : sc ? 'REFRESH NOW' : 'BUILD SCORECARD NOW'}</button>}
+      </div>
+      <div className="mono tiny muted" style={{margin:'4px 0 6px',lineHeight:1.6}}>
+        Every vote each agent makes on every stock is a call, traded or not. After 5 and 21 trading days it is scored against how the stock did <i>relative to the watchlist</i> (IC: +1 = votes ranked the stocks perfectly, 0 = no better than chance; t ≥ 2 = unlikely to be luck). After each close the pickers' weights move 10% of the way towards their record, so the team's confidence leans on the agents that have been right; a record with |t| ≤ 1 counts as noise and leaves the weight at 1. The 4-of-7 vote is unchanged; a picker with t ≤ −2 over 60+ days is flagged as a retire candidate.
+      </div>
+      {!sc && <div className="mono tiny" style={{color:'var(--ink-2)'}}>{L ? 'No scorecard yet: it is built after the first close, or press Build scorecard now.' : 'Loading…'}</div>}
+      {sc && (<>
+        <table className="tbl">
+          <thead><tr><th>Picker</th><th style={{textAlign:'right'}}>Weight</th><th style={{textAlign:'right'}}>5-day IC</th><th style={{textAlign:'right'}}>21-day IC</th><th style={{textAlign:'right'}}>Days</th><th>Status</th></tr></thead>
+          <tbody>{[...sc.agents].sort((a, b) => b.weight - a.weight).map(a => (
+            <tr key={a.id}><td>{name(a.id)}</td>
+              <td className="mono" style={{textAlign:'right'}}>{a.weight.toFixed(2)}{a.prevWeight != null && Math.abs(a.weight - a.prevWeight) >= 0.005 ? <span style={{color: a.weight > a.prevWeight ? 'var(--up)' : 'var(--down)'}}> {a.weight > a.prevWeight ? '▲' : '▼'}</span> : ''}</td>
+              <td className="mono" style={{textAlign:'right'}}>{ic(a.horizons[5])}</td><td className="mono" style={{textAlign:'right'}}>{ic(a.horizons[21])}</td>
+              <td className="mono" style={{textAlign:'right'}}>{a.horizons[21] ? a.horizons[21].days : '—'}</td>
+              <td className="mono tiny" style={{color: col(a.status)}}>{a.status}</td></tr>))}</tbody>
+        </table>
+        <div className="mono tiny" style={{marginTop:6,lineHeight:1.7,color:'var(--ink-2)'}}>
+          <b>Market Trend</b>: right about the market's 21-day direction on {sc.timing.hitRate != null ? `${(sc.timing.hitRate * 100).toFixed(0)}%` : '—'} of {sc.timing.calls} days it took a view.{' '}
+          <b>Risk Guardian</b>: danger vs the next 5 days' turbulence IC {sc.risk.ic >= 0 ? '+' : ''}{sc.risk.ic.toFixed(3)} (t {sc.risk.t.toFixed(1)}): {sc.risk.status}.<br/>
+          <b>Team BUY calls</b> vs the watchlist, after a round-trip cost: 5 days {pct(sc.team[5] && sc.team[5].avgRelPct)} ({sc.team[5] ? sc.team[5].calls : 0} calls, {sc.team[5] && sc.team[5].hitRate != null ? `${(sc.team[5].hitRate * 100).toFixed(0)}% beat it` : '—'}) · 21 days {pct(sc.team[21] && sc.team[21].avgRelPct)} ({sc.team[21] ? sc.team[21].calls : 0} calls, {sc.team[21] && sc.team[21].hitRate != null ? `${(sc.team[21].hitRate * 100).toFixed(0)}% beat it` : '—'}).
+        </div>
+      </>)}
+      {msg && <div className="mono tiny" style={{marginTop:6,color:'var(--ink-2)'}}>{msg}</div>}
+    </div>
+  );
+};
+
 const ServerTradingCard = ({ alpaca, st }) => {
   const [eng, setEng] = React.useState(null);
   const [err, setErr] = React.useState(null);
@@ -5348,6 +5402,7 @@ const ServerTradingCard = ({ alpaca, st }) => {
               <td className="mono" style={{textAlign:'right'}}>{r.trades}</td><td className="mono" style={{textAlign:'right'}}>{r.positions}</td></tr>))}</tbody>
         </table>
       )}
+      {eng && eng.configured && eng.strategy !== 'tilt' && <AgentScorecard configured={eng.configured}/>}
       {on && sameAcct && <button className="btn" style={{fontSize:10,padding:'4px 10px',marginTop:8}} disabled={busy} onClick={runPreview}>{busy ? 'CHECKING…' : "PREVIEW THE ENGINE'S PLAN"}</button>}
       {preview && (
         <div className="mono tiny" style={{marginTop:8,color: preview.error ? 'var(--down)' : 'var(--ink-2)',lineHeight:1.6}}>

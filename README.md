@@ -46,6 +46,9 @@ end-of-day report) and keeps its records in a private Vercel Blob store.
   month's close). Requires `CRON_SECRET`. `GET /api/cron/tilt?dry=1` (with the secret) or Settings → Server
   engine → Preview shows the plan and votes without trading. When it trades the account the browser is
   connected to, the browser places no orders.
+- **Agent scorecard** (step 3): after each close the engine scores every agent call whose 5- or 21-day horizon
+  has passed and moves the pickers' weights a damped, evidence-gated step (`learning.json`). `GET /api/engine/learning`
+  and `POST /api/engine/learn` (behind the login; reads prices, never trades) back Settings → Server engine → Agent scorecard.
 
 ## Running
 

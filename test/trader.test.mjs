@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import vm from 'vm';
-import { teamPlan, runTeamLive, serverConfig, strategyFor, runTilt } from '../trader.js';
+import { teamPlan, runTeamLive, serverConfig, strategyFor, runTilt, learnFromBroker, learnedWeights, scorecardSummary } from '../trader.js';
 
 const box = {};
 for (const f of ['watchlist.js', 'signals.js']) vm.runInNewContext(fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8'), box);
@@ -72,4 +72,27 @@ test('strategy selection: the team by default, Rank & tilt with SHOAL_STRATEGY=t
   assert.equal(serverConfig({}).strategy, 'team');
   assert.equal(strategyFor(serverConfig({})), runTeamLive);
   assert.equal(strategyFor(serverConfig({ SHOAL_STRATEGY: 'tilt' })), runTilt);
+});
+
+test('learning from broker history: builds the scorecard, saves the weights the team then uses', async () => {
+  const bars = alpacaBars(560, 11), mem = {};
+  const store = { get: async (k) => mem[k] ?? null, put: async (k, v) => { mem[k] = JSON.parse(JSON.stringify(v)); } };
+  const session = { bars: async () => ({ status: 200, body: { bars } }) };
+  const r = await learnFromBroker(session, { watchlist: SYMS }, store, { now: NOW });
+  assert.equal(r.ok, true);
+  assert.equal(r.scorecard.agents.length, 7);
+  assert.ok(r.added > 100);
+  const w = await learnedWeights(store);
+  assert.deepEqual(Object.keys(w).sort(), [...S.PICKERS].sort());
+  assert.match(scorecardSummary(r.scorecard), /scorecard 2026-11-20: \d+ days scored/);
+  // running again the same day adds nothing and keeps the weights
+  const r2 = await learnFromBroker(session, { watchlist: SYMS }, store, { now: NOW });
+  assert.equal(r2.added, 0);
+  assert.deepEqual(await learnedWeights(store), w);
+  // the team plan accepts the weights
+  const p = teamPlan(bars, { held: [], watchlist: SYMS, topK: 5, now: NOW, weights: w });
+  assert.equal(p.decisions.length, SYMS.length);
+  // too little history is reported, not guessed
+  const short = await learnFromBroker({ bars: async () => ({ status: 200, body: { bars: alpacaBars(200) } }) }, { watchlist: SYMS }, { get: async () => null, put: async () => {} }, { now: NOW });
+  assert.equal(short.ok, false);
 });

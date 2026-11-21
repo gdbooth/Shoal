@@ -416,3 +416,49 @@ test('rank & tilt crash guard: always off = same as no guard; always on = stays 
   const g = S.marketBelowAverage(U_FULL, 50);
   assert.equal(typeof g(300), 'boolean');
 });
+
+test('learning: every call scored once its horizon passes; incremental = full rebuild; damped weight steps', () => {
+  const dated = (bars) => Object.fromEntries(Object.entries(bars).map(([s, b]) => [s, b.c.map((c, i) => ({ t: new Date(Date.UTC(2020, 0, 1) + i * 864e5).toISOString().slice(0, 10), o: b.o[i], h: b.h[i], l: b.l[i], c, v: b.v[i] }))]));
+  const D = dated(FULL), cut = (n) => Object.fromEntries(Object.entries(D).map(([s, a]) => [s, a.slice(0, n)]));
+  const L = { keepDays: 120, minDays: 20 };
+  const full = S.learnUpdate(S.buildUniverse(D, SECT), {}, { learn: L });
+  const sc = full.scorecard;
+  assert.equal(sc.agents.length, 7);
+  assert.equal(sc.days, 120);
+  for (const a of sc.agents) {
+    assert.ok(a.weight > 0 && a.weight <= 2.5 && Number.isFinite(a.t));
+    assert.ok(Math.abs(a.weight - 1) <= Math.abs(a.target - 1) * 0.5 + 0.3); // seeded half way, then renormalised
+  }
+  assert.ok(Math.abs(sc.agents.reduce((x, a) => x + a.weight, 0) / 7 - 1) < 0.01);
+  // a call is scored only when its horizon has passed: the last 21 days have no 21-day score
+  const lastDate = D.A1[499].t, keys21 = Object.keys(full.state.days[21]).sort(), keys5 = Object.keys(full.state.days[5]).sort();
+  assert.equal(keys21[keys21.length - 1], D.A1[499 - 21].t);
+  assert.equal(keys5[keys5.length - 1], D.A1[499 - 5].t);
+  assert.equal(sc.asOf, lastDate);
+  // built day by day, the agents' daily scores match the full rebuild
+  let st = S.learnUpdate(S.buildUniverse(cut(480), SECT), {}, { learn: L }).state;
+  const w480 = { ...st.weights };
+  const r481 = S.learnUpdate(S.buildUniverse(cut(481), SECT), st, { learn: L });
+  for (const id of S.PICKERS) {
+    const target = r481.scorecard.agents.find(a => a.id === id).target;
+    const raw = w480[id] + 0.1 * (target - w480[id]);
+    assert.ok(Math.abs(raw - w480[id]) <= Math.abs(target - w480[id]) * 0.1 + 0.05, id); // one damped step
+  }
+  const again = S.learnUpdate(S.buildUniverse(cut(481), SECT), r481.state, { learn: L });
+  assert.deepEqual(again.state.weights, r481.state.weights); // the same day twice moves nothing
+  assert.equal(again.added, 0);
+  st = r481.state;
+  for (let n = 482; n <= 500; n++) st = S.learnUpdate(S.buildUniverse(cut(n), SECT), st, { learn: L }).state;
+  for (const k of Object.keys(st.days[21])) assert.deepEqual(st.days[21][k].ic, full.state.days[21][k].ic, k);
+  assert.ok(st.history.length >= 20);
+});
+
+test('learning helpers: rank correlation and an overlap-aware t-statistic', () => {
+  const U = S.buildUniverse(Object.fromEntries(Object.entries(FULL).map(([s, b]) => [s, b.c.map((c, i) => ({ t: new Date(Date.UTC(2020, 0, 1) + i * 864e5).toISOString().slice(0, 10), o: b.o[i], h: b.h[i], l: b.l[i], c, v: b.v[i] }))])), SECT);
+  assert.equal(S.spearman([1, 2, 3, 4, 5], [2, 4, 6, 8, 10]), 1);
+  assert.equal(S.spearman([1, 2, 3, 4, 5], [5, 4, 3, 2, 1]), -1);
+  const st = S.recordStats([0.1, 0.12, 0.08, 0.11, 0.09, 0.1, 0.1, 0.13], 1);
+  assert.ok(st.t > 10);
+  assert.ok(S.recordStats([0.1, 0.12, 0.08, 0.11, 0.09, 0.1, 0.1, 0.13], 21).t < st.t); // overlapping days count once
+  assert.ok(U.L === 500);
+});

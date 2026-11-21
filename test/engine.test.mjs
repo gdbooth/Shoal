@@ -53,7 +53,9 @@ test('what is due, by the market clock', () => {
 
 test('a trading day: open once, hourly once per hour, end-of-day report once', async () => {
   const store = freshStore(), s = fakeSession(), strat = strategy(s), cfg = { dailyLossPct: 5 };
-  const tick = (t) => engineTick({ session: s, store, cfg, strategy: strat, now: ny(t) });
+  const learnCalls = [], weightsSeen = [];
+  const learn = async () => { learnCalls.push(1); await store.put('learning.json', { state: { weights: { mom: 1.5 } } }); return { ok: true, added: 3, scorecard: { asOf: '2026-12-01', days: 250, agents: [{ id: 'mom', weight: 1.5, prevWeight: 1.4, status: 'helping' }] } }; };
+  const tick = (t) => engineTick({ session: s, store, cfg, strategy: async (...a) => { weightsSeen.push(a[2].weights); return strat(...a); }, learn, now: ny(t) });
   assert.deepEqual((await tick('09:31')).ran, []);
   assert.deepEqual((await tick('09:46')).ran, ['open']);
   assert.deepEqual((await tick('10:01')).ran, []);
@@ -64,8 +66,11 @@ test('a trading day: open once, hourly once per hour, end-of-day report once', a
   assert.deepEqual(h.ran, ['hourly']);
   s.st.open = false;
   const c = await tick('16:01');
-  assert.deepEqual(c.ran, ['close']);
+  assert.deepEqual(c.ran, ['close', 'learn']); // the end-of-day report, then the agent scorecard
+  assert.match(c.events[1].summary, /scorecard 2026-12-01: 250 days scored; weights mom 1.40→1.50/);
   assert.deepEqual((await tick('16:16')).ran, []);
+  assert.equal(learnCalls.length, 1);
+  assert.deepEqual(weightsSeen, [null, null, null]); // no scorecard yet that day
   assert.equal(s.st.strategyCalls, 3); // open + two hourly follow-ups
   const state = await store.get('state.json');
   assert.equal(state.lastOpenDate, '2026-12-01');
@@ -73,9 +78,10 @@ test('a trading day: open once, hourly once per hour, end-of-day report once', a
   assert.equal(state.reports[0].dayReturnPct, -1);
   assert.equal(state.reports[0].spyPct, 1);
   assert.equal(state.reports[0].trades, 1);
-  assert.deepEqual(state.recent.map(e => e.phase), ['close', 'hourly', 'hourly', 'open']);
+  assert.deepEqual(state.recent.map(e => e.phase), ['learn', 'close', 'hourly', 'hourly', 'open']);
   const day = await store.get('days/2026-12-01.json');
-  assert.equal(day.events.length, 4);
+  assert.equal(day.events.length, 5);
+  assert.equal(day.scorecard.days, 250);
   assert.equal(day.report.equityClose, 99000);
 });
 
@@ -107,4 +113,18 @@ test('a failing strategy is recorded and the lock released', async () => {
   const state = await store.get('state.json');
   assert.equal(state.lockUntil, 0);
   assert.equal(state.recent[0].phase, 'error');
+});
+
+test('the next day trades with the learned weights; a failing scorecard never fails the close', async () => {
+  const store = freshStore(), s = fakeSession(), seen = [];
+  await store.put('learning.json', { state: { weights: { mom: 1.3, rev: 0.7 } } });
+  const strat = async (_s, _c, o) => { seen.push(o.weights); return { ok: true, picks: [], sells: [], buys: [], waiting: [], orders: [] }; };
+  await engineTick({ session: s, store, cfg: {}, strategy: strat, learn: async () => { throw new Error('no bars'); }, now: ny('09:46') });
+  assert.deepEqual(seen[0], { mom: 1.3, rev: 0.7 });
+  s.st.open = false;
+  const c = await engineTick({ session: s, store, cfg: {}, strategy: strat, learn: async () => { throw new Error('no bars'); }, now: ny('16:05') });
+  assert.equal(c.ok, true);
+  assert.deepEqual(c.ran, ['close', 'learn']);
+  assert.match(c.events[1].summary, /scorecard failed: no bars/);
+  assert.equal((await store.get('state.json')).lastCloseDate, '2026-12-01');
 });
